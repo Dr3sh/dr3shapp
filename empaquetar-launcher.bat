@@ -15,3 +15,4 @@ set "TAURI_SIGNING_PRIVATE_KEY=E:\launcehr\Dr3sh app\apps\app\dr3sh_updater.key"
 set "TAURI_SIGNING_PRIVATE_KEY_PASSWORD="
 
 pnpm --config.pm-on-fail=ignore --filter @modrinth/app build
+
