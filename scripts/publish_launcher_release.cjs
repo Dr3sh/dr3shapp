@@ -17,10 +17,10 @@ function getArg(flag, fallback) {
 }
 
 const OWNER = 'Dr3sh';
-const REPO = getArg('--repo', 'Dr3sh-App');
-const rawVer = getArg('--version', pkg.version || '0.2.16');
+const REPO = getArg('--repo', 'dr3shapp');
+const rawVer = getArg('--version', '1.0.0');
 const TAG = rawVer.startsWith('v') ? rawVer : `v${rawVer}`;
-const TITLE = `Dr3sh Launcher ${TAG}`;
+const TITLE = `Dr3sh Launcher ${TAG} (Tauri 2.0)`;
 
 let TOKEN = process.env.GITHUB_TOKEN;
 const activeTokenPath = path.resolve(__dirname, '../active_token.txt');
@@ -31,21 +31,21 @@ if (!TOKEN) {
   TOKEN = process.env.GH_TOKEN || '';
 }
 
-const NOTES = `## Dr3sh Launcher v${pkg.version} - Nueva Fuente UI (Plus Jakarta Sans) & Limpieza de Mods
+const NOTES = `## Dr3sh Launcher ${TAG} - Motor Nativo Tauri 2.0 & Rust
 
 ### Novedades y Mejoras:
-- **Nueva Tipografía Oficial del Launcher (Plus Jakarta Sans):**
-  - Reemplazo completo de la fuente anterior por **Plus Jakarta Sans**, una fuente moderna, elegante y geométrica idéntica en estética y legibilidad a Rubik.
-  - **Soporte Unicode y Glifos Completo:** Incluye soporte total para todos los caracteres del español (\`á\`, \`é\`, \`í\`, \`ó\`, \`ú\`, \`ñ\`, \`ü\`, \`¿\`, \`¡\`), caracteres especiales, signos de puntuación (\`•\`, \`·\`, \`—\`, \`–\`), flechas (\`→\`, \`←\`) y símbolos, eliminando cualquier caracter roto o rombo con signo de interrogación.
-  - Empaquetada localmente en TTF de alta fidelidad sin dependencias de red externas.
-
-- **Desactivación Completa de Dr3shSkins:**
-  - El launcher ya no intenta inyectar ni descargar el mod \`dr3shskins\` por su cuenta.
-  - Purga automática de cualquier archivo remanente de \`dr3shskins\` en las carpetas de mods.
-  - Soporte universal de skins enfocado en \`CustomSkinLoader\`.
-
-- **Motor de Arranque Optimizado (Prism Launcher):**
-  - Banderas de memoria \`-XX:+AlwaysPreTouch\` y recolección de basura G1GC de baja latencia integradas.
+- **Nuevo Motor Nativo con Tauri 2.0 & Rust:**
+  - Rendimiento ultrarrápido con menor consumo de RAM (~40-60 MB vs +300 MB en Electron).
+  - Tamaño del instalador reducido drásticamente a solo **26 MB**.
+- **Instalador NSIS con Desinstalación Limpia (Cero Residuos):**
+  - Al desinstalar, el desinstalador purga de raíz todas las carpetas en \`%APPDATA%\\com.dr3sh.launcher\` y \`%LOCALAPPDATA%\\com.dr3sh.launcher\`, accesos directos y rastros residuales.
+- **Modo Mantenimiento y Modo Testing Integrados:**
+  - Bloqueo y aviso interactivo para usuarios ordinarios durante periodos de mantenimiento.
+  - Purga automática de instancias de prueba tras cumplirse las horas asignadas de inactividad.
+- **Descargas Concurrentes de Alta Velocidad:**
+  - Motor de descarga asíncrono en Rust optimizado para soportar múltiples descargas simultáneas sin saturar el sistema.
+- **Sistema de Auto-actualizaciones Criptográfico:**
+  - Verificación de integridad con claves minisign y endpoint de actualización oficial.
 `;
 
 function apiRequest(endpoint, options = {}) {
@@ -127,53 +127,60 @@ async function uploadAsset(uploadUrlTemplate, filePath, fileName) {
 async function main() {
   const version = TAG.replace(/^v/, '');
   const candidateDirs = [
+    'E:/cargo-target-dr3shapp/release/bundle/nsis',
+    'E:/cargo-target-dr3shapp/release',
     path.resolve(__dirname, '../Dr3sh app/apps/app/target/release/bundle/nsis'),
     path.resolve(__dirname, '../Dr3sh app/target/release/bundle/nsis'),
-    path.resolve(__dirname, '../release')
+    path.resolve(__dirname, '../release'),
+    path.resolve(__dirname, '..')
   ];
 
-  let releaseDir = null;
-  for (const dir of candidateDirs) {
-    if (fs.existsSync(dir)) {
-      releaseDir = dir;
-      break;
-    }
-  }
-
-  if (!releaseDir) {
-    releaseDir = path.resolve(__dirname, '../release');
-  }
-
-  // Look for any setup executable in releaseDir or candidate dirs
   let sourceExe = null;
-  const filesInDir = fs.existsSync(releaseDir) ? fs.readdirSync(releaseDir) : [];
-  for (const file of filesInDir) {
-    if (file.toLowerCase().endsWith('.exe') && (file.toLowerCase().includes('setup') || file.toLowerCase().includes('dr3sh'))) {
-      sourceExe = path.join(releaseDir, file);
-      break;
+  let sourceSig = null;
+
+  for (const dir of candidateDirs) {
+    if (!fs.existsSync(dir)) continue;
+    const items = fs.readdirSync(dir);
+    for (const item of items) {
+      if (item.toLowerCase().endsWith('.exe') && (item.toLowerCase().includes('setup') || item.toLowerCase().includes('dr3sh'))) {
+        if (!sourceExe) sourceExe = path.join(dir, item);
+      }
+      if (item.toLowerCase().endsWith('.sig')) {
+        if (!sourceSig) sourceSig = path.join(dir, item);
+      }
     }
   }
 
   const assetsToUpload = [];
   if (sourceExe && fs.existsSync(sourceExe)) {
-    const exeName = `Dr3sh-Launcher-Setup-${version}.exe`;
-    assetsToUpload.push({ file: sourceExe, name: exeName });
+    const friendlyName = `Dr3sh-Launcher-Setup-${version}.exe`;
+    const originalName = path.basename(sourceExe);
+    assetsToUpload.push({ file: sourceExe, name: friendlyName });
+    if (originalName !== friendlyName) {
+      assetsToUpload.push({ file: sourceExe, name: originalName });
+    }
   }
 
-  // Tauri v2 updater assets
-  for (const dir of candidateDirs) {
-    if (!fs.existsSync(dir)) continue;
-    const items = fs.readdirSync(dir);
-    for (const item of items) {
-      const full = path.join(dir, item);
-      if (item === 'latest.json') {
-        assetsToUpload.push({ file: full, name: 'latest.json' });
-      } else if (item.endsWith('.nsis.zip')) {
-        assetsToUpload.push({ file: full, name: item });
-      } else if (item.endsWith('.nsis.zip.sig')) {
-        assetsToUpload.push({ file: full, name: item });
+  if (sourceSig && fs.existsSync(sourceSig)) {
+    const originalSigName = path.basename(sourceSig);
+    assetsToUpload.push({ file: sourceSig, name: originalSigName });
+
+    // Generate latest.json for Tauri updater
+    const sigContent = fs.readFileSync(sourceSig, 'utf8').trim();
+    const latestJsonPath = path.resolve(__dirname, '../latest.json');
+    const latestJsonData = {
+      version: "1.0.0-local",
+      notes: `Dr3sh Launcher v${version}`,
+      pub_date: new Date().toISOString(),
+      platforms: {
+        "windows-x86_64": {
+          signature: sigContent,
+          url: `https://github.com/${OWNER}/${REPO}/releases/download/${TAG}/Dr3sh-Launcher-Setup-${version}.exe`
+        }
       }
-    }
+    };
+    fs.writeFileSync(latestJsonPath, JSON.stringify(latestJsonData, null, 2), 'utf8');
+    assetsToUpload.push({ file: latestJsonPath, name: 'latest.json' });
   }
 
   if (assetsToUpload.length === 0) {
