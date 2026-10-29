@@ -1,0 +1,20 @@
+[build]
+target-dir = "E:/cargo-target-dr3shapp"
+
+# Windows has stack overflows when calling from Tauri, so we increase the default stack size used by the compiler
+[target."cfg(windows)"]
+rustflags = [
+  "-C", "link-args=/STACK:16777220",
+  "-C", "link-arg=/LIBPATH:E:\\xwin-sdk\\crt\\lib\\x64",
+  "-C", "link-arg=/LIBPATH:E:\\xwin-sdk\\sdk\\lib\\um\\x64",
+  "-C", "link-arg=/LIBPATH:E:\\xwin-sdk\\sdk\\lib\\ucrt\\x64",
+]
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
+rustflags = [
+  "-C", "link-args=/STACK:16777220",
+  "-C", "link-arg=/LIBPATH:E:\\xwin-sdk\\crt\\lib\\x64",
+  "-C", "link-arg=/LIBPATH:E:\\xwin-sdk\\sdk\\lib\\um\\x64",
+  "-C", "link-arg=/LIBPATH:E:\\xwin-sdk\\sdk\\lib\\ucrt\\x64",
+]
