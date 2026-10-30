@@ -96,16 +96,26 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
 }
 
 fn remove_dir_or_junction(path: &Path) {
-    if std::fs::symlink_metadata(path).is_ok() {
-        if std::fs::remove_dir(path).is_ok() {
-            return;
-        }
-        let _ = std::fs::remove_file(path);
-        if std::fs::symlink_metadata(path).is_ok() {
-            let _ = std::fs::remove_dir_all(path);
-            let _ = std::fs::remove_dir(path);
-        }
+    if !path.exists() && std::fs::symlink_metadata(path).is_err() {
+        return;
     }
+    // Fast path: try normal removal if it's an empty directory or file/junction
+    if std::fs::remove_dir(path).is_ok() || std::fs::remove_file(path).is_ok() {
+        return;
+    }
+    // On Windows, if it's a non-empty directory or contains read-only files, use rd /s /q
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let _ = std::process::Command::new("cmd")
+            .creation_flags(CREATE_NO_WINDOW)
+            .args(["/C", "rd", "/s", "/q"])
+            .arg(path)
+            .output();
+    }
+    let _ = std::fs::remove_dir_all(path);
+    let _ = std::fs::remove_dir(path);
 }
 
 #[cfg(target_os = "windows")]
@@ -124,31 +134,28 @@ fn create_windows_junction(instance_path: &Path, custom_target: &Path) {
         let _ = std::fs::create_dir_all(parent);
     }
 
+    let link_str = instance_path.to_string_lossy();
+    let target_str = custom_target.to_string_lossy();
+
     let _ = std::process::Command::new("cmd")
         .creation_flags(CREATE_NO_WINDOW)
-        .env("DR3SH_LINK", instance_path)
-        .env("DR3SH_TARGET", custom_target)
-        .raw_arg("/C mklink /J \"%DR3SH_LINK%\" \"%DR3SH_TARGET%\"")
+        .args(["/C", "mklink", "/J"])
+        .arg(&*link_str)
+        .arg(&*target_str)
         .output();
 
-    let target_ok = std::fs::read_link(instance_path)
-        .ok()
-        .is_some_and(|linked| {
-            linked.file_name() == custom_target.file_name() && instance_path.exists()
-        });
+    let target_ok = std::fs::read_link(instance_path).is_ok();
 
     if !target_ok {
         remove_dir_or_junction(instance_path);
+        let ps_cmd = format!(
+            "New-Item -ItemType Junction -Path '{}' -Target '{}' -Force | Out-Null",
+            link_str.replace('\'', "''"),
+            target_str.replace('\'', "''")
+        );
         let _ = std::process::Command::new("powershell")
             .creation_flags(CREATE_NO_WINDOW)
-            .env("DR3SH_LINK", instance_path)
-            .env("DR3SH_TARGET", custom_target)
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "New-Item -ItemType Junction -Path $env:DR3SH_LINK -Target $env:DR3SH_TARGET -Force | Out-Null",
-            ])
+            .args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd])
             .output();
     }
 

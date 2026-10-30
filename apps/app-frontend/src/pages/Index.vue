@@ -690,6 +690,20 @@ async function handlePlayOrInstall() {
 			if (!activeAccount.value) {
 				await refreshAccount()
 			}
+			// Auto-healing check: if instance was installed in a custom location, ensure junction is intact before launching
+			if (selectedServer.value) {
+				const savedFolder = getInstalledFolder(selectedServer.value.id, selectedServer.value.title)
+				if (savedFolder) {
+					const instDir = await get_full_path(matchingInstance.value.id).catch(() => null)
+					if (instDir && instDir.toLowerCase() !== savedFolder.toLowerCase()) {
+						await invoke('dr3sh_link_existing_instance', {
+							instanceId: matchingInstance.value.id,
+							instanceDir: instDir,
+							existingFolder: savedFolder,
+						}).catch(() => {})
+					}
+				}
+			}
 			await run(matchingInstance.value.id)
 			isSelectedRunning.value = true
 			showToast(`Iniciando ${matchingInstance.value.name}...`)
