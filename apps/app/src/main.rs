@@ -7,6 +7,7 @@
 use anyhow::Context;
 use native_dialog::{DialogBuilder, MessageLevel};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::env;
 use std::io::{BufWriter, Write};
@@ -63,10 +64,15 @@ fn dr3sh_cancel_download() {
 #[tauri::command]
 async fn dr3sh_wait_for_instance_ready(instance_id: String) -> api::Result<()> {
     let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(180) {
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    while start.elapsed() < Duration::from_secs(45) {
+        if DR3SH_CANCEL_DOWNLOAD.load(Ordering::Relaxed) {
+            return Err(anyhow::anyhow!("Operación cancelada por el usuario").into());
+        }
         let jobs = theseus::install::list_jobs(false).await?;
         let active_for_instance = jobs.iter().any(|job| {
             job.instance_id.as_deref() == Some(instance_id.as_str())
+                && !job.status.is_finished()
         });
         if !active_for_instance {
             break;
@@ -119,12 +125,12 @@ fn remove_dir_or_junction(path: &Path) {
 }
 
 #[cfg(target_os = "windows")]
-fn create_windows_junction(instance_path: &Path, custom_target: &Path) {
+fn create_windows_junction(instance_path: &Path, custom_target: &Path) -> bool {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     if custom_target == instance_path {
-        return;
+        return true;
     }
     if instance_path.exists() {
         copy_dir_recursive(instance_path, custom_target);
@@ -144,26 +150,27 @@ fn create_windows_junction(instance_path: &Path, custom_target: &Path) {
         .arg(&*target_str)
         .output();
 
-    let target_ok = std::fs::read_link(instance_path).is_ok();
-
-    if !target_ok {
-        remove_dir_or_junction(instance_path);
-        let ps_cmd = format!(
-            "New-Item -ItemType Junction -Path '{}' -Target '{}' -Force | Out-Null",
-            link_str.replace('\'', "''"),
-            target_str.replace('\'', "''")
-        );
-        let _ = std::process::Command::new("powershell")
-            .creation_flags(CREATE_NO_WINDOW)
-            .args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd])
-            .output();
+    if std::fs::read_link(instance_path).is_ok() {
+        return true;
     }
 
-    // If the junction still failed, remove any broken reparse point and create a normal folder
-    if !instance_path.exists() {
+    remove_dir_or_junction(instance_path);
+    let ps_cmd = format!(
+        "New-Item -ItemType Junction -Path '{}' -Target '{}' -Force | Out-Null",
+        link_str.replace('\'', "''"),
+        target_str.replace('\'', "''")
+    );
+    let _ = std::process::Command::new("powershell")
+        .creation_flags(CREATE_NO_WINDOW)
+        .args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd])
+        .output();
+
+    let ok = std::fs::read_link(instance_path).is_ok();
+    if !ok && !instance_path.exists() {
         remove_dir_or_junction(instance_path);
         let _ = std::fs::create_dir_all(instance_path);
     }
+    ok
 }
 
 fn cleanup_dangling_profile_junctions() {
@@ -192,8 +199,13 @@ fn dr3sh_cleanup_deleted_instance(custom_folder: Option<String>) {
         .filter(|s| !s.is_empty())
     {
         let p = PathBuf::from(folder);
-        if p.exists() && p.join("mods").exists() {
-            let _ = std::fs::remove_dir_all(&p);
+        // Safety guard: NEVER delete root drives or shallow user directories
+        if let Ok(canon) = p.canonicalize() {
+            let comp_count = canon.components().count();
+            let has_marker = canon.join(".dr3sh_instance").exists() || canon.join("instance.json").exists();
+            if comp_count >= 3 && has_marker && canon.join("mods").exists() {
+                remove_dir_or_junction(&canon);
+            }
         }
     }
 }
@@ -226,9 +238,12 @@ async fn dr3sh_link_existing_instance(
     let instance_path = PathBuf::from(&instance_dir);
 
     #[cfg(target_os = "windows")]
-    create_windows_junction(&instance_path, &existing_path);
+    let ok = create_windows_junction(&instance_path, &existing_path);
 
     let _ = app.fs_scope().allow_directory(&existing_path, true);
+    #[cfg(target_os = "windows")]
+    return Ok(ok);
+    #[cfg(not(target_os = "windows"))]
     Ok(true)
 }
 
@@ -263,25 +278,39 @@ async fn dr3sh_publish_release(
         return Err(anyhow::anyhow!("El archivo ZIP no existe en: {archive_path}").into());
     }
 
-    let script_candidates = [
-        PathBuf::from("E:\\launcehr\\Dr3sh app\\scripts\\publish_release.cjs"),
-        PathBuf::from("E:\\launcehr\\scripts\\publish_release.cjs"),
-    ];
+    let mut script_candidates = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        script_candidates.push(cwd.join("scripts").join("publish_release.cjs"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            script_candidates.push(parent.join("scripts").join("publish_release.cjs"));
+            if let Some(gp) = parent.parent() {
+                script_candidates.push(gp.join("scripts").join("publish_release.cjs"));
+                if let Some(ggp) = gp.parent() {
+                    script_candidates.push(ggp.join("scripts").join("publish_release.cjs"));
+                }
+            }
+        }
+    }
+    if let Ok(res_dir) = _app.path().resource_dir() {
+        script_candidates.push(res_dir.join("scripts").join("publish_release.cjs"));
+    }
+
     let script_path = script_candidates
         .into_iter()
         .find(|p| p.exists())
-        .ok_or_else(|| anyhow::anyhow!("No se encontró el script de publicación publish_release.cjs"))?;
+        .ok_or_else(|| anyhow::anyhow!("No se encontró el script de publicación publish_release.cjs en las rutas esperadas."))?;
 
     let mut cmd = Command::new("node");
-    cmd.arg(&script_path)
+    cmd.env("GITHUB_TOKEN", &token)
+        .arg(&script_path)
         .arg("--server")
         .arg(&server_id)
         .arg("--version")
         .arg(&version)
         .arg("--zip")
         .arg(&archive_path)
-        .arg("--token")
-        .arg(&token)
         .arg("--title")
         .arg(&title);
 
@@ -295,7 +324,13 @@ async fn dr3sh_publish_release(
     let output = tokio::task::spawn_blocking(move || cmd.output())
         .await
         .map_err(|e| anyhow::anyhow!("Error ejecutando proceso de publicación: {e}"))?
-        .context("No se pudo iniciar el proceso node para publicar la release")?;
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!("No se encontró Node.js ('node') en el sistema. Asegúrate de tener Node.js instalado en el PATH para publicar releases.")
+            } else {
+                anyhow::anyhow!("No se pudo iniciar el proceso node para publicar la release: {e}")
+            }
+        })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -352,6 +387,7 @@ async fn dr3sh_download_modpack(
     instance_dir: String,
     custom_dir: Option<String>,
     expected_size_mb: Option<f64>,
+    expected_sha256: Option<String>,
     instance_id: Option<String>,
 ) -> api::Result<String> {
     DR3SH_CANCEL_DOWNLOAD.store(false, Ordering::SeqCst);
@@ -396,7 +432,16 @@ async fn dr3sh_download_modpack(
             .context("No se pudo crear la carpeta personalizada")?;
 
         #[cfg(target_os = "windows")]
-        create_windows_junction(&instance_path, &custom_target);
+        {
+            let junction_ok = create_windows_junction(&instance_path, &custom_target);
+            if !junction_ok {
+                let _ = std::fs::remove_dir_all(&custom_target);
+                return Err(anyhow::anyhow!(
+                    "No se pudo vincular la carpeta personalizada con el launcher. Asegúrate de que el disco destino tenga formato NTFS (las unidades FAT32 o exFAT no soportan uniones de carpetas de Windows) o instala en la carpeta por defecto."
+                )
+                .into());
+            }
+        }
         custom_target
     } else {
         if !instance_path.exists() && std::fs::symlink_metadata(&instance_path).is_ok() {
@@ -407,14 +452,20 @@ async fn dr3sh_download_modpack(
         instance_path.clone()
     };
 
+    // Marker file so cleanup guards can safely confirm this directory is a legitimate instance folder
+    let _ = std::fs::write(final_target_path.join(".dr3sh_instance"), "dr3sh");
+
     let _ = app
         .fs_scope()
         .allow_directory(&final_target_path, true);
 
     let client = tauri_plugin_http::reqwest::Client::builder()
-        .user_agent("Dr3sh-Launcher/0.2.16")
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Dr3shLauncher/0.2.16")
         .tcp_nodelay(true)
         .connect_timeout(Duration::from_secs(20))
+        .read_timeout(Duration::from_secs(30))
+        .tcp_keepalive(Some(Duration::from_secs(10)))
+        .redirect(tauri_plugin_http::reqwest::redirect::Policy::limited(15))
         .build()
         .context("Error creando cliente HTTP")?;
 
@@ -482,16 +533,13 @@ async fn dr3sh_download_modpack(
         let mut writer = BufWriter::with_capacity(1024 * 1024, file);
 
         let mut received_bytes: u64 = 0;
+        let mut hasher = Sha256::new();
         let start_time = Instant::now();
         let mut last_emit = Instant::now();
         let mut last_bytes: u64 = 0;
         let mut smoothed_speed: f64 = 0.0;
 
-        while let Some(chunk) = res
-            .chunk()
-            .await
-            .context("Error leyendo flujo de descarga")?
-        {
+        loop {
             if DR3SH_CANCEL_DOWNLOAD.load(Ordering::Relaxed) {
                 drop(writer);
                 let _ = std::fs::remove_file(&temp_zip_path);
@@ -500,20 +548,52 @@ async fn dr3sh_download_modpack(
                 );
             }
 
+            let chunk_res = tokio::select! {
+                res_chunk = tokio::time::timeout(Duration::from_secs(35), res.chunk()) => res_chunk,
+                _ = async {
+                    while !DR3SH_CANCEL_DOWNLOAD.load(Ordering::Relaxed) {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                } => {
+                    drop(writer);
+                    let _ = std::fs::remove_file(&temp_zip_path);
+                    return Err(anyhow::anyhow!("Descarga cancelada por el usuario").into());
+                }
+            };
+
+            let chunk_opt = match chunk_res {
+                Ok(Ok(c)) => c,
+                Ok(Err(e)) => {
+                    drop(writer);
+                    let _ = std::fs::remove_file(&temp_zip_path);
+                    return Err(anyhow::anyhow!("Error leyendo flujo de descarga: {e}").into());
+                }
+                Err(_) => {
+                    drop(writer);
+                    let _ = std::fs::remove_file(&temp_zip_path);
+                    return Err(anyhow::anyhow!("La conexión con el servidor de descargas se interrumpió (tiempo de espera agotado)").into());
+                }
+            };
+
+            let Some(chunk) = chunk_opt else {
+                break;
+            };
+
             writer
                 .write_all(&chunk)
                 .context("Error escribiendo datos en disco")?;
+            hasher.update(&chunk);
             received_bytes += chunk.len() as u64;
 
             let elapsed_since_emit = last_emit.elapsed().as_secs_f64();
-            if elapsed_since_emit >= 0.08 || received_bytes >= total_bytes {
+            if elapsed_since_emit >= 0.15 || received_bytes >= total_bytes {
                 let delta_bytes = received_bytes.saturating_sub(last_bytes);
                 let instant_speed =
-                    (delta_bytes as f64) / elapsed_since_emit.max(0.001);
+                    (delta_bytes as f64) / elapsed_since_emit.max(0.05);
                 smoothed_speed = if smoothed_speed <= 0.0 {
                     instant_speed
                 } else {
-                    smoothed_speed * 0.65 + instant_speed * 0.35
+                    smoothed_speed * 0.70 + instant_speed * 0.30
                 };
                 let avg_speed = if smoothed_speed > 0.0 {
                     smoothed_speed as u64
@@ -551,9 +631,24 @@ async fn dr3sh_download_modpack(
         writer
             .flush()
             .context("Error al volcar el archivo descargado a disco")?;
+
+        if let Some(ref exp_hash) = expected_sha256 {
+            let trimmed = exp_hash.trim();
+            if !trimmed.is_empty() {
+                let hash_bytes = hasher.finalize();
+                let actual_hash: String = hash_bytes.iter().map(|b| format!("{b:02x}")).collect();
+                if !actual_hash.eq_ignore_ascii_case(trimmed) {
+                    let _ = std::fs::remove_file(&temp_zip_path);
+                    return Err(anyhow::anyhow!(
+                        "Error de verificación de integridad SHA-256 (esperado: {trimmed}, obtenido: {actual_hash})"
+                    )
+                    .into());
+                }
+            }
+        }
     }
 
-    // 3. Fast native Rust ZIP extraction on blocking thread
+    // 3. Fast native Rust ZIP extraction on blocking thread with rollback & Zip Slip protection
     let app_clone = app.clone();
     let server_id_clone = server_id.clone();
     let temp_zip_for_extract = temp_zip_path.clone();
@@ -571,11 +666,15 @@ async fn dr3sh_download_modpack(
             return Ok(());
         }
 
+        let mut newly_extracted: Vec<PathBuf> = Vec::new();
+
         // Detect single top-level wrapper folder
         let mut common_prefix: Option<String> = None;
         for i in 0..total_entries {
-            if let Ok(entry) = archive.by_index_raw(i) {
-                let name = entry.name()?.replace('\\', "/");
+            if let Ok(entry) = archive.by_index_raw(i)
+                && let Ok(raw_n) = entry.name()
+            {
+                let name = raw_n.replace('\\', "/");
                 let trimmed = name.trim_start_matches('/');
                 if trimmed.is_empty() {
                     continue;
@@ -640,15 +739,34 @@ async fn dr3sh_download_modpack(
 
         for i in 0..total_entries {
             if DR3SH_CANCEL_DOWNLOAD.load(Ordering::Relaxed) {
+                for file in &newly_extracted {
+                    let _ = std::fs::remove_file(file);
+                }
                 anyhow::bail!("Instalación cancelada por el usuario");
             }
 
-            let mut entry = archive.by_index(i)?;
+            let mut entry = match archive.by_index(i) {
+                Ok(e) => e,
+                Err(e) => {
+                    for file in &newly_extracted {
+                        let _ = std::fs::remove_file(file);
+                    }
+                    return Err(e.into());
+                }
+            };
             if entry.is_dir() {
                 continue;
             }
 
-            let raw_name = entry.name()?.replace('\\', "/");
+            let raw_name = match entry.name() {
+                Ok(n) => n.replace('\\', "/"),
+                Err(e) => {
+                    for file in &newly_extracted {
+                        let _ = std::fs::remove_file(file);
+                    }
+                    return Err(e.into());
+                }
+            };
             let mut rel = raw_name.trim_start_matches('/');
             if let Some(ref prefix) = common_prefix
                 && let Some(stripped) = rel.strip_prefix(prefix.as_str())
@@ -656,7 +774,8 @@ async fn dr3sh_download_modpack(
                 rel = stripped.trim_start_matches('/');
             }
 
-            if rel.is_empty() || rel.contains("..") {
+            // Security: Prevent Zip Slip directory traversal and colon drive references
+            if rel.is_empty() || rel.contains("..") || rel.contains(':') {
                 continue;
             }
 
@@ -678,6 +797,11 @@ async fn dr3sh_download_modpack(
 
             let dest_path = extract_target_dir.join(rel);
 
+            // Additional Zip Slip verification: destination must reside inside target directory
+            if !dest_path.starts_with(&extract_target_dir) {
+                continue;
+            }
+
             if (seed_files.contains(file_name.as_str())
                 || seed_files.contains(rel_lower.as_str()))
                 && dest_path.exists()
@@ -685,15 +809,48 @@ async fn dr3sh_download_modpack(
                 continue;
             }
 
+            let is_new = !dest_path.exists();
+
             if let Some(parent) = dest_path.parent() {
-                std::fs::create_dir_all(parent)?;
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    for file in &newly_extracted {
+                        let _ = std::fs::remove_file(file);
+                    }
+                    return Err(e.into());
+                }
             }
 
-            let out_file = std::fs::File::create(&dest_path)?;
+            let out_file = match std::fs::File::create(&dest_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    for file in &newly_extracted {
+                        let _ = std::fs::remove_file(file);
+                    }
+                    return Err(e.into());
+                }
+            };
             let mut out_writer =
                 BufWriter::with_capacity(256 * 1024, out_file);
-            std::io::copy(&mut entry, &mut out_writer)?;
-            out_writer.flush()?;
+            if let Err(e) = std::io::copy(&mut entry, &mut out_writer) {
+                drop(out_writer);
+                let _ = std::fs::remove_file(&dest_path);
+                for file in &newly_extracted {
+                    let _ = std::fs::remove_file(file);
+                }
+                return Err(e.into());
+            }
+            if let Err(e) = out_writer.flush() {
+                drop(out_writer);
+                let _ = std::fs::remove_file(&dest_path);
+                for file in &newly_extracted {
+                    let _ = std::fs::remove_file(file);
+                }
+                return Err(e.into());
+            }
+
+            if is_new {
+                newly_extracted.push(dest_path);
+            }
 
             if last_emit.elapsed() >= Duration::from_millis(70)
                 || i + 1 == total_entries
@@ -1219,7 +1376,7 @@ fn main() {
                     DialogBuilder::message()
                         .set_level(MessageLevel::Error)
                         .set_title("Initialization error")
-                        .set_text("Your Microsoft Edge WebView2 installation is corrupt.\n\nMicrosoft Edge WebView2 is required to run Modrinth App.\n\nLearn how to repair it at https://support.modrinth.com/en/articles/8797765-corrupted-microsoft-edge-webview2-installation")
+                        .set_text("Your Microsoft Edge WebView2 installation is corrupt.\n\nMicrosoft Edge WebView2 is required to run Dr3sh Launcher.\n\nLearn how to repair it at https://support.modrinth.com/en/articles/8797765-corrupted-microsoft-edge-webview2-installation")
                         .alert()
                         .show()
                         .unwrap();

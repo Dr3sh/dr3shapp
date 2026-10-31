@@ -23,9 +23,15 @@ const TAG = rawVer.startsWith('v') ? rawVer : `v${rawVer}`;
 const TITLE = `Dr3sh Launcher ${TAG} (Tauri 2.0)`;
 
 let TOKEN = process.env.GITHUB_TOKEN;
-const activeTokenPath = path.resolve(__dirname, '../active_token.txt');
-if (!TOKEN && fs.existsSync(activeTokenPath)) {
-  TOKEN = fs.readFileSync(activeTokenPath, 'utf8').trim();
+const candidateTokenPaths = [
+  path.resolve(__dirname, '../active_token.txt'),
+  path.resolve(__dirname, '../../active_token.txt')
+];
+for (const p of candidateTokenPaths) {
+  if (!TOKEN && fs.existsSync(p)) {
+    TOKEN = fs.readFileSync(p, 'utf8').trim();
+    break;
+  }
 }
 if (!TOKEN) {
   TOKEN = process.env.GH_TOKEN || '';
@@ -36,14 +42,19 @@ const NOTES = `## Dr3sh Launcher ${TAG} - Motor Nativo Tauri 2.0 & Rust
 ### Novedades y Mejoras:
 - **Nuevo Motor Nativo con Tauri 2.0 & Rust:**
   - Rendimiento ultrarrápido con menor consumo de RAM (~40-60 MB vs +300 MB en Electron).
-  - Tamaño del instalador reducido drásticamente a solo **26 MB**.
-- **Instalador NSIS con Desinstalación Limpia (Cero Residuos):**
-  - Al desinstalar, el desinstalador purga de raíz todas las carpetas en \`%APPDATA%\\com.dr3sh.launcher\` y \`%LOCALAPPDATA%\\com.dr3sh.launcher\`, accesos directos y rastros residuales.
+  - Tamaño del instalador optimizado a **26.6 MB**.
+- **Instalador NSIS con Desinstalación Segura:**
+  - Desinstalador limpio y seguro para el usuario, sin afectar carpetas de otros entornos o launchers.
+- **Onboarding Interactivo en Primer Inicio:**
+  - Modal automático en el primer lanzamiento para configurar cuenta Microsoft o cuenta Offline ("Player" personalizable).
+- **Correcciones en Descargas e Interfaz:**
+  - Solucionado el congelamiento de descarga al 2% mediante sincronización reactiva en Rust.
+  - Menú de 3 puntos corregido con z-index aislado para evitar superposición con barras fijas de descarga.
 - **Modo Mantenimiento y Modo Testing Integrados:**
-  - Bloqueo y aviso interactivo para usuarios ordinarios durante periodos de mantenimiento.
+  - Validación de estado en el backend para prevenir bypass por frontend o consola.
   - Purga automática de instancias de prueba tras cumplirse las horas asignadas de inactividad.
 - **Descargas Concurrentes de Alta Velocidad:**
-  - Motor de descarga asíncrono en Rust optimizado para soportar múltiples descargas simultáneas sin saturar el sistema.
+  - Motor de descarga asíncrono en Rust optimizado para descargas masivas y enlaces NTFS transparentes.
 - **Sistema de Auto-actualizaciones Criptográfico:**
   - Verificación de integridad con claves minisign y endpoint de actualización oficial.
 `;

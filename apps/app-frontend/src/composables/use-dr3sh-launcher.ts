@@ -14,6 +14,7 @@ export type ScreenshotEntry = string | { url: string; status?: string; [key: str
 export interface Dr3shServer {
 	id: string
 	title: string
+	aliases?: string[]
 	status?: string
 	image?: string
 	logo?: string
@@ -36,6 +37,7 @@ export interface Dr3shVersion {
 	description?: string
 	link?: string
 	manifest?: string
+	sha256?: string
 	minecraft_version?: string
 	mod_loader?: string
 	mod_loader_version?: string
@@ -73,7 +75,18 @@ export const launcherRefreshMode = ref<'automatic' | 'manual_global' | 'manual_u
 export const launcherRefreshId = ref('initial')
 export const isDeveloper = computed(() => {
 	try {
-		return Boolean(localStorage.getItem('dr3sh.github_token'))
+		const token = (
+			localStorage.getItem('dr3sh.developer_token') ||
+			localStorage.getItem('dr3sh.github_token') ||
+			''
+		).trim()
+		if (!token) return false
+		// Require genuine GitHub PAT or token format to prevent trivial localStorage bypasses
+		const isClassicPat = /^ghp_[a-zA-Z0-9]{36}$/.test(token)
+		const isFineGrainedPat = /^github_pat_[a-zA-Z0-9_]{82,}$/.test(token)
+		const isOAuthToken = /^(gho_|ghu_|ghs_)[a-zA-Z0-9_]{36,}$/.test(token)
+		const isLongValidHex = /^[a-fA-F0-9]{40}$/.test(token)
+		return isClassicPat || isFineGrainedPat || isOAuthToken || isLongValidHex
 	} catch {
 		return false
 	}
@@ -128,7 +141,7 @@ export async function refreshAccount() {
 
 		// Ensure at least one default offline account exists so launching Minecraft never fails with NotLoggedIn
 		if (!Array.isArray(rawUsers) || rawUsers.length === 0) {
-			const fallbackName = localStorage.getItem('dr3sh.last_username') || 'fkdr3sh'
+			const fallbackName = localStorage.getItem('dr3sh.last_username') || 'Player'
 			try {
 				const created = await add_offline_user(fallbackName)
 				const createdId = created?.profile?.id || created?.offline_profile?.id
@@ -148,7 +161,7 @@ export async function refreshAccount() {
 				const isMs = Boolean(u.refresh_token && u.refresh_token !== 'offline')
 				return {
 					id: prof.id || '',
-					name: prof.name || 'Jugador',
+					name: prof.name || 'Player',
 					uuid: prof.id || '',
 					isMicrosoft: isMs,
 				}
@@ -483,6 +496,7 @@ export function setSpecialModes(patch: {
 	testing_mode?: boolean
 	testing_hours?: number
 }) {
+	if (!isDeveloper.value) return
 	if (typeof patch.maintenance_mode === 'boolean') {
 		maintenanceMode.value = patch.maintenance_mode
 	}
@@ -524,12 +538,14 @@ export function applyCatalogData(data: any, persistCache = true) {
 			? data.launcher_refresh_mode
 			: 'automatic'
 
-	// Check local override or ignore stale 2026-10-24 remote flags that were left true
+	// Security: Only allow local overrides if the user is an authenticated developer
 	let localOverride: any = null
-	try {
-		const rawOverride = localStorage.getItem('dr3sh.special_modes_override')
-		if (rawOverride) localOverride = JSON.parse(rawOverride)
-	} catch {}
+	if (isDeveloper.value) {
+		try {
+			const rawOverride = localStorage.getItem('dr3sh.special_modes_override')
+			if (rawOverride) localOverride = JSON.parse(rawOverride)
+		} catch {}
+	}
 
 	const isStaleOct24Commit = refreshId === '2026-10-24T06:29:30.407Z' || refreshId === 'initial'
 	if (localOverride && (!refreshId || refreshId <= String(localOverride.updated_at || ''))) {

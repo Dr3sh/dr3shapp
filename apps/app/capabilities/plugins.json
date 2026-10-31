@@ -104,9 +104,6 @@
 			"identifier": "fs:scope",
 			"allow": [
 				{
-					"path": "**"
-				},
-				{
 					"path": "$APPDATA/profiles"
 				},
 				{

@@ -336,7 +336,8 @@ opt-level = 3
 [profile.release]
 opt-level = "s"  # Optimize for binary size
 strip = true  # Remove debug symbols
-lto = true  # Enables link to optimizations
+lto = "thin"  # Multi-threaded link time optimization (avoids single-thread 45+ min bottleneck)
+codegen-units = 16  # Parallel compilation across all CPU cores
 panic = "abort"  # Strip expensive panic clean-up logic
 
 [profile.test]

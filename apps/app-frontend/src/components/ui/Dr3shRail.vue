@@ -214,7 +214,7 @@ const userAvatarUrl = computed(() => {
 	if (activeAccount.value?.name) {
 		return `https://mc-heads.net/avatar/${encodeURIComponent(activeAccount.value.name)}/64`
 	}
-	return 'https://mc-heads.net/avatar/fkdr3sh/64'
+	return 'https://mc-heads.net/avatar/Player/64'
 })
 </script>
 
@@ -343,7 +343,7 @@ const userAvatarUrl = computed(() => {
 					<img :src="userAvatarUrl" alt="" class="skin-face-img" />
 				</span>
 				<span class="profile-copy">
-					<b>{{ activeAccount?.name || 'fkdr3sh' }}</b>
+					<b>{{ activeAccount?.name || 'Player' }}</b>
 					<small>{{ activeAccount?.isMicrosoft ? 'Microsoft' : 'Sin conexión' }}</small>
 				</span>
 				<span class="account-pip online" />

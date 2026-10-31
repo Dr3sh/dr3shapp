@@ -68,6 +68,7 @@ import AppTitleBar from '@/app/shell/title-bar/index.vue'
 import Dr3shRail from '@/components/ui/Dr3shRail.vue'
 import Dr3shTopBar from '@/components/ui/Dr3shTopBar.vue'
 import DeveloperMenu from '@/components/ui/DeveloperMenu.vue'
+import { isDeveloper } from '@/composables/use-dr3sh-launcher'
 import { trackExternalFileDownload } from '@/components/ui/download-manager/external-file-downloads'
 import ErrorModal from '@/components/ui/ErrorModal.vue'
 import HostingUpdateRequired from '@/components/ui/HostingUpdateRequired.vue'
@@ -1409,8 +1410,10 @@ onUnmounted(() => {
 const developerMenuOpen = ref(false)
 function handleGlobalKeydown(e) {
 	if (e.shiftKey && (e.key === 'F10' || e.code === 'F10')) {
-		e.preventDefault()
-		developerMenuOpen.value = !developerMenuOpen.value
+		if (import.meta.env.DEV || isDeveloper.value) {
+			e.preventDefault()
+			developerMenuOpen.value = !developerMenuOpen.value
+		}
 	}
 }
 
@@ -1738,39 +1741,43 @@ async function checkUpdates() {
 	}
 
 	async function performCheck() {
-		const update = await invoke('plugin:updater|check')
-		if (!update) {
-			console.log('No update available')
-			return
+		try {
+			const update = await invoke('plugin:updater|check')
+			if (!update) {
+				console.log('No update available')
+				return
+			}
+
+			const isExistingUpdate = update.version === availableUpdate.value?.version
+
+			if (isExistingUpdate) {
+				console.log('Update is already known')
+				scheduleDelayedUpdatePopup()
+				return
+			}
+
+			appUpdateDownload.progress.value = 0
+			finishedDownloading.value = false
+			downloading.value = false
+			updateSize.value = null
+			availableUpdate.value = update
+
+			console.log(`Update ${update.version} is available.`)
+
+			metered.value = await isNetworkMetered()
+			if (!metered.value) {
+				console.log('Starting download of update')
+				downloadUpdate(update)
+			} else {
+				console.log(`Metered connection detected, not auto-downloading update.`)
+				markAppUpdateActionable(update.version)
+				scheduleDelayedUpdatePopup()
+			}
+
+			getUpdateSize(update.rid).then((size) => (updateSize.value = size))
+		} catch (e) {
+			console.warn('Update check failed (offline or unreachable):', e)
 		}
-
-		const isExistingUpdate = update.version === availableUpdate.value?.version
-
-		if (isExistingUpdate) {
-			console.log('Update is already known')
-			scheduleDelayedUpdatePopup()
-			return
-		}
-
-		appUpdateDownload.progress.value = 0
-		finishedDownloading.value = false
-		downloading.value = false
-		updateSize.value = null
-		availableUpdate.value = update
-
-		console.log(`Update ${update.version} is available.`)
-
-		metered.value = await isNetworkMetered()
-		if (!metered.value) {
-			console.log('Starting download of update')
-			downloadUpdate(update)
-		} else {
-			console.log(`Metered connection detected, not auto-downloading update.`)
-			markAppUpdateActionable(update.version)
-			scheduleDelayedUpdatePopup()
-		}
-
-		getUpdateSize(update.rid).then((size) => (updateSize.value = size))
 	}
 
 	await performCheck()

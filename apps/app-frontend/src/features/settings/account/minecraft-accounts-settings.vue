@@ -164,7 +164,7 @@ function getAvatarUrl(account: UserAccount) {
 				<input
 					v-model="offlineUsername"
 					type="text"
-					placeholder="Ej: fkdr3sh"
+					placeholder="Ej: Player"
 					class="flex-1 px-3 py-2 rounded-xl bg-[#0d1017] border border-[#2a3245] text-white text-sm focus:outline-none focus:border-[#2f65f6]"
 					@keydown.enter="handleAddOffline"
 				/>

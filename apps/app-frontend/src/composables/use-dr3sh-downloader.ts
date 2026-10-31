@@ -67,15 +67,16 @@ export function getInstalledFolder(serverId: string, serverTitle?: string): stri
 	try {
 		const raw = localStorage.getItem(`dr3sh.installed_folder.${serverId}`) || null
 		if (!raw) return null
-		// Guard against cross-contaminated folder paths (e.g. Desgraciamon 1 pointing to Desgraciamon 2)
 		const leaf = raw.split(/[\\/]/).filter(Boolean).pop()?.toLowerCase().trim() || ''
-		if (serverId === 'cobbleverse' && /desgraciamon\s*[234]/.test(leaf)) {
-			localStorage.removeItem(`dr3sh.installed_folder.${serverId}`)
-			return null
-		}
-		if (serverTitle && leaf && leaf.startsWith('desgraciamon') && leaf !== serverTitle.toLowerCase().trim() && leaf !== serverId.toLowerCase().trim()) {
-			localStorage.removeItem(`dr3sh.installed_folder.${serverId}`)
-			return null
+		const normTitle = (serverTitle || '').toLowerCase().trim()
+		const normId = serverId.toLowerCase().trim()
+		if (normTitle && leaf && leaf !== normTitle && leaf !== normId) {
+			const numTitle = normTitle.match(/\d+$/)?.[0]
+			const numLeaf = leaf.match(/\d+$/)?.[0]
+			if (numTitle !== numLeaf && (numTitle || numLeaf)) {
+				localStorage.removeItem(`dr3sh.installed_folder.${serverId}`)
+				return null
+			}
 		}
 		return raw
 	} catch {
@@ -102,10 +103,14 @@ export function findMatchingInstance(server: Dr3shServer | null | undefined, ins
 	const targetId = norm(server.id)
 	const targetTitle = norm(server.title)
 	const validNames = new Set<string>([targetId, targetTitle])
+	if (Array.isArray(server.aliases)) {
+		for (const alias of server.aliases) {
+			if (alias) validNames.add(norm(alias))
+		}
+	}
 	if (server.id === 'cobbleverse') {
 		validNames.add('desgraciamon')
 		validNames.add('desgraciamon 1')
-		validNames.add('cobbleverse')
 	}
 
 	// 1. Check explicitly bound instance ID first, verifying its name matches this server (not Desgraciamon 2/4)
@@ -343,11 +348,14 @@ export function useDr3shDownloader() {
 				...downloadProgress.value,
 				phase: 'preparing',
 				percent: 2,
-				phaseText: `Preparando ${server.title}...`,
+				phaseText: `Preparando perfil de ${server.title}...`,
 				speedFormatted: '',
 			}
 			try {
-				await invoke('dr3sh_wait_for_instance_ready', { instanceId: targetInstanceId })
+				await Promise.race([
+					invoke('dr3sh_wait_for_instance_ready', { instanceId: targetInstanceId }),
+					new Promise((resolve) => setTimeout(resolve, 45000)),
+				])
 			} catch (waitErr) {
 				console.warn('Initial wait for instance ready warning:', waitErr)
 			}
@@ -359,6 +367,13 @@ export function useDr3shDownloader() {
 			}
 
 			// 4. Execute high-speed native Rust download & delta extraction
+			downloadProgress.value = {
+				...downloadProgress.value,
+				phase: 'downloading',
+				percent: 2,
+				phaseText: `Conectando con el servidor de descarga...`,
+				speedFormatted: 'Conectando...',
+			}
 			const finalInstalledPath = await invoke<string>('dr3sh_download_modpack', {
 				serverId: server.id,
 				serverTitle: server.title,
@@ -367,6 +382,7 @@ export function useDr3shDownloader() {
 				instanceDir,
 				customDir: customFolder?.trim() || null,
 				expectedSizeMb: version.size_mb || 220,
+				expectedSha256: version.sha256 || null,
 				instanceId: targetInstanceId,
 			})
 
@@ -379,7 +395,10 @@ export function useDr3shDownloader() {
 				speedFormatted: '',
 			}
 			try {
-				await invoke('dr3sh_wait_for_instance_ready', { instanceId: targetInstanceId })
+				await Promise.race([
+					invoke('dr3sh_wait_for_instance_ready', { instanceId: targetInstanceId }),
+					new Promise((resolve) => setTimeout(resolve, 20000)),
+				])
 			} catch (waitErr) {
 				console.warn('Wait for instance ready warning:', waitErr)
 			}

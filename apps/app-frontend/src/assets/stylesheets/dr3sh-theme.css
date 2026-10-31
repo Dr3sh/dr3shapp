@@ -748,7 +748,7 @@ select,
 /* Modrinth Hero Banner - Liquid Glass Ultra Modern */
 .modrinth-hero {
   position: relative;
-  z-index: 40;
+  z-index: 60;
   border-radius: 24px;
   background: linear-gradient(
     145deg,
@@ -782,7 +782,7 @@ select,
 
 .modrinth-hero-content {
   position: relative;
-  z-index: 2;
+  z-index: 50;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -934,6 +934,8 @@ select,
 
 /* Primary Play + Square Instance Menu Action Group */
 .modrinth-hero-actions {
+  position: relative;
+  z-index: 60;
   flex-shrink: 0;
 }
 
@@ -1114,7 +1116,8 @@ select,
   position: absolute;
   top: calc(100% + 10px);
   right: 0;
-  z-index: 9999;
+  z-index: 10000;
+  isolation: isolate;
   min-width: 262px;
   padding: 7px;
   border-radius: 18px;
@@ -1297,7 +1300,7 @@ select,
 /* Task Progress Bar inside Hero */
 .hero-task-bar {
   position: relative;
-  z-index: 2;
+  z-index: 5;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -3209,6 +3212,162 @@ select.settings-input option {
   transform: none;
 }
 
+/* First-Launch Account Selection Modal */
+.first-launch-modal-box {
+	max-width: 480px;
+}
+
+.first-launch-options {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	margin-top: 6px;
+}
+
+.first-launch-choice-card {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	padding: 14px 16px;
+	border-radius: 12px;
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	background: rgba(255, 255, 255, 0.03);
+	color: #ffffff;
+	text-align: left;
+	cursor: pointer;
+	transition: all 0.18s ease;
+}
+
+.first-launch-choice-card:hover {
+	background: rgba(255, 255, 255, 0.08);
+	border-color: rgba(59, 130, 246, 0.5);
+	transform: translateY(-1px);
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.choice-card-icon {
+	width: 40px;
+	height: 40px;
+	border-radius: 10px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+}
+
+.choice-card-icon.ms-icon {
+	background: rgba(0, 164, 239, 0.15);
+	color: #00a4ef;
+}
+
+.choice-card-icon.offline-icon {
+	background: rgba(16, 185, 129, 0.15);
+	color: #10b981;
+}
+
+.choice-card-text {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	flex: 1;
+}
+
+.choice-card-title {
+	font-weight: 700;
+	font-size: 0.96rem;
+	color: #ffffff;
+}
+
+.choice-card-desc {
+	font-size: 0.8rem;
+	color: rgba(255, 255, 255, 0.65);
+	line-height: 1.35;
+}
+
+.choice-card-arrow {
+	font-size: 1.15rem;
+	color: rgba(255, 255, 255, 0.4);
+	transition: transform 0.15s ease, color 0.15s ease;
+}
+
+.first-launch-choice-card:hover .choice-card-arrow {
+	transform: translateX(3px);
+	color: #ffffff;
+}
+
+.first-launch-offline-step {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	margin-top: 4px;
+}
+
+.first-launch-field-label {
+	font-size: 0.86rem;
+	font-weight: 600;
+	color: #cbd5e1;
+}
+
+.first-launch-input {
+	width: 100%;
+	padding: 11px 14px;
+	border-radius: 10px;
+	border: 1px solid rgba(255, 255, 255, 0.14);
+	background: rgba(12, 16, 24, 0.8);
+	color: #ffffff;
+	font-size: 0.95rem;
+	font-weight: 600;
+	outline: none;
+	transition: border-color 0.15s ease;
+}
+
+.first-launch-input:focus {
+	border-color: #3b82f6;
+	box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+}
+
+.first-launch-primary-btn {
+	padding: 10px 22px;
+	border-radius: 10px;
+	border: none;
+	background: #2563eb;
+	color: #ffffff;
+	font-size: 0.92rem;
+	font-weight: 700;
+	cursor: pointer;
+	transition: all 0.15s ease;
+}
+
+.first-launch-primary-btn:hover:not(:disabled) {
+	background: #1d4ed8;
+	box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4);
+}
+
+.first-launch-primary-btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.first-launch-footer {
+	margin-top: 6px;
+	text-align: center;
+}
+
+.first-launch-skip-btn {
+	background: transparent;
+	border: none;
+	color: rgba(255, 255, 255, 0.45);
+	font-size: 0.82rem;
+	cursor: pointer;
+	padding: 4px 8px;
+	transition: color 0.15s ease;
+}
+
+.first-launch-skip-btn:hover {
+	color: rgba(255, 255, 255, 0.85);
+	text-decoration: underline;
+}
+
 /* Image Zoom Lightbox Modal */
 .image-zoom-modal-backdrop {
   position: fixed;
@@ -4108,7 +4267,7 @@ select.settings-input option {
    ========================================================= */
 .liquid-glass-task-bar {
   position: relative;
-  z-index: 3;
+  z-index: 2;
   display: flex;
   flex-direction: column;
   gap: 11px;

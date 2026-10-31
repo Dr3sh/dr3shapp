@@ -190,6 +190,7 @@ async function verifyAndConnectToken(token: string) {
 			changingToken.value = false
 			githubToken.value = clean
 			localStorage.setItem('dr3sh.developer_token', clean)
+			localStorage.setItem('dr3sh.github_token', clean)
 			status.value = `Sesión iniciada como @${data.login}`
 			await loadCatalogFromGithub()
 			return true
@@ -301,6 +302,7 @@ function disconnectGithub() {
 	isConnected.value = false
 	changingToken.value = false
 	localStorage.removeItem('dr3sh.developer_token')
+	localStorage.removeItem('dr3sh.github_token')
 	status.value = 'Sesión de GitHub cerrada en este equipo.'
 }
 
@@ -923,7 +925,12 @@ async function publishCatalogToGithub(triggerGlobalRefresh = false) {
 		}
 
 		const contentJson = JSON.stringify(publishedCatalog, null, 2)
-		const contentBase64 = btoa(unescape(encodeURIComponent(contentJson)))
+		const utf8Bytes = new TextEncoder().encode(contentJson)
+		let binary = ''
+		for (let i = 0; i < utf8Bytes.length; i++) {
+			binary += String.fromCharCode(utf8Bytes[i])
+		}
+		const contentBase64 = btoa(binary)
 
 		const putRes = await tauriFetch(
 			'https://api.github.com/repos/Dr3sh/Dr3sh.github.io/contents/versions.json',

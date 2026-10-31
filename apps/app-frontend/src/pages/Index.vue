@@ -569,7 +569,60 @@ async function handleMicrosoftLogin() {
 }
 
 function openDeveloperPanelFromAbout() {
-	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true }))
+	if (import.meta.env.DEV || isDeveloper.value) {
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true }))
+	}
+}
+
+// First-launch account onboarding state
+const showFirstLaunchAccountModal = ref(false)
+const firstLaunchAccountMode = ref<'choose' | 'offline'>('choose')
+const firstLaunchOfflineNickname = ref('Player')
+
+async function handleFirstLaunchChooseMicrosoft() {
+	showFirstLaunchAccountModal.value = false
+	localStorage.setItem('dr3sh.first_launch_done', 'true')
+	await handleMicrosoftLogin()
+}
+
+function handleFirstLaunchChooseOffline() {
+	firstLaunchAccountMode.value = 'offline'
+	firstLaunchOfflineNickname.value = 'Player'
+}
+
+async function handleFirstLaunchSubmitOffline() {
+	const name = (firstLaunchOfflineNickname.value || '').trim() || 'Player'
+	showFirstLaunchAccountModal.value = false
+	localStorage.setItem('dr3sh.first_launch_done', 'true')
+	try {
+		busy.value = true
+		await loginOfflineAccount(name)
+		showToast(`Cuenta sin conexión configurada: ${name}`)
+	} catch (e: any) {
+		showToast(`Error al configurar cuenta: ${e?.message || e}`)
+	} finally {
+		busy.value = false
+	}
+}
+
+function handleFirstLaunchClose() {
+	showFirstLaunchAccountModal.value = false
+	localStorage.setItem('dr3sh.first_launch_done', 'true')
+	if (!activeAccount.value) {
+		void loginOfflineAccount('Player').catch(() => {})
+	}
+}
+
+function handleBeforeUnload() {
+	if (testingMode.value && !isDeveloper.value) {
+		try {
+			const raw = localStorage.getItem('dr3sh.testing_instances')
+			const data = raw ? JSON.parse(raw) : { instances: {} }
+			data.lastClosedAt = Date.now()
+			data.lastHeartbeat = Date.now()
+			localStorage.setItem('dr3sh.testing_instances', JSON.stringify(data))
+		} catch {}
+	}
 }
 
 let testingHeartbeatTimer: ReturnType<typeof setInterval> | null = null
@@ -578,6 +631,15 @@ onMounted(async () => {
 	void fetchVersionsData()
 	void loadLauncherSettings()
 	window.addEventListener('click', closeInstanceMenu)
+
+	// First-launch account onboarding prompt
+	const hasPromptedAccount = localStorage.getItem('dr3sh.first_launch_done')
+	if (!hasPromptedAccount) {
+		const rawLastUser = localStorage.getItem('dr3sh.last_username')
+		if (!rawLastUser && (!activeAccount.value || activeAccount.value.name === 'Player' || activeAccount.value.name === 'fkdr3sh')) {
+			showFirstLaunchAccountModal.value = true
+		}
+	}
 
 	// Gallery auto-advance every 3.8s unless hovered or zoomed
 	galleryAutoTimer = setInterval(() => {
@@ -601,30 +663,60 @@ onMounted(async () => {
 		void checkRunningState()
 	}, 3000)
 
-	// Check and execute testing session cleanup for regular players (1:1 with Electron)
+	// Check and execute testing session cleanup with complete disk and database purge
 	if (testingMode.value && !isDeveloper.value) {
 		try {
 			const raw = localStorage.getItem('dr3sh.testing_instances')
 			if (raw) {
 				const data = JSON.parse(raw)
 				const now = Date.now()
-				const lastTime = Number(data.lastClosedAt || data.lastHeartbeat || 0)
 				const hoursLimit = Number(testingHours.value || 1)
 				const maxDurationMs = hoursLimit * 60 * 60 * 1000
-				if (lastTime > 0 && now - lastTime >= maxDurationMs) {
-					const srvMap = data.instances || {}
-					const serverIds = Object.keys(srvMap)
-					if (serverIds.length > 0) {
-						for (const srvId of serverIds) {
-							removeInstalledVersion(srvId)
+				const srvMap = (data.instances && typeof data.instances === 'object') ? data.instances : {}
+				const serverIds = Object.keys(srvMap)
+				let cleanedCount = 0
+
+				for (const srvId of serverIds) {
+					const instMeta = srvMap[srvId] || {}
+					const installedAt = Number(instMeta.installedAt || data.lastClosedAt || data.lastHeartbeat || 0)
+					if (installedAt > 0 && now - installedAt >= maxDurationMs) {
+						// Clean up instance both in Theseus database and on disk
+						const targetServer = servers.value.find((s) => s.id === srvId)
+						const matchingInst = findMatchingInstance(targetServer, instances.value)
+						const savedFolder = getInstalledFolder(srvId, targetServer?.title)
+
+						if (matchingInst?.id) {
+							try {
+								await remove(matchingInst.id)
+							} catch (rmErr) {
+								console.warn(`[Testing Mode] Error removing Theseus instance ${matchingInst.id}:`, rmErr)
+							}
 						}
-						localStorage.removeItem('dr3sh.testing_instances')
-						showToast(
-							`[Modo Testing] La sesión de prueba de ${hoursLimit}h ha finalizado. Se han limpiado las instancias temporales.`,
-							6000,
-						)
-						await instancesQuery.refetch()
+
+						try {
+							await invoke('dr3sh_cleanup_deleted_instance', { customFolder: savedFolder })
+						} catch (cleanErr) {
+							console.warn(`[Testing Mode] Error cleaning files for ${srvId}:`, cleanErr)
+						}
+
+						removeInstalledVersion(srvId)
+						delete srvMap[srvId]
+						cleanedCount++
 					}
+				}
+
+				if (cleanedCount > 0) {
+					if (Object.keys(srvMap).length === 0) {
+						localStorage.removeItem('dr3sh.testing_instances')
+					} else {
+						data.instances = srvMap
+						localStorage.setItem('dr3sh.testing_instances', JSON.stringify(data))
+					}
+					showToast(
+						`[Modo Testing] La sesión de prueba de ${hoursLimit}h ha finalizado para ${cleanedCount} modpack(s). Se han desinstalado y limpiado completamente del equipo.`,
+						6000,
+					)
+					await instancesQuery.refetch()
 				}
 			}
 		} catch (e) {
@@ -643,27 +735,36 @@ onMounted(async () => {
 		}
 	}, 30000)
 
-	window.addEventListener('beforeunload', () => {
-		if (testingMode.value && !isDeveloper.value) {
-			try {
-				const raw = localStorage.getItem('dr3sh.testing_instances')
-				const data = raw ? JSON.parse(raw) : { instances: {} }
-				data.lastClosedAt = Date.now()
-				data.lastHeartbeat = Date.now()
-				localStorage.setItem('dr3sh.testing_instances', JSON.stringify(data))
-			} catch {}
-		}
-	})
+	window.addEventListener('beforeunload', handleBeforeUnload)
 })
 
 onUnmounted(() => {
 	window.removeEventListener('click', closeInstanceMenu)
-	if (toastTimer) clearTimeout(toastTimer)
-	if (galleryAutoTimer) clearInterval(galleryAutoTimer)
-	if (catalogAutoRefreshTimer) clearInterval(catalogAutoRefreshTimer)
-	if (runningPollTimer) clearInterval(runningPollTimer)
-	if (testingHeartbeatTimer) clearInterval(testingHeartbeatTimer)
-	if (marketHoverTimer) clearInterval(marketHoverTimer)
+	window.removeEventListener('beforeunload', handleBeforeUnload)
+	if (toastTimer) {
+		clearTimeout(toastTimer)
+		toastTimer = null
+	}
+	if (galleryAutoTimer) {
+		clearInterval(galleryAutoTimer)
+		galleryAutoTimer = null
+	}
+	if (catalogAutoRefreshTimer) {
+		clearInterval(catalogAutoRefreshTimer)
+		catalogAutoRefreshTimer = null
+	}
+	if (runningPollTimer) {
+		clearInterval(runningPollTimer)
+		runningPollTimer = null
+	}
+	if (testingHeartbeatTimer) {
+		clearInterval(testingHeartbeatTimer)
+		testingHeartbeatTimer = null
+	}
+	if (marketHoverTimer) {
+		clearInterval(marketHoverTimer)
+		marketHoverTimer = null
+	}
 })
 
 async function handlePlayOrInstall() {
@@ -914,6 +1015,19 @@ async function repairInstance() {
 async function handleExecuteDeleteConfirm() {
 	if (!deleteConfirmModal.value) return
 	const { server, mode } = deleteConfirmModal.value
+	const inst = findInstanceForServer(server)
+
+	if (inst?.id) {
+		try {
+			const procs = await get_by_instance_id(inst.id)
+			if (Array.isArray(procs) && procs.length > 0) {
+				closeDeleteConfirm()
+				showToast('No puedes eliminar una instancia mientras está en ejecución. Ciérrala primero.', 5000)
+				return
+			}
+		} catch {}
+	}
+
 	closeDeleteConfirm()
 
 	try {
@@ -1868,7 +1982,7 @@ const filteredMarketServers = computed(() => {
 									v-model="offlineUsernameInput"
 									class="settings-input"
 									maxlength="16"
-									placeholder="Tu nombre en Minecraft (ej. fkdr3sh)"
+									placeholder="Tu nombre en Minecraft (ej. Player)"
 								/>
 								<button
 									type="submit"
@@ -2404,6 +2518,131 @@ const filteredMarketServers = computed(() => {
 					<svg viewBox="0 0 20 20" aria-hidden="true">
 						<path d="M7.5 5l5 5-5 5" />
 					</svg>
+				</button>
+			</div>
+		</div>
+	</div>
+
+	<!-- First-Launch Account Selection Modal -->
+	<div
+		v-if="showFirstLaunchAccountModal"
+		class="confirm-modal-backdrop"
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="first-launch-title"
+	>
+		<div class="confirm-modal-box first-launch-modal-box" @click.stop>
+			<div class="confirm-modal-header">
+				<div
+					class="confirm-modal-icon-wrap"
+					style="background: rgba(47, 101, 246, 0.15); border-color: rgba(47, 101, 246, 0.3); color: #3b82f6;"
+				>
+					<svg
+						viewBox="0 0 24 24"
+						width="22"
+						height="22"
+						stroke="currentColor"
+						stroke-width="2"
+						fill="none"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+					>
+						<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+						<circle cx="12" cy="7" r="4" />
+					</svg>
+				</div>
+				<div class="confirm-modal-title-group">
+					<h3 id="first-launch-title">¡Bienvenido a Dr3sh Launcher!</h3>
+					<p class="confirm-modal-target">Selecciona cómo deseas identificarte para jugar</p>
+				</div>
+			</div>
+
+			<div v-if="firstLaunchAccountMode === 'choose'" class="first-launch-options">
+				<!-- Option 1: Microsoft -->
+				<button
+					type="button"
+					class="first-launch-choice-card"
+					@click="handleFirstLaunchChooseMicrosoft"
+				>
+					<div class="choice-card-icon ms-icon">
+						<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
+							<path d="M1 1h10v10H1V1zm12 0h10v10H13V1zM1 13h10v10H1V13zm12 0h10v10H13V13z" />
+						</svg>
+					</div>
+					<div class="choice-card-text">
+						<span class="choice-card-title">Cuenta de Microsoft</span>
+						<span class="choice-card-desc">Inicia sesión con tu cuenta oficial para sincronizar tu skin y capa original.</span>
+					</div>
+					<span class="choice-card-arrow">→</span>
+				</button>
+
+				<!-- Option 2: Offline -->
+				<button
+					type="button"
+					class="first-launch-choice-card"
+					@click="handleFirstLaunchChooseOffline"
+				>
+					<div class="choice-card-icon offline-icon">
+						<svg
+							viewBox="0 0 24 24"
+							width="24"
+							height="24"
+							stroke="currentColor"
+							stroke-width="2"
+							fill="none"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						>
+							<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+							<circle cx="12" cy="7" r="4" />
+						</svg>
+					</div>
+					<div class="choice-card-text">
+						<span class="choice-card-title">Cuenta sin conexión (Offline)</span>
+						<span class="choice-card-desc">Juega de inmediato indicando tu nombre o apodo personalizado.</span>
+					</div>
+					<span class="choice-card-arrow">→</span>
+				</button>
+			</div>
+
+			<div v-else class="first-launch-offline-step">
+				<label class="first-launch-field-label" for="first-launch-nickname">Nombre de jugador:</label>
+				<input
+					id="first-launch-nickname"
+					v-model="firstLaunchOfflineNickname"
+					type="text"
+					class="first-launch-input"
+					placeholder="Player"
+					maxlength="16"
+					autofocus
+					@keydown.enter.prevent="handleFirstLaunchSubmitOffline"
+				/>
+				<div class="confirm-modal-actions" style="margin-top: 14px;">
+					<button
+						type="button"
+						class="confirm-modal-cancel-btn"
+						@click="firstLaunchAccountMode = 'choose'"
+					>
+						Atrás
+					</button>
+					<button
+						type="button"
+						class="first-launch-primary-btn"
+						:disabled="!firstLaunchOfflineNickname.trim()"
+						@click="handleFirstLaunchSubmitOffline"
+					>
+						Continuar
+					</button>
+				</div>
+			</div>
+
+			<div v-if="firstLaunchAccountMode === 'choose'" class="first-launch-footer">
+				<button
+					type="button"
+					class="first-launch-skip-btn"
+					@click="handleFirstLaunchClose"
+				>
+					Jugar como "Player" por ahora
 				</button>
 			</div>
 		</div>
