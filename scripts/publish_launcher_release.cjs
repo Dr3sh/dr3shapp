@@ -231,10 +231,20 @@ async function main() {
 
   console.log(`Release lista: ${release.html_url}`);
 
-  const existingAssets = release.assets || [];
+  let currentAssets = [];
+  try {
+    currentAssets = await apiRequest(`/repos/${OWNER}/${REPO}/releases/${release.id}/assets`);
+  } catch (err) {
+    currentAssets = release.assets || [];
+  }
 
   for (const item of assetsToUpload) {
-    const oldAsset = existingAssets.find(a => a.name === item.name);
+    const normalizedItemName = item.name.replace(/\s+/g, '.');
+    const oldAsset = currentAssets.find(a => 
+      a.name === item.name || 
+      a.name === normalizedItemName || 
+      a.name.replace(/\s+/g, '.') === normalizedItemName
+    );
     if (oldAsset) {
       console.log(`Eliminando asset previo ${oldAsset.name} (ID: ${oldAsset.id})...`);
       try {
