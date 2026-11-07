@@ -50,7 +50,7 @@ const messages = defineMessages({
 	},
 	syncAcrossDevicesSignedOutTooltip: {
 		id: 'app.features-settings.sync-across-devices.signed-out-tooltip',
-		defaultMessage: 'Sign into a Modrinth account to sync settings.',
+		defaultMessage: 'Sign into a Dr3sh App account to sync settings.',
 	},
 	instancePagesTitle: {
 		id: 'app.features-settings.instance-pages.title',

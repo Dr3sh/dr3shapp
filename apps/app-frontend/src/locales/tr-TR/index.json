@@ -78,7 +78,7 @@
     "message": "Minecraft kurulumu başarısız oldu"
   },
   "app.action-bar.install.summary.modrinth-unreachable": {
-    "message": "Modrinth'e erişilemiyor"
+    "message": "Dr3sh App'e erişilemiyor"
   },
   "app.action-bar.install.summary.no-write-permission": {
     "message": "Yazmak için yetkiniz yok"
@@ -135,7 +135,7 @@
     "message": "Tümünü kabul et"
   },
   "app.ads-consent.body": {
-    "message": "Reklamlar, Modrinth'i mümkün kılıyor ve içerik üreticilerine yapılan ödemeleri finanse ediyor. Partnerlerimiz, reklamları kişiselleştirmek ve performansı ölçmek amacıyla uygulama içinde çerez depolayabilir veya bunlara erişebilir."
+    "message": "Reklamlar, Dr3sh App'i mümkün kılıyor ve içerik üreticilerine yapılan ödemeleri finanse ediyor. Partnerlerimiz, reklamları kişiselleştirmek ve performansı ölçmek amacıyla uygulama içinde çerez depolayabilir veya bunlara erişebilir."
   },
   "app.ads-consent.manage": {
     "message": "Tercihleri yönet"
@@ -144,7 +144,7 @@
     "message": "Tümünü reddet"
   },
   "app.ads-consent.title": {
-    "message": "Sizin mahremiyetiniz ve reklamlar Modrinth'i nasıl destekler"
+    "message": "Sizin mahremiyetiniz ve reklamlar Dr3sh App'i nasıl destekler"
   },
   "app.appearance-settings.compact-mode.description": {
     "message": "Kütüphane kurulumlarını kompakt satır düzeninde göster."
@@ -165,7 +165,7 @@
     "message": "İsim etiketini gizle"
   },
   "app.appearance-settings.minimize-launcher.description": {
-    "message": "Minecraft başladığında Modrinth uygulamasını küçült."
+    "message": "Minecraft başladığında Dr3sh App uygulamasını küçült."
   },
   "app.appearance-settings.minimize-launcher.title": {
     "message": "Uygulamayı küçült"
@@ -189,7 +189,7 @@
     "message": "Sağ kenar çubuğunu gizle"
   },
   "app.appearance-settings.unknown-pack-warning.description": {
-    "message": "Modrinth'te yayınlanmayan bir Modrinth Pack (.mrpack) kurulmadan önce bir güvenlik uyarısı göster."
+    "message": "Dr3sh App'te yayınlanmayan bir Dr3sh App Pack (.mrpack) kurulmadan önce bir güvenlik uyarısı göster."
   },
   "app.appearance-settings.unknown-pack-warning.title": {
     "message": "Bilinmeyen mod paketlerini indirmeden önce beni uyar"
@@ -207,7 +207,7 @@
     "message": "Ana sayfa ve içerik"
   },
   "app.behavior-settings.refocus-on-game-close.description": {
-    "message": "Minecraft'tan çıkıldığında Modrinth App'i ön plana getirir."
+    "message": "Minecraft'tan çıkıldığında Dr3sh App'i ön plana getirir."
   },
   "app.behavior-settings.refocus-on-game-close.title": {
     "message": "Minecraft kapandığında uygulamaya yeniden odaklan"
@@ -219,7 +219,7 @@
     "message": "Bu davranış ayarlarını oturum açtığınız her yerde kullanın. Bu cihazda ayrı ayarlar tutmak için bunu kapatın."
   },
   "app.behavior-settings.sync-across-devices.signed-out-tooltip": {
-    "message": "Ayarları senkronize etmek için Modrinth'e giriş yapın."
+    "message": "Ayarları senkronize etmek için Dr3sh App'e giriş yapın."
   },
   "app.behavior-settings.sync-across-devices.title": {
     "message": "Cihazlar arası senkronizasyon davranışı"
@@ -471,7 +471,7 @@
     "message": "Bu özellik ayarlarını oturumunuzun açık olduğu her yerde kullanın. Bu cihazda farklı ayarlar tutmak için bu özelliği kapatın."
   },
   "app.features-settings.sync-across-devices.signed-out-tooltip": {
-    "message": "Ayarları eşitlemek için bir Modrinth Hesabı'yla oturum açın."
+    "message": "Ayarları eşitlemek için bir Dr3sh App Hesabı'yla oturum açın."
   },
   "app.features-settings.sync-across-devices.title": {
     "message": "Cihazlar arası özellikleri eşitle"
@@ -513,16 +513,16 @@
     "message": "Kurulumu göster"
   },
   "app.hosting.update-required.description": {
-    "message": "Modrinth Hosting'i Modrinth App'ten kullanmak için güncellemeniz gerekiyor"
+    "message": "Dr3sh App Hosting'i Dr3sh App'ten kullanmak için güncellemeniz gerekiyor"
   },
   "app.hosting.update-required.download": {
     "message": "Güncellemeyi indir"
   },
   "app.hosting.update-required.rinthbot-alt": {
-    "message": "Heyecanlı Modrinth Botu"
+    "message": "Heyecanlı Dr3sh App Botu"
   },
   "app.hosting.update-required.title": {
-    "message": "Modrinth App güncellemesi gerekli"
+    "message": "Dr3sh App güncellemesi gerekli"
   },
   "app.install.phase.downloading_content": {
     "message": "İçerik indiriliyor"
@@ -849,13 +849,13 @@
     "message": "Olarak giriş yap"
   },
   "app.instance.shared-instance-wrong-account.signed-out-header": {
-    "message": "Modrinth'e giriş yapmanız gerek"
+    "message": "Dr3sh App'e giriş yapmanız gerek"
   },
   "app.instance.shared-instance-wrong-account.user-admonition-body-v2": {
     "message": "paylaşımlı örnek hakkında güncellemeler almak için."
   },
   "app.instance.shared-instance-wrong-account.warning-header": {
-    "message": "Yanlış Modrinth hesabını kullanıyorsunuz"
+    "message": "Yanlış Dr3sh App hesabını kullanıyorsunuz"
   },
   "app.instance.shortcut.created": {
     "message": "Kısayol oluşturuldu"
@@ -1281,10 +1281,10 @@
     "message": "Yükle"
   },
   "app.modal.install-to-play.invite-warning": {
-    "message": "Bu davetiye Modrinth tarafından değil, başka bir Modrinth kullanıcısı tarafından oluşturulmuştur. Sadece güvendiğiniz kişilerden gelen davetleri kabul edin."
+    "message": "Bu davetiye Dr3sh App tarafından değil, başka bir Dr3sh App kullanıcısı tarafından oluşturulmuştur. Sadece güvendiğiniz kişilerden gelen davetleri kabul edin."
   },
   "app.modal.install-to-play.invite-warning-with-creator": {
-    "message": "Bu davet Modrinth aksine, <creator>{username}</creator> tarafından oluşturuldu. Yalnızca güvendiğiniz kişilerden gelen davetleri kabul edin."
+    "message": "Bu davet Dr3sh App aksine, <creator>{username}</creator> tarafından oluşturuldu. Yalnızca güvendiğiniz kişilerden gelen davetleri kabul edin."
   },
   "app.modal.install-to-play.managed-content.modpack-header": {
     "message": "Modpack içeriği"
@@ -1317,7 +1317,7 @@
     "message": "Yardım talepleri için <support-link>yardım ekibimizle</support-link> iletişime geçin. Hata raporları için <github-link>Github raporu</github-link> açın."
   },
   "app.modal.install-to-play.reviewed-files": {
-    "message": "Modrinth'te paylaşılmayan dosyalar incelenmemiştir."
+    "message": "Dr3sh App'te paylaşılmayan dosyalar incelenmemiştir."
   },
   "app.modal.install-to-play.shared-instance": {
     "message": "Paylaşılan Kurulum"
@@ -1326,7 +1326,7 @@
     "message": "Paylaşılan kurulum içeriği"
   },
   "app.modal.install-to-play.shared-instance-unknown-files-description": {
-    "message": "Bu paylaşımlı örnek Modrinth'te paylaşılmayan dosyalar içeriyor. Yalnızca güvendiğiniz kaynaklardan gelen dosyaları yüklemenizi şiddetle tavsiye ederiz."
+    "message": "Bu paylaşımlı örnek Dr3sh App'te paylaşılmayan dosyalar içeriyor. Yalnızca güvendiğiniz kaynaklardan gelen dosyaları yüklemenizi şiddetle tavsiye ederiz."
   },
   "app.modal.install-to-play.unavailable-description": {
     "message": "Bu sunucunun kullandığı mod paketi verisyonu şuanda indirilemez. Muhtemelen yayınlanmadı veya hala inceleme altında. Sonra tekrar deneyiniz ya da Sunucu sahibi ile iletişime geçiniz."
@@ -1335,7 +1335,7 @@
     "message": "Bu sunucunun mod paketi hazır değil"
   },
   "app.modal.install-to-play.unknown-files-description": {
-    "message": "Bu sunucunun mod paketi Modrinth'te yayınlanmamış doysaları mevcut. Yalnızca güvendiğiniz kaynaklardan dosya indirmenizi önemle tavsiye ederiz."
+    "message": "Bu sunucunun mod paketi Dr3sh App'te yayınlanmamış doysaları mevcut. Yalnızca güvendiğiniz kaynaklardan dosya indirmenizi önemle tavsiye ederiz."
   },
   "app.modal.install-to-play.unknown-files-warning": {
     "message": "Bilinmeyen dosya uyarısı"
@@ -1356,7 +1356,7 @@
     "message": "Silindi"
   },
   "app.modal.update-to-play.server-modpack-unknown-files-description": {
-    "message": "Bu sunucunun modpack güncellemesi Modrinth'te paylaşılmayan dosyalar içeriyor. Yalnızca güvendiğiniz kaynaklardan gelen dosyaları yüklemenizi şiddetle tavsiye ederiz."
+    "message": "Bu sunucunun modpack güncellemesi Dr3sh App'te paylaşılmayan dosyalar içeriyor. Yalnızca güvendiğiniz kaynaklardan gelen dosyaları yüklemenizi şiddetle tavsiye ederiz."
   },
   "app.modal.update-to-play.shared-instance-added-label": {
     "message": "Eklendi"
@@ -1365,7 +1365,7 @@
     "message": "Kaldırıldı"
   },
   "app.modal.update-to-play.shared-instance-unknown-files-description": {
-    "message": "Bu örnek Modrinth'te paylaşılmayan dosyaları içeriyor. Yalnızca güvendiğiniz kaynaklardan gelen dosyaları yüklemenizi şiddetle tavsiye ederiz."
+    "message": "Bu örnek Dr3sh App'te paylaşılmayan dosyaları içeriyor. Yalnızca güvendiğiniz kaynaklardan gelen dosyaları yüklemenizi şiddetle tavsiye ederiz."
   },
   "app.modal.update-to-play.update-required": {
     "message": "Güncelleme gerekiyor"
@@ -1386,10 +1386,10 @@
     "message": "Profil yükleniyor..."
   },
   "app.nav.modrinth-account": {
-    "message": "Modrinth hesabı"
+    "message": "Dr3sh App hesabı"
   },
   "app.nav.modrinth-hosting": {
-    "message": "Modrinth Hosting"
+    "message": "Dr3sh App Hosting"
   },
   "app.nav.remove-account": {
     "message": "Hesabı kaldır"
@@ -1398,13 +1398,13 @@
     "message": "Ekran görüntüleri"
   },
   "app.nav.sign-in-to-modrinth-account": {
-    "message": "Modrinth'e giriş yapın"
+    "message": "Dr3sh App'e giriş yapın"
   },
   "app.nav.switch-account": {
     "message": "Hesap değiştir"
   },
   "app.nav.upgrade-to-modrinth-plus": {
-    "message": "Modrinth+'a yükselt"
+    "message": "Dr3sh App+'a yükselt"
   },
   "app.nav.view-profile": {
     "message": "Profili görüntüle"
@@ -1620,7 +1620,7 @@
     "message": "ZIP dışa aktar"
   },
   "app.screenshots.selection.global-export-filename": {
-    "message": "Modrinth ekran görüntüleri.zip"
+    "message": "Dr3sh App ekran görüntüleri.zip"
   },
   "app.screenshots.selection.instance-export-filename": {
     "message": "{instance} ekran görüntüleri.zip"
@@ -1650,7 +1650,7 @@
     "message": "En eski"
   },
   "app.settings.app-version": {
-    "message": "Modrinth Uygulaması {version}"
+    "message": "Dr3sh App Uygulaması {version}"
   },
   "app.settings.default-instance-options.environment-variables.description": {
     "message": "Ortam değişkenleri örnekler açılırken ayarlanır."
@@ -1917,7 +1917,7 @@
     "message": "Bazı profilleriniz bu ayarı kullanamaz"
   },
   "app.settings.game-options.compatibility.reason.launcher-controlled": {
-    "message": "Bu ayar Modrinth'in başlatma seçenekleri tarafından yönetiliyor"
+    "message": "Bu ayar Dr3sh App'in başlatma seçenekleri tarafından yönetiliyor"
   },
   "app.settings.game-options.custom-value.placeholder": {
     "message": "Bir değer gir"
@@ -2538,16 +2538,16 @@
     "message": "macOS"
   },
   "app.settings.privacy.ads-consent.intro": {
-    "message": "Reklamlar, Modrinth'i mümkün kılıyor ve içerik üreticilerine yapılan ödemeleri finanse ediyor. Partnerlerimiz, reklamları kişiselleştirmek ve performansı ölçmek amacıyla uygulama içinde çerez depolayabilir veya bunlara erişebilir. Aşağıdan tercihinizi yönetebilir veya vazgeçebilirsiniz."
+    "message": "Reklamlar, Dr3sh App'i mümkün kılıyor ve içerik üreticilerine yapılan ödemeleri finanse ediyor. Partnerlerimiz, reklamları kişiselleştirmek ve performansı ölçmek amacıyla uygulama içinde çerez depolayabilir veya bunlara erişebilir. Aşağıdan tercihinizi yönetebilir veya vazgeçebilirsiniz."
   },
   "app.settings.privacy.discord-rich-presence.description": {
-    "message": "Şu anki Discord aktiviteniz olarak, Modrinth App'i gösterin. Bu, örneğe modlar tarafından eklenen Rich Presence'ı etkilemez. Uygulamayı yeniden başlatmayı gerektirir."
+    "message": "Şu anki Discord aktiviteniz olarak, Dr3sh App'i gösterin. Bu, örneğe modlar tarafından eklenen Rich Presence'ı etkilemez. Uygulamayı yeniden başlatmayı gerektirir."
   },
   "app.settings.privacy.discord-rich-presence.title": {
     "message": "Discord Rich Presence"
   },
   "app.settings.privacy.telemetry.description": {
-    "message": "Modrinth kullanıcı deneyimimizi geliştirmek için ve deneyiminizi kişiselleştirmek için anonimleştirilmiş analiz ve kullanım verilerini toplar. Bu seçeneği devre dışı bırakarak, bundan vazgeçmiş olursunuz ve verileriniz artık toplanmayacaktır."
+    "message": "Dr3sh App kullanıcı deneyimimizi geliştirmek için ve deneyiminizi kişiselleştirmek için anonimleştirilmiş analiz ve kullanım verilerini toplar. Bu seçeneği devre dışı bırakarak, bundan vazgeçmiş olursunuz ve verileriniz artık toplanmayacaktır."
   },
   "app.settings.privacy.telemetry.title": {
     "message": "Telemetri"
@@ -2562,7 +2562,7 @@
     "message": "Önbellek yeniden inşa edilene kadar uygulama daha yavaş yüklenebilir."
   },
   "app.settings.resource-management.app-cache.description": {
-    "message": "Önbelleklenmiş veriyi temizle ve Modrinth'den tekrar indir. Önbellek yeniden inşa edilene kadar uygulama daha yavaş yüklenebilir."
+    "message": "Önbelleklenmiş veriyi temizle ve Dr3sh App'den tekrar indir. Önbellek yeniden inşa edilene kadar uygulama daha yavaş yüklenebilir."
   },
   "app.settings.resource-management.app-cache.title": {
     "message": "Uygulama önbelleği"
@@ -2580,7 +2580,7 @@
     "message": "Bir uygulama dizinine göz atın"
   },
   "app.settings.resource-management.app-directory.description": {
-    "message": "Modrinth App'in örnekleri ve diğer dosyaları depoladığı yer. Değişiklikler uygulamayı yeniden başlattıktan sonra etki eder."
+    "message": "Dr3sh App'in örnekleri ve diğer dosyaları depoladığı yer. Değişiklikler uygulamayı yeniden başlattıktan sonra etki eder."
   },
   "app.settings.resource-management.app-directory.select": {
     "message": "Yeni bir uygulama dizini seçin"
@@ -2790,13 +2790,13 @@
     "message": "MINECON Earth 2017"
   },
   "app.skins.section.modrinth": {
-    "message": "Modrinth"
+    "message": "Dr3sh App"
   },
   "app.skins.section.modrinth-pride": {
-    "message": "Modrinth Onuru"
+    "message": "Dr3sh App Onuru"
   },
   "app.skins.section.modrinth-pride.tooltip": {
-    "message": "Bu skinleri, Onur Ayı boyunca Modrinth'in düzenlediği bir bağış kampanyasına yaptığınız bağış karşılığında aldınız."
+    "message": "Bu skinleri, Onur Ayı boyunca Dr3sh App'in düzenlediği bir bağış kampanyasına yaptığınız bağış karşılığında aldınız."
   },
   "app.skins.section.mounts-of-mayhem": {
     "message": "Kaos Dağları"
@@ -2829,10 +2829,10 @@
     "message": "Aç"
   },
   "app.survey.body": {
-    "message": "Modrinth App deneyiminiz hakkında birkaç soruyu cevaplamak ister misiniz?"
+    "message": "Dr3sh App deneyiminiz hakkında birkaç soruyu cevaplamak ister misiniz?"
   },
   "app.survey.footer": {
-    "message": "Bu geri bildirim doğrudan Modrinth ekibine gidecek ve gelecek güncellemeleri şekillendirecek!"
+    "message": "Bu geri bildirim doğrudan Dr3sh App ekibine gidecek ve gelecek güncellemeleri şekillendirecek!"
   },
   "app.survey.no-thanks": {
     "message": "Hayır teşekkürler"
@@ -2841,19 +2841,19 @@
     "message": "Ankete katıl"
   },
   "app.survey.title": {
-    "message": "Merhaba Modrinth kullanıcısı!"
+    "message": "Merhaba Dr3sh App kullanıcısı!"
   },
   "app.sync-instances-update.skip": {
     "message": "Atla"
   },
   "app.update-popup.body.download-complete": {
-    "message": "Modrinth App v{version} indirildi. Güncellemek için yeniden başlatın veya Modrinth App’i kapattığınızda otomatik olarak güncellenecektir."
+    "message": "Dr3sh App v{version} indirildi. Güncellemek için yeniden başlatın veya Dr3sh App’i kapattığınızda otomatik olarak güncellenecektir."
   },
   "app.update-popup.body.linux": {
-    "message": "Modrinth App v{version} yayımlandı. En yeni özellikler ve hata düzeltmeleri için paket yöneticin üzerinden güncelle!"
+    "message": "Dr3sh App v{version} yayımlandı. En yeni özellikler ve hata düzeltmeleri için paket yöneticin üzerinden güncelle!"
   },
   "app.update-popup.body.metered": {
-    "message": "Modrinth App v{version} mevcut! Kısıtlı bağlantıda olduğunuzdan otomatik olarak indirmedik."
+    "message": "Dr3sh App v{version} mevcut! Kısıtlı bağlantıda olduğunuzdan otomatik olarak indirmedik."
   },
   "app.update-popup.changelog": {
     "message": "Yama Notları"
@@ -2898,10 +2898,10 @@
     "message": "Hızlıca bir kurulum oluşturmak için <shortcut>N</shortcut> tuşuna basın"
   },
   "app.welcome-screen.title": {
-    "message": "Modrinth'e Hoş Geldiniz"
+    "message": "Dr3sh App'e Hoş Geldiniz"
   },
   "app.world.server-modal.placeholder-address": {
-    "message": "example.modrinth.gg"
+    "message": "example.Dr3sh App.gg"
   },
   "app.world.server-modal.select-an-option": {
     "message": "Bir seçenek seçin"
@@ -2967,10 +2967,10 @@
     "message": "Minecraft kullanıcı adıyla aynı olmayabilir!"
   },
   "friends.add-friend.username.placeholder": {
-    "message": "Modrinth kullanıcı adını girin..."
+    "message": "Dr3sh App kullanıcı adını girin..."
   },
   "friends.add-friend.username.title": {
-    "message": "Arkadaşının Modrinth kullanıcı adı nedir?"
+    "message": "Arkadaşının Dr3sh App kullanıcı adı nedir?"
   },
   "friends.add-friends-to-share": {
     "message": "<link>Arkadaş ekleyerek</link> ne oynadıklarını gör!"
@@ -3015,7 +3015,7 @@
     "message": "{title} - {count}"
   },
   "friends.sign-in-to-add-friends": {
-    "message": "Arkadaş eklemek ve ne oynadıklarını görmek için bir <link>Modrinth hesabına giriş yap</link>!"
+    "message": "Arkadaş eklemek ve ne oynadıklarını görmek için bir <link>Dr3sh App hesabına giriş yap</link>!"
   },
   "installation-settings.shared-instance.linked-title": {
     "message": "Bağlantılı paylaşımlı örnek"
@@ -3036,7 +3036,7 @@
     "message": "Paylaşımlı örneği yayından kaldır"
   },
   "installation-settings.shared-instance.unpublish-description": {
-    "message": "Bu paylaşımlı örneği Modrinth'ten kaldırın ve onu kullanan kişilere güncelleme göndermeyi durdurun. Yerel örneğiniz bundan etkilenmeyecektir."
+    "message": "Bu paylaşımlı örneği Dr3sh App'ten kaldırın ve onu kullanan kişilere güncelleme göndermeyi durdurun. Yerel örneğiniz bundan etkilenmeyecektir."
   },
   "installation-settings.shared-instance.unpublishing-button": {
     "message": "Yayından kaldırılıyor..."
@@ -3051,7 +3051,7 @@
     "message": "Paylaşımlı örneğin bağlantısını kaldır"
   },
   "installation-settings.unpublish-shared-instance.modal.admonition-body": {
-    "message": "Bu paylaşımlı örneği Modrinth'in sunucularından kaldırır. Modrinth App'i kullanan kişiler güncelleme almayı bırakır fakat yerel örneğiniz ve içeriği bu cihazda kalacak."
+    "message": "Bu paylaşımlı örneği Dr3sh App'in sunucularından kaldırır. Dr3sh App'i kullanan kişiler güncelleme almayı bırakır fakat yerel örneğiniz ve içeriği bu cihazda kalacak."
   },
   "installation-settings.unpublish-shared-instance.modal.admonition-header": {
     "message": "Paylaşımlı örnek yayından kaldırılıyor"
@@ -3615,7 +3615,7 @@
     "message": "Bir hesap oluştur"
   },
   "modal.modrinth-account-required.description": {
-    "message": "Bu özelliği kullanmadan önce Modrinth hesabınıza giriş yapmanız gerekmektedir."
+    "message": "Bu özelliği kullanmadan önce Dr3sh App hesabınıza giriş yapmanız gerekmektedir."
   },
   "modal.modrinth-account-required.header": {
     "message": "Hesap gerekli"
@@ -3624,10 +3624,10 @@
     "message": "Tarayıcıyı yeniden aç"
   },
   "modal.modrinth-account-required.sign-in-button": {
-    "message": "Modrinth'e giriş yap"
+    "message": "Dr3sh App'e giriş yap"
   },
   "modal.modrinth-account-required.sign-in-heading": {
-    "message": "Bir Modrinth hesabına giriş yap"
+    "message": "Bir Dr3sh App hesabına giriş yap"
   },
   "modal.modrinth-account-required.signing-in-header": {
     "message": "Giriş yapılıyor"
@@ -3645,7 +3645,7 @@
     "message": "Minecraft'a giriş yap"
   },
   "onboarding-checklist.login-modrinth": {
-    "message": "Modrinth'e giriş yap"
+    "message": "Dr3sh App'e giriş yap"
   },
   "onboarding-checklist.title": {
     "message": "Başlarken"

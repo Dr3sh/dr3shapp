@@ -349,7 +349,7 @@ impl Credentials {
         // Use a margin of 5 minutes to give e.g. Minecraft and potentially
         // other operations that depend on a fresh token 5 minutes to complete
         // from now, and deal with some classes of clock skew
-        if self.expires > Utc::now() + Duration::minutes(5) {
+        if self.expires > Utc::now() + Duration::hours(2) {
             return Ok(());
         }
 

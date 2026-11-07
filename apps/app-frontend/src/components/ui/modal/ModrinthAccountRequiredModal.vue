@@ -226,12 +226,12 @@ const messages = defineMessages({
 	},
 	signInHeading: {
 		id: 'modal.modrinth-account-required.sign-in-heading',
-		defaultMessage: 'Sign in to a Modrinth account',
+		defaultMessage: 'Sign in to a Dr3sh App account',
 	},
 	description: {
 		id: 'modal.modrinth-account-required.description',
 		defaultMessage:
-			"You'll need to sign into your Modrinth account before you can use this feature.",
+			"You'll need to sign into your Dr3sh App account before you can use this feature.",
 	},
 	createAccountButton: {
 		id: 'modal.modrinth-account-required.create-account-button',
@@ -239,7 +239,7 @@ const messages = defineMessages({
 	},
 	signInButton: {
 		id: 'modal.modrinth-account-required.sign-in-button',
-		defaultMessage: 'Sign in to Modrinth',
+		defaultMessage: 'Sign in to Dr3sh App',
 	},
 	continueInBrowserHeading: {
 		id: 'modal.modrinth-account-required.continue-in-browser-heading',

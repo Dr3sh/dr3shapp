@@ -78,7 +78,7 @@
     "message": "Minecraftin asennus epäonnistui"
   },
   "app.action-bar.install.summary.modrinth-unreachable": {
-    "message": "Modrinthiin yhdistäminen epäonnistui"
+    "message": "Dr3sh Appiin yhdistäminen epäonnistui"
   },
   "app.action-bar.install.summary.no-write-permission": {
     "message": "Ei kirjoitusoikeutta"
@@ -135,7 +135,7 @@
     "message": "Hyväksy kaikki"
   },
   "app.ads-consent.body": {
-    "message": "Mainokset mahdollistavat Modrinthin toiminnan ja rahoittavat tekijöiden osuuksia. Meidän kumppanimme saattavat tallentaa tai hyödyntää ohjelman evästeitä henkilökohtaistaakseen mainoksia ja mitatakseen tuloksia."
+    "message": "Mainokset mahdollistavat Dr3sh Appin toiminnan ja rahoittavat tekijöiden osuuksia. Meidän kumppanimme saattavat tallentaa tai hyödyntää ohjelman evästeitä henkilökohtaistaakseen mainoksia ja mitatakseen tuloksia."
   },
   "app.ads-consent.manage": {
     "message": "Muuta asetuksia"
@@ -144,7 +144,7 @@
     "message": "Hylkää kaikki"
   },
   "app.ads-consent.title": {
-    "message": "Yksityisyytesi, ja miten mainokset tukevat Modrinthia"
+    "message": "Yksityisyytesi, ja miten mainokset tukevat Dr3sh Appia"
   },
   "app.appearance-settings.compact-mode.description": {
     "message": "Näytä kirjaston instanssit pienemmässä rivijärjestyksessä."
@@ -165,7 +165,7 @@
     "message": "Piilota nimimerkki"
   },
   "app.appearance-settings.minimize-launcher.description": {
-    "message": "Minimisoi Modrinth -ohjelma, kun Minecraft käynnistyy."
+    "message": "Minimisoi Dr3sh App -ohjelma, kun Minecraft käynnistyy."
   },
   "app.appearance-settings.minimize-launcher.title": {
     "message": "Minimisoi ohjelma"
@@ -189,7 +189,7 @@
     "message": "Piilota oikea sivupaneeli"
   },
   "app.appearance-settings.unknown-pack-warning.description": {
-    "message": "Näytä turvallisuusvaroitus ennen Modrinth Pack (.mrpack) -tiedoston asentamista, jota ei löydy Modrinthin tietokannasta."
+    "message": "Näytä turvallisuusvaroitus ennen Dr3sh App Pack (.mrpack) -tiedoston asentamista, jota ei löydy Dr3sh Appin tietokannasta."
   },
   "app.appearance-settings.unknown-pack-warning.title": {
     "message": "Varoita minua ennen tuntemattomien modipakettien asentamista"
@@ -207,7 +207,7 @@
     "message": "Koti ja sisältö"
   },
   "app.behavior-settings.refocus-on-game-close.description": {
-    "message": "Tuo Modrinth -ohjelma etualalle, kun Minecraft sulkeutuu."
+    "message": "Tuo Dr3sh App -ohjelma etualalle, kun Minecraft sulkeutuu."
   },
   "app.behavior-settings.refocus-on-game-close.title": {
     "message": "Uudelleenkeskitä ohjelma, kun Minecraft sulkeutuu"
@@ -219,7 +219,7 @@
     "message": "Käytä näitä asetuksia kaikkialla, missä olet kirjautuneena. Laita tämä pois päältä pitääksesi erilliset asetukset tällä laitteella."
   },
   "app.behavior-settings.sync-across-devices.signed-out-tooltip": {
-    "message": "Kirjaudu Modrinth -tilillä synkronoidaksesi asetukset."
+    "message": "Kirjaudu Dr3sh App -tilillä synkronoidaksesi asetukset."
   },
   "app.behavior-settings.sync-across-devices.title": {
     "message": "Synkronoi asetukset laitteiden välillä"
@@ -462,7 +462,7 @@
     "message": "Käytä näitä asetuksia kaikkialla, missä olet kirjautuneena. Laita tämä pois päältä pitääksesi erilliset asetukset tällä laitteella."
   },
   "app.features-settings.sync-across-devices.signed-out-tooltip": {
-    "message": "Kirjaudu sisään Modrinth -tilillä synkronoidaksesi asetukset."
+    "message": "Kirjaudu sisään Dr3sh App -tilillä synkronoidaksesi asetukset."
   },
   "app.features-settings.sync-across-devices.title": {
     "message": "Synkronoi asetukset laitteiden välillä"
@@ -495,16 +495,16 @@
     "message": "Näytä instanssi"
   },
   "app.hosting.update-required.description": {
-    "message": "Modrinth -ohjelma tulee päivittää käyttääksesi Modrinth Hosting -palvelua"
+    "message": "Dr3sh App -ohjelma tulee päivittää käyttääksesi Dr3sh App Hosting -palvelua"
   },
   "app.hosting.update-required.download": {
     "message": "Päivitä"
   },
   "app.hosting.update-required.rinthbot-alt": {
-    "message": "Innokas Modrinth -botti"
+    "message": "Innokas Dr3sh App -botti"
   },
   "app.hosting.update-required.title": {
-    "message": "Modrinth -ohjelman päivitys vaaditaan"
+    "message": "Dr3sh App -ohjelman päivitys vaaditaan"
   },
   "app.install.phase.downloading_content": {
     "message": "Ladataan sisältöä"
@@ -1107,13 +1107,13 @@
     "message": "MINECON Earth 2017"
   },
   "app.skins.section.modrinth": {
-    "message": "Modrinth"
+    "message": "Dr3sh App"
   },
   "app.skins.section.modrinth-pride": {
-    "message": "Modrinth Pride"
+    "message": "Dr3sh App Pride"
   },
   "app.skins.section.modrinth-pride.tooltip": {
-    "message": "Sait nämä skinit lahjoittamalla Modrinthin Pride-keräykseen Pride-kuukauden aikana."
+    "message": "Sait nämä skinit lahjoittamalla Dr3sh Appin Pride-keräykseen Pride-kuukauden aikana."
   },
   "app.skins.section.mounts-of-mayhem": {
     "message": "Sekasorron ratsut"
@@ -1143,13 +1143,13 @@
     "message": "Ota käyttöön"
   },
   "app.update-popup.body.download-complete": {
-    "message": "Modrinth App versio {version} on ladattu. Voit käynnistää sovelluksen uudelleen päivittääksesi heti tai antaa päivityksen asentua automaattisesti, kun suljet Modrinth Appin."
+    "message": "Dr3sh App versio {version} on ladattu. Voit käynnistää sovelluksen uudelleen päivittääksesi heti tai antaa päivityksen asentua automaattisesti, kun suljet Dr3sh Appin."
   },
   "app.update-popup.body.linux": {
-    "message": "Modrinth App versio {version} on saatavilla. Käytä paketinhallintasi ja päivitä käyttääksesi uusimpia ominaisuuksia ja korjauksia!"
+    "message": "Dr3sh App versio {version} on saatavilla. Käytä paketinhallintasi ja päivitä käyttääksesi uusimpia ominaisuuksia ja korjauksia!"
   },
   "app.update-popup.body.metered": {
-    "message": "Modrinth App versio {version} on nyt saatavilla! Koska käytät käytön mukaan laskutettavaa verkkoa, emme ladannut sitä automaattisesti."
+    "message": "Dr3sh App versio {version} on nyt saatavilla! Koska käytät käytön mukaan laskutettavaa verkkoa, emme ladannut sitä automaattisesti."
   },
   "app.update-popup.changelog": {
     "message": "Muutosloki"
@@ -1173,7 +1173,7 @@
     "message": "Versio {version} asennettiin onnistuneesti!"
   },
   "app.world.server-modal.placeholder-address": {
-    "message": "example.modrinth.gg"
+    "message": "example.Dr3sh App.gg"
   },
   "app.world.server-modal.select-an-option": {
     "message": "Valitse vaihtoehto"
@@ -1203,10 +1203,10 @@
     "message": "Se ei voi olla eri kuin heidän Minecraft-käyttäjänimi!"
   },
   "friends.add-friend.username.placeholder": {
-    "message": "Syötä Modrinth-käyttäjätunnus..."
+    "message": "Syötä Dr3sh App-käyttäjätunnus..."
   },
   "friends.add-friend.username.title": {
-    "message": "Mikä on ystäväsi Modrinth-käyttäjänimi?"
+    "message": "Mikä on ystäväsi Dr3sh App-käyttäjänimi?"
   },
   "friends.add-friends-to-share": {
     "message": "<link>Lisää kavereita</link> nähdäksesi mitä he pelaavat!"
@@ -1248,7 +1248,7 @@
     "message": "{title} - {count}"
   },
   "friends.sign-in-to-add-friends": {
-    "message": "<link>Kirjaudu Modrinth-tilille</link> lisätäksesi ystäviä ja nähdäksesi mitä he pelaavat!"
+    "message": "<link>Kirjaudu Dr3sh App-tilille</link> lisätäksesi ystäviä ja nähdäksesi mitä he pelaavat!"
   },
   "instance.action.create-shortcut": {
     "message": "Luo pikakuvake"

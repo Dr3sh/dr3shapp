@@ -10,7 +10,7 @@ const { formatMessage } = useVIntl()
 const messages = defineMessages({
 	upgradeToModrinthPlus: {
 		id: 'app.nav.upgrade-to-modrinth-plus',
-		defaultMessage: 'Upgrade to Modrinth+',
+		defaultMessage: 'Upgrade to Dr3sh App+',
 	},
 })
 const adsWrapper = ref<HTMLElement | null>(null)

@@ -7,6 +7,7 @@ import { useQuery } from '@tanstack/vue-query'
 import { instanceListQueryOptions } from '@/pages/instance/query-options'
 import {
 	useDr3shLauncher,
+	launcherVersion,
 	type Dr3shServer,
 	getServerPreviewImages,
 	getStageImageUrl,
@@ -32,6 +33,11 @@ import {
 	findMatchingInstance,
 	removeInstalledVersion,
 	reconcileOrphanedInstalledInstances,
+	cancelActiveDownload,
+	getDiagnosticsText,
+	openLogsFolder,
+	acknowledgeMigrationNotice,
+	type Dr3shLastError,
 } from '@/composables/use-dr3sh-downloader'
 import { run, kill as killInstance, remove, get_full_path } from '@/helpers/instance'
 import { install_existing_instance } from '@/helpers/install'
@@ -129,14 +135,86 @@ interface InstallLocationState {
 const installLocationModal = ref<InstallLocationState | null>(null)
 const defaultInstancesBaseDir = ref<string>('AppData\\Roaming\\Dr3shLauncher\\instances')
 
-// Dr3sh Native Rust Downloader
 const {
 	isDownloading,
 	currentServerId,
+	serverStatesMap,
 	downloadProgress,
-	cancelDownload,
 	downloadAndInstallModpack,
+	repairModpack,
 } = useDr3shDownloader()
+
+const diagnosticsModalError = ref<Dr3shLastError | null>(null)
+const diagnosticsDetailsOpen = ref(false)
+const diagnosticsText = ref('')
+const loadingDiagnostics = ref(false)
+
+const hasPendingMigrationNotice = computed(() => {
+	if (!selectedServer.value) return false
+	return Boolean(serverStatesMap.value[selectedServer.value.id]?.migration_notice_pending)
+})
+
+async function handleDismissMigrationNotice() {
+	if (!selectedServer.value) return
+	try {
+		await acknowledgeMigrationNotice(selectedServer.value.id)
+	} catch {}
+}
+
+function openErrorDiagnosticsModal(err: any) {
+	const code = err?.code || 'E_UNKNOWN'
+	const opId = err?.op_id || err?.opId || 'unknown'
+	const message = err?.message || String(err || 'Error inesperado durante la operación.')
+	const details = err?.details || ''
+	diagnosticsModalError.value = {
+		code,
+		op_id: opId,
+		message,
+		details,
+	}
+	diagnosticsDetailsOpen.value = false
+	diagnosticsText.value = ''
+}
+
+async function handleViewErrorDetails() {
+	if (diagnosticsDetailsOpen.value) {
+		diagnosticsDetailsOpen.value = false
+		return
+	}
+	loadingDiagnostics.value = true
+	diagnosticsDetailsOpen.value = true
+	try {
+		diagnosticsText.value = await getDiagnosticsText(
+			diagnosticsModalError.value?.op_id,
+			selectedServer.value?.id,
+		)
+	} catch (e: any) {
+		diagnosticsText.value = diagnosticsModalError.value?.details || String(e)
+	} finally {
+		loadingDiagnostics.value = false
+	}
+}
+
+async function handleCopyDiagnostics() {
+	try {
+		const text =
+			diagnosticsText.value ||
+			(await getDiagnosticsText(diagnosticsModalError.value?.op_id, selectedServer.value?.id))
+		diagnosticsText.value = text
+		await navigator.clipboard.writeText(text)
+		showToast('Diagnóstico copiado al portapapeles.')
+	} catch (e: any) {
+		showToast(`No se pudo copiar el diagnóstico: ${e?.message || e}`)
+	}
+}
+
+async function handleOpenLogsFolder() {
+	try {
+		await openLogsFolder()
+	} catch (e: any) {
+		showToast(`No se pudo abrir la carpeta de logs: ${e?.message || e}`)
+	}
+}
 
 // Gallery / Screenshot state
 const activeScreenshotIndex = ref(0)
@@ -333,7 +411,6 @@ const settingsFullscreen = ref(false)
 const settingsCloseOnLaunchMode = ref<'keep' | 'minimize' | 'close'>(
 	(localStorage.getItem('dr3sh.close_on_launch') as 'keep' | 'minimize' | 'close') || 'keep',
 )
-const settingsDiscordRpc = ref(true)
 const settingsDefaultInstancesDir = ref<string>(localStorage.getItem('dr3sh.default_instances_dir') || '')
 const detectedJavas = ref<Array<{ path: string; version: string }>>([])
 const detectingJava = ref(false)
@@ -403,11 +480,6 @@ async function loadLauncherSettings() {
 			if (s.hide_on_process_start && settingsCloseOnLaunchMode.value === 'keep') {
 				settingsCloseOnLaunchMode.value = 'close'
 			}
-			if (s.discord_rpc !== undefined && s.discord_rpc !== null) {
-				settingsDiscordRpc.value = Boolean(s.discord_rpc)
-			} else {
-				settingsDiscordRpc.value = true
-			}
 		}
 	} catch (e) {
 		console.warn('Error loading settings:', e)
@@ -441,7 +513,7 @@ async function saveLauncherSettings(notify = false) {
 			game_resolution: [Number(settingsWidth.value) || 1280, Number(settingsHeight.value) || 720],
 			force_fullscreen: settingsFullscreen.value,
 			hide_on_process_start: settingsCloseOnLaunchMode.value !== 'keep',
-			discord_rpc: settingsDiscordRpc.value,
+			discord_rpc: false,
 		}
 		await setSettings(updated)
 		rawBackendSettings.value = updated
@@ -538,9 +610,14 @@ async function handleOpenStorageFolder(kind: 'instances' | 'shared' | 'data') {
 	}
 }
 
+const OFFLINE_USERNAME_REGEX = /^[A-Za-z0-9_]{3,16}$/
+
 async function handleOfflineLoginSubmit() {
 	const name = offlineUsernameInput.value.trim()
-	if (!name) return
+	if (!OFFLINE_USERNAME_REGEX.test(name)) {
+		showToast('El nombre offline debe tener entre 3 y 16 caracteres (solo letras, números y _).')
+		return
+	}
 	try {
 		busy.value = true
 		await loginOfflineAccount(name)
@@ -592,6 +669,10 @@ function handleFirstLaunchChooseOffline() {
 
 async function handleFirstLaunchSubmitOffline() {
 	const name = (firstLaunchOfflineNickname.value || '').trim() || 'Player'
+	if (!OFFLINE_USERNAME_REGEX.test(name)) {
+		showToast('El nombre offline debe tener entre 3 y 16 caracteres (solo letras, números y _).')
+		return
+	}
 	showFirstLaunchAccountModal.value = false
 	localStorage.setItem('dr3sh.first_launch_done', 'true')
 	try {
@@ -683,7 +764,7 @@ onMounted(async () => {
 						// Clean up instance both in Theseus database and on disk
 						const targetServer = servers.value.find((s) => s.id === srvId)
 						const matchingInst = findMatchingInstance(targetServer, instances.value)
-						const savedFolder = getInstalledFolder(srvId, targetServer?.title)
+						const savedFolder = getInstalledFolder(srvId)
 
 						if (matchingInst?.id) {
 							try {
@@ -694,7 +775,10 @@ onMounted(async () => {
 						}
 
 						try {
-							await invoke('dr3sh_cleanup_deleted_instance', { customFolder: savedFolder })
+							await invoke('dr3sh_cleanup_deleted_instance', {
+								serverId: srvId,
+								customFolder: savedFolder,
+							})
 						} catch (cleanErr) {
 							console.warn(`[Testing Mode] Error cleaning files for ${srvId}:`, cleanErr)
 						}
@@ -787,13 +871,17 @@ async function handlePlayOrInstall() {
 		try {
 			busy.value = true
 			notice.value = null
-			// Ensure account exists before launching
 			if (!activeAccount.value) {
 				await refreshAccount()
 			}
-			// Auto-healing check: if instance was installed in a custom location, ensure junction is intact before launching
 			if (selectedServer.value) {
-				const savedFolder = getInstalledFolder(selectedServer.value.id, selectedServer.value.title)
+				await invoke('dr3sh_prepare_launch', {
+					serverId: selectedServer.value.id,
+					isOffline: !activeAccount.value?.isMicrosoft,
+					offlineUsername: activeAccount.value?.name || 'Player',
+					bypassGate: Boolean(isDeveloper.value),
+				})
+				const savedFolder = getInstalledFolder(selectedServer.value.id)
 				if (savedFolder) {
 					const instDir = await get_full_path(matchingInstance.value.id).catch(() => null)
 					if (instDir && instDir.toLowerCase() !== savedFolder.toLowerCase()) {
@@ -820,13 +908,14 @@ async function handlePlayOrInstall() {
 			busy.value = true
 			const srv = selectedServer.value
 			const ver = selectedVersion.value
-			const prevCustomFolder = getInstalledFolder(srv.id, srv.title)
+			const prevCustomFolder = getInstalledFolder(srv.id)
 			showToast(`Actualizando ${srv.title} a la versión ${ver.version}...`)
 			await downloadAndInstallModpack({
 				server: srv,
 				version: ver,
 				matchingInstanceId: matchingInstance.value?.id,
 				customFolder: prevCustomFolder,
+				bypassGate: Boolean(isDeveloper.value),
 				onSuccess: async () => {
 					if (testingMode.value && !isDeveloper.value) {
 						try {
@@ -842,11 +931,11 @@ async function handlePlayOrInstall() {
 					showToast(`¡${srv.title} se ha actualizado correctamente!`)
 				},
 				onError: (err) => {
-					showToast(`Error al actualizar: ${err?.message || err}`)
+					openErrorDiagnosticsModal(err)
 				},
 			})
 		} catch (e: any) {
-			showToast(`Fallo en la actualización: ${e?.message || e}`)
+			openErrorDiagnosticsModal(e)
 		} finally {
 			busy.value = false
 		}
@@ -881,8 +970,8 @@ async function handleKillRunningInstance() {
 }
 
 async function handleCancelDownload() {
-	await cancelDownload()
-	showToast('Descarga cancelada.')
+	await cancelActiveDownload()
+	showToast('Operación cancelada.')
 }
 
 async function browseCustomFolder() {
@@ -937,6 +1026,7 @@ async function confirmInstallLocation() {
 			version: ver,
 			matchingInstanceId: existingInst?.id,
 			customFolder: mode === 'custom' ? customFolder : undefined,
+			bypassGate: Boolean(isDeveloper.value),
 			onSuccess: async () => {
 				if (testingMode.value && !isDeveloper.value) {
 					try {
@@ -952,12 +1042,12 @@ async function confirmInstallLocation() {
 				showToast(`¡${server.title} se ha instalado correctamente y está listo para jugar!`)
 			},
 			onError: (err) => {
-				showToast(`Error en la descarga: ${err?.message || err}`)
+				openErrorDiagnosticsModal(err)
 			},
 		})
 	} catch (err: any) {
 		console.error('Failed to install modpack:', err)
-		showToast(`Error al instalar: ${err?.message || err}`)
+		openErrorDiagnosticsModal(err)
 	} finally {
 		busy.value = false
 	}
@@ -965,7 +1055,7 @@ async function confirmInstallLocation() {
 
 async function openInstanceFolder() {
 	const customPath = selectedServer.value
-		? getInstalledFolder(selectedServer.value.id, selectedServer.value.title)
+		? getInstalledFolder(selectedServer.value.id)
 		: null
 	if (customPath) {
 		try {
@@ -990,22 +1080,20 @@ async function repairInstance() {
 		try {
 			busy.value = true
 			showToast(`Verificando y reparando archivos de ${selectedServer.value.title}...`)
-			if (matchingInstance.value) {
-				await install_existing_instance(matchingInstance.value.id, true).catch(() => {})
-			}
-			await downloadAndInstallModpack({
+			await repairModpack({
 				server: selectedServer.value,
 				version: selectedVersion.value,
-				matchingInstanceId: matchingInstance.value?.id,
-				customFolder: getInstalledFolder(selectedServer.value.id, selectedServer.value.title),
 				onSuccess: async () => {
 					await instancesQuery.refetch()
 					showToast('Verificación y reparación completada.')
 				},
+				onError: (err) => {
+					openErrorDiagnosticsModal(err)
+				},
 			})
 		} catch (e: any) {
 			console.error('Repair failed:', e)
-			showToast(`Error al verificar: ${e?.message || e}`)
+			openErrorDiagnosticsModal(e)
 		} finally {
 			busy.value = false
 		}
@@ -1032,12 +1120,13 @@ async function handleExecuteDeleteConfirm() {
 
 	try {
 		busy.value = true
-		const savedCustomFolder = getInstalledFolder(server.id, server.title)
+		const savedCustomFolder = getInstalledFolder(server.id)
 		const inst = findInstanceForServer(server)
 		if (inst) {
 			await remove(inst.id)
 		}
 		await invoke('dr3sh_cleanup_deleted_instance', {
+			serverId: server.id,
 			customFolder: savedCustomFolder || null,
 		}).catch(() => {})
 		removeInstalledVersion(server.id)
@@ -1285,6 +1374,26 @@ const filteredMarketServers = computed(() => {
 
 				<div class="progress-track liquid-shimmer-track">
 					<span :style="{ width: `${Math.max(3, downloadProgress.percent)}%` }" />
+				</div>
+			</div>
+
+			<div
+				v-if="hasPendingMigrationNotice"
+				class="hero-task-bar liquid-glass-task-bar"
+				style="margin-top: 10px"
+				role="status"
+			>
+				<div class="task-header-row">
+					<div class="task-title-group">
+						<strong class="task-phase-label">
+							Se guardó una copia de seguridad automática de tus archivos previos en .dr3sh/backup.
+						</strong>
+					</div>
+					<div class="task-badges-group">
+						<button type="button" class="task-cancel-btn" @click="handleDismissMigrationNotice">
+							Entendido
+						</button>
+					</div>
 				</div>
 			</div>
 		</section>
@@ -2120,18 +2229,6 @@ const filteredMarketServers = computed(() => {
 						<option value="close">Cerrar el launcher al iniciar el juego</option>
 					</select>
 				</label>
-
-				<label class="settings-toggle-row">
-					<div>
-						<b>Mostrar actividad en Discord (Rich Presence)</b>
-						<small>Muestra en tu perfil de Discord que estás jugando en Dr3sh Launcher</small>
-					</div>
-					<input
-						v-model="settingsDiscordRpc"
-						type="checkbox"
-						@change="saveLauncherSettings()"
-					/>
-				</label>
 			</section>
 		</div>
 
@@ -2228,7 +2325,7 @@ const filteredMarketServers = computed(() => {
 				<div class="about-launcher-card">
 					<div class="about-launcher-row">
 						<span>Versión actual instalada</span>
-						<strong class="about-version-tag">v0.2.16</strong>
+						<strong class="about-version-tag">v{{ launcherVersion }}</strong>
 					</div>
 					<div class="about-launcher-row">
 						<span>Actualizaciones automáticas</span>
@@ -2643,6 +2740,89 @@ const filteredMarketServers = computed(() => {
 					@click="handleFirstLaunchClose"
 				>
 					Jugar como "Player" por ahora
+				</button>
+			</div>
+		</div>
+	</div>
+
+	<div
+		v-if="diagnosticsModalError"
+		class="confirm-modal-backdrop"
+		role="dialog"
+		aria-modal="true"
+		@click="diagnosticsModalError = null"
+	>
+		<div class="confirm-modal-box" style="max-width: 560px; width: 92%" @click.stop>
+			<div class="confirm-modal-header">
+				<div class="confirm-modal-icon-wrap" aria-hidden="true">
+					<svg viewBox="0 0 24 24">
+						<path
+							d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+						/>
+					</svg>
+				</div>
+				<div>
+					<h3>No se pudo completar la operación</h3>
+					<p class="confirm-modal-target">
+						Código: {{ diagnosticsModalError.code }} • Op: {{ diagnosticsModalError.op_id }}
+					</p>
+				</div>
+			</div>
+
+			<div class="confirm-modal-body">
+				<p>{{ diagnosticsModalError.message }}</p>
+
+				<div
+					v-if="diagnosticsDetailsOpen"
+					style="
+						margin-top: 12px;
+						padding: 10px;
+						border-radius: 10px;
+						background: rgba(0, 0, 0, 0.35);
+						border: 1px solid rgba(255, 255, 255, 0.08);
+						max-height: 220px;
+						overflow: auto;
+						font-family: monospace;
+						font-size: 11px;
+						white-space: pre-wrap;
+						word-break: break-all;
+					"
+				>
+					{{ loadingDiagnostics ? 'Cargando diagnóstico...' : diagnosticsText || diagnosticsModalError.details }}
+				</div>
+			</div>
+
+			<div
+				class="confirm-modal-actions"
+				style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end"
+			>
+				<button
+					type="button"
+					class="confirm-modal-cancel-btn"
+					@click="handleViewErrorDetails"
+				>
+					{{ diagnosticsDetailsOpen ? 'Ocultar detalles' : 'Ver detalles' }}
+				</button>
+				<button
+					type="button"
+					class="confirm-modal-cancel-btn"
+					@click="handleCopyDiagnostics"
+				>
+					Copiar diagnóstico
+				</button>
+				<button
+					type="button"
+					class="confirm-modal-cancel-btn"
+					@click="handleOpenLogsFolder"
+				>
+					Abrir carpeta de logs
+				</button>
+				<button
+					type="button"
+					class="install-modal-confirm-btn"
+					@click="diagnosticsModalError = null"
+				>
+					Cerrar
 				</button>
 			</div>
 		</div>

@@ -1,5 +1,7 @@
 import { computed, ref, watch } from 'vue'
+import { getVersion } from '@tauri-apps/api/app'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
+import pkg from '../../package.json'
 import {
 	add_offline_user,
 	get_default_user,
@@ -8,6 +10,17 @@ import {
 	set_default_user,
 	users,
 } from '@/helpers/auth'
+
+export const LAUNCHER_VERSION = pkg.version || '1.0.5'
+export const launcherVersion = ref<string>(LAUNCHER_VERSION)
+
+getVersion()
+	.then((v) => {
+		if (v && v !== '0.0.0') {
+			launcherVersion.value = v.replace(/^v/i, '')
+		}
+	})
+	.catch(() => {})
 
 export type ScreenshotEntry = string | { url: string; status?: string; [key: string]: unknown }
 
@@ -724,6 +737,7 @@ export function useDr3shLauncher() {
 	}
 
 	return {
+		launcherVersion,
 		servers,
 		versions,
 		allCatalogServers,

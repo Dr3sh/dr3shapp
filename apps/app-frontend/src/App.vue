@@ -547,12 +547,12 @@ const messages = defineMessages({
 	},
 	adsConsentTitle: {
 		id: 'app.ads-consent.title',
-		defaultMessage: 'Your privacy and how ads support Modrinth',
+		defaultMessage: 'Your privacy and how ads support Dr3sh App',
 	},
 	adsConsentBody: {
 		id: 'app.ads-consent.body',
 		defaultMessage:
-			'Ads make Modrinth possible and fund creator payouts. Our partners may store or access cookies in the app to personalize ads and measure performance.',
+			'Ads make Dr3sh App possible and fund creator payouts. Our partners may store or access cookies in the app to personalize ads and measure performance.',
 	},
 	adsConsentManage: {
 		id: 'app.ads-consent.manage',
@@ -572,7 +572,7 @@ const messages = defineMessages({
 	},
 	modrinthHosting: {
 		id: 'app.nav.modrinth-hosting',
-		defaultMessage: 'Modrinth Hosting',
+		defaultMessage: 'Dr3sh App Hosting',
 	},
 	screenshots: {
 		id: 'app.nav.screenshots',
@@ -584,7 +584,7 @@ const messages = defineMessages({
 	},
 	modrinthAccount: {
 		id: 'app.nav.modrinth-account',
-		defaultMessage: 'Modrinth account',
+		defaultMessage: 'Dr3sh App account',
 	},
 	viewProfile: {
 		id: 'app.nav.view-profile',
@@ -596,7 +596,7 @@ const messages = defineMessages({
 	},
 	signInToModrinthAccount: {
 		id: 'app.nav.sign-in-to-modrinth-account',
-		defaultMessage: 'Sign into Modrinth',
+		defaultMessage: 'Sign into Dr3sh App',
 	},
 	loadingProfile: {
 		id: 'app.nav.loading-profile',
@@ -620,7 +620,7 @@ const messages = defineMessages({
 	},
 	upgradeToModrinthPlus: {
 		id: 'app.nav.upgrade-to-modrinth-plus',
-		defaultMessage: 'Upgrade to Modrinth+',
+		defaultMessage: 'Upgrade to Dr3sh App+',
 	},
 })
 
@@ -1601,16 +1601,16 @@ const updatePopupMessages = defineMessages({
 	},
 	meteredBody: {
 		id: 'app.update-popup.body.metered',
-		defaultMessage: `Modrinth App v{version} is available now! Since you're on a metered network, we didn't automatically download it.`,
+		defaultMessage: `Dr3sh App v{version} is available now! Since you're on a metered network, we didn't automatically download it.`,
 	},
 	downloadedBody: {
 		id: 'app.update-popup.body.download-complete',
-		defaultMessage: `Modrinth App v{version} has finished downloading. Reload to update now, or automatically when you close Modrinth App.`,
+		defaultMessage: `Dr3sh App v{version} has finished downloading. Reload to update now, or automatically when you close Dr3sh App.`,
 	},
 	linuxBody: {
 		id: 'app.update-popup.body.linux',
 		defaultMessage:
-			'Modrinth App v{version} is available. Use your package manager to update for the latest features and fixes!',
+			'Dr3sh App v{version} is available. Use your package manager to update for the latest features and fixes!',
 	},
 	reload: {
 		id: 'app.update-popup.reload',

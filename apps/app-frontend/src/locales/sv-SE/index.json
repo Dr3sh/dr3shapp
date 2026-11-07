@@ -78,7 +78,7 @@
     "message": "Installationen av Minecraft misslyckade"
   },
   "app.action-bar.install.summary.modrinth-unreachable": {
-    "message": "Kunde inte nå Modrinth"
+    "message": "Kunde inte nå Dr3sh App"
   },
   "app.action-bar.install.summary.no-write-permission": {
     "message": "Ingen behörighet att skriva"
@@ -135,7 +135,7 @@
     "message": "Godkänn alla"
   },
   "app.ads-consent.body": {
-    "message": "Annonser gör Modrinth möjligt och finansierar utbetalningar till skapare. Våra partner kan lagra eller komma åt kakor i appen för att rikta annonser och mäta statistik."
+    "message": "Annonser gör Dr3sh App möjligt och finansierar utbetalningar till skapare. Våra partner kan lagra eller komma åt kakor i appen för att rikta annonser och mäta statistik."
   },
   "app.ads-consent.manage": {
     "message": "Hantera inställningar"
@@ -144,7 +144,7 @@
     "message": "Avvisa alla"
   },
   "app.ads-consent.title": {
-    "message": "Din integritet och hur annonser stödjer Modrinth"
+    "message": "Din integritet och hur annonser stödjer Dr3sh App"
   },
   "app.appearance-settings.compact-mode.description": {
     "message": "Visa biblioteksinstanser i en kompakt radlayout."
@@ -165,7 +165,7 @@
     "message": "Dölj namnskylt"
   },
   "app.appearance-settings.minimize-launcher.description": {
-    "message": "Minimera Modrinth App när Minecraft startar."
+    "message": "Minimera Dr3sh App när Minecraft startar."
   },
   "app.appearance-settings.minimize-launcher.title": {
     "message": "Minimera app"
@@ -189,7 +189,7 @@
     "message": "Dölj högra sidofält"
   },
   "app.appearance-settings.unknown-pack-warning.description": {
-    "message": "Visa en säkerhetsvarning innan du installerar ett Modrinth Pack (.mrpack) som inte finns på Modrinth."
+    "message": "Visa en säkerhetsvarning innan du installerar ett Dr3sh App Pack (.mrpack) som inte finns på Dr3sh App."
   },
   "app.appearance-settings.unknown-pack-warning.title": {
     "message": "Varna mig innan jag installerar okända modpaket"
@@ -207,7 +207,7 @@
     "message": "Hem och innehåll"
   },
   "app.behavior-settings.refocus-on-game-close.description": {
-    "message": "Ta Modrinth-appen till förgrunden när Minecraft avslutas."
+    "message": "Ta Dr3sh App-appen till förgrunden när Minecraft avslutas."
   },
   "app.behavior-settings.refocus-on-game-close.title": {
     "message": "Fokusera på appen igen när Minecraft stängs."
@@ -219,7 +219,7 @@
     "message": "Använd de här beteendeinställningarna överallt där du är inloggad. Stäng av det här för att ha andra inställningar på den här enheten."
   },
   "app.behavior-settings.sync-across-devices.signed-out-tooltip": {
-    "message": "Logga in på ett Modrinth-konto för att synkronisera inställningar."
+    "message": "Logga in på ett Dr3sh App-konto för att synkronisera inställningar."
   },
   "app.behavior-settings.sync-across-devices.title": {
     "message": "Synkronisera beteende mellan enheter"
@@ -471,7 +471,7 @@
     "message": "Använd dessa funktions inställningar överallt du är inloggad. Stäng av detta för att hålla inställningar separerade för denna enhet."
   },
   "app.features-settings.sync-across-devices.signed-out-tooltip": {
-    "message": "Signera in till ett Modrinth konto för att synka inställningar."
+    "message": "Signera in till ett Dr3sh App konto för att synka inställningar."
   },
   "app.features-settings.sync-across-devices.title": {
     "message": "Synka funktioner mellan enheter"
@@ -513,16 +513,16 @@
     "message": "Visa instans"
   },
   "app.hosting.update-required.description": {
-    "message": "Du behöver uppdatera för att använda Modrinth Hosting genom Modrinth App"
+    "message": "Du behöver uppdatera för att använda Dr3sh App Hosting genom Dr3sh App"
   },
   "app.hosting.update-required.download": {
     "message": "Ladda ner för att uppdatera"
   },
   "app.hosting.update-required.rinthbot-alt": {
-    "message": "Exalterad Modrinth-bot"
+    "message": "Exalterad Dr3sh App-bot"
   },
   "app.hosting.update-required.title": {
-    "message": "Modrinth App-uppdatering krävs"
+    "message": "Dr3sh App-uppdatering krävs"
   },
   "app.install.phase.downloading_content": {
     "message": "Laddar ner innehåll"
@@ -849,13 +849,13 @@
     "message": "Logga in som"
   },
   "app.instance.shared-instance-wrong-account.signed-out-header": {
-    "message": "Du behöver logga in på Modrinth"
+    "message": "Du behöver logga in på Dr3sh App"
   },
   "app.instance.shared-instance-wrong-account.user-admonition-body-v2": {
     "message": "för att få uppdateringar till den här delade instansen."
   },
   "app.instance.shared-instance-wrong-account.warning-header": {
-    "message": "Du använder fel Modrinth-konto"
+    "message": "Du använder fel Dr3sh App-konto"
   },
   "app.instance.shortcut.created": {
     "message": "Genväg skapad"
@@ -1278,10 +1278,10 @@
     "message": "Installera"
   },
   "app.modal.install-to-play.invite-warning": {
-    "message": "Denna inbjudan skapades av en annan Modrinth-användare, inte Modrinth. Acceptera endast inbjudningar från personer du litar på."
+    "message": "Denna inbjudan skapades av en annan Dr3sh App-användare, inte Dr3sh App. Acceptera endast inbjudningar från personer du litar på."
   },
   "app.modal.install-to-play.invite-warning-with-creator": {
-    "message": "Denna inbjudan skapades av <creator>{username}</creator>, inte Modrinth. Acceptera endast inbjudningar från personer du litar på."
+    "message": "Denna inbjudan skapades av <creator>{username}</creator>, inte Dr3sh App. Acceptera endast inbjudningar från personer du litar på."
   },
   "app.modal.install-to-play.managed-content.modpack-header": {
     "message": "Modpaketsinnehåll"
@@ -1314,7 +1314,7 @@
     "message": "För supportärenden, kontakta vårt <support-link>supportteam</support-link>. För buggrapporter, öppna ett <github-link>GitHub issue</github-link>."
   },
   "app.modal.install-to-play.reviewed-files": {
-    "message": "Filer som inte publiceras på Modrinth granskas inte."
+    "message": "Filer som inte publiceras på Dr3sh App granskas inte."
   },
   "app.modal.install-to-play.shared-instance": {
     "message": "Delad instans"
@@ -1323,13 +1323,13 @@
     "message": "Delat instansinnehåll"
   },
   "app.modal.install-to-play.shared-instance-unknown-files-description": {
-    "message": "Denna delad instans innehåller filer som inte är publicerade på Modrinth. Vi rekommenderar stark att du endast installerar filer från källor du litar på."
+    "message": "Denna delad instans innehåller filer som inte är publicerade på Dr3sh App. Vi rekommenderar stark att du endast installerar filer från källor du litar på."
   },
   "app.modal.install-to-play.unavailable-header": {
     "message": "Den här serverns modpaket är inte tillgängligt"
   },
   "app.modal.install-to-play.unknown-files-description": {
-    "message": "Detta server-modpaket innehåller filer som inte är utgivna på Modrinth. Vi rekommenderar att endast installera filer från källor du litar på."
+    "message": "Detta server-modpaket innehåller filer som inte är utgivna på Dr3sh App. Vi rekommenderar att endast installera filer från källor du litar på."
   },
   "app.modal.install-to-play.unknown-files-warning": {
     "message": "Okända filvarningar"
@@ -1350,7 +1350,7 @@
     "message": "Tog bort"
   },
   "app.modal.update-to-play.server-modpack-unknown-files-description": {
-    "message": "Uppdateringen för detta server-modpaket innehåller filer som inte är utgivna på Modrinth. Vi rekommenderar att endast installera filer från källor du litar på."
+    "message": "Uppdateringen för detta server-modpaket innehåller filer som inte är utgivna på Dr3sh App. Vi rekommenderar att endast installera filer från källor du litar på."
   },
   "app.modal.update-to-play.shared-instance-added-label": {
     "message": "Lade till"
@@ -1359,7 +1359,7 @@
     "message": "Tog bort"
   },
   "app.modal.update-to-play.shared-instance-unknown-files-description": {
-    "message": "Uppdateringen för denna delad instans innehåller filer som inte är publicerade på Modrinth. Vi rekommenderar stark att du endast installerar filer från källor du litar på."
+    "message": "Uppdateringen för denna delad instans innehåller filer som inte är publicerade på Dr3sh App. Vi rekommenderar stark att du endast installerar filer från källor du litar på."
   },
   "app.modal.update-to-play.update-required": {
     "message": "Uppdatering krävs"
@@ -1380,10 +1380,10 @@
     "message": "Läser in profil..."
   },
   "app.nav.modrinth-account": {
-    "message": "Modrinth-konto"
+    "message": "Dr3sh App-konto"
   },
   "app.nav.modrinth-hosting": {
-    "message": "Modrinth Hosting"
+    "message": "Dr3sh App Hosting"
   },
   "app.nav.remove-account": {
     "message": "Ta bort konto"
@@ -1392,13 +1392,13 @@
     "message": "Skärmdumpar"
   },
   "app.nav.sign-in-to-modrinth-account": {
-    "message": "Logga in på Modrinth"
+    "message": "Logga in på Dr3sh App"
   },
   "app.nav.switch-account": {
     "message": "Byt konto"
   },
   "app.nav.upgrade-to-modrinth-plus": {
-    "message": "Uppgradera till Modrinth+"
+    "message": "Uppgradera till Dr3sh App+"
   },
   "app.nav.view-profile": {
     "message": "Visa profil"
@@ -1614,7 +1614,7 @@
     "message": "Exportera ZIP"
   },
   "app.screenshots.selection.global-export-filename": {
-    "message": "Modrinth-skärmdumpar.zip"
+    "message": "Dr3sh App-skärmdumpar.zip"
   },
   "app.screenshots.selection.instance-export-filename": {
     "message": "{instance}-skärmdumpar.zip"
@@ -1641,7 +1641,7 @@
     "message": "Äldst"
   },
   "app.settings.app-version": {
-    "message": "Modrinth App {version}"
+    "message": "Dr3sh App {version}"
   },
   "app.settings.default-instance-options.environment-variables.description": {
     "message": "Miljövariabler som anges när en instans startas."
@@ -1908,7 +1908,7 @@
     "message": "Några av dina instanser kan inte använda den här inställningen"
   },
   "app.settings.game-options.compatibility.reason.launcher-controlled": {
-    "message": "Den här inställningen hanteras av Modrinths startinställningar."
+    "message": "Den här inställningen hanteras av Dr3sh Apps startinställningar."
   },
   "app.settings.game-options.custom-value.placeholder": {
     "message": "Ange ett värde"
@@ -2571,13 +2571,13 @@
     "message": "macOS"
   },
   "app.settings.privacy.ads-consent.intro": {
-    "message": "Annonser gör Modrinth möjligt och finansierar utbetalningar till skapare. Våra partner kan lagra eller komma åt kakor i appen för att rikta annonser och mäta statistik. Du kan välja bort eller hantera dina inställningar nedan."
+    "message": "Annonser gör Dr3sh App möjligt och finansierar utbetalningar till skapare. Våra partner kan lagra eller komma åt kakor i appen för att rikta annonser och mäta statistik. Du kan välja bort eller hantera dina inställningar nedan."
   },
   "app.settings.privacy.discord-rich-presence.description": {
-    "message": "Visa Modrinth App som din nuvarande aktivitet på Discord. Detta påverkar inte Rich Presence som lagts till i instanser av moddar. Kräver en app omstart."
+    "message": "Visa Dr3sh App som din nuvarande aktivitet på Discord. Detta påverkar inte Rich Presence som lagts till i instanser av moddar. Kräver en app omstart."
   },
   "app.settings.privacy.telemetry.description": {
-    "message": "Modrinth samlar in anonymiserad statistik och användningsdata för att förbättra vår användarupplevelse och anpassa din upplevelse. Genom att inaktivera det här alternativet avanmäler du dig och din data kommer inte längre samlas in."
+    "message": "Dr3sh App samlar in anonymiserad statistik och användningsdata för att förbättra vår användarupplevelse och anpassa din upplevelse. Genom att inaktivera det här alternativet avanmäler du dig och din data kommer inte längre samlas in."
   },
   "app.settings.privacy.telemetry.title": {
     "message": "Telemetri"
@@ -2589,7 +2589,7 @@
     "message": "Appen kan laddas in långsammare tills cachen är återuppbyggd."
   },
   "app.settings.resource-management.app-cache.description": {
-    "message": "Rensa cachad data och ladda ner den igen från Modrinth. Appen kan laddas in långsammare tills cachen är återuppbyggd."
+    "message": "Rensa cachad data och ladda ner den igen från Dr3sh App. Appen kan laddas in långsammare tills cachen är återuppbyggd."
   },
   "app.settings.resource-management.app-cache.title": {
     "message": "App-cache"
@@ -2607,7 +2607,7 @@
     "message": "Bläddra efter en appmapp"
   },
   "app.settings.resource-management.app-directory.description": {
-    "message": "Var Modrinth App lagrar instanser och andra filer. Ändringar träder i kraft efter appen startas om."
+    "message": "Var Dr3sh App lagrar instanser och andra filer. Ändringar träder i kraft efter appen startas om."
   },
   "app.settings.resource-management.app-directory.select": {
     "message": "Välj en ny appmapp"
@@ -2709,7 +2709,7 @@
     "message": "Vi läste in de senaste inställningarna. Granska dina ändringar och spara sedan igen."
   },
   "app.settings.synced-options.game-settings.custom-empty": {
-    "message": "Inställningar tillagda av moddar kommer att synas här efter att Modrinth hittar dem i någon av dina instanser."
+    "message": "Inställningar tillagda av moddar kommer att synas här efter att Dr3sh App hittar dem i någon av dina instanser."
   },
   "app.settings.synced-options.game-settings.description": {
     "message": "Använd samma spelinställningar mellan dina instanser."
@@ -2865,7 +2865,7 @@
     "message": "Kopiera annonsdetaljer"
   },
   "app.settings.troubleshooting.report-ad.description": {
-    "message": "Har du sett en opassande eller kränkande annons? Kopiera dess detaljer medan den visas och skicka dem till <support>Modrinth Support</support>. Vi kommer att granska och ta bort den."
+    "message": "Har du sett en opassande eller kränkande annons? Kopiera dess detaljer medan den visas och skicka dem till <support>Dr3sh App Support</support>. Vi kommer att granska och ta bort den."
   },
   "app.settings.troubleshooting.report-ad.no-ad.text": {
     "message": "Vänta på att annonsen läser in, försök sedan igen."
@@ -3012,13 +3012,13 @@
     "message": "MINECON Earth 2017"
   },
   "app.skins.section.modrinth": {
-    "message": "Modrinth"
+    "message": "Dr3sh App"
   },
   "app.skins.section.modrinth-pride": {
-    "message": "Modrinth Pride"
+    "message": "Dr3sh App Pride"
   },
   "app.skins.section.modrinth-pride.tooltip": {
-    "message": "Du fick dessa utseenden för att du donerade till en Modrinth Pride-insamling under Pride-månaden."
+    "message": "Du fick dessa utseenden för att du donerade till en Dr3sh App Pride-insamling under Pride-månaden."
   },
   "app.skins.section.mounts-of-mayhem": {
     "message": "Mounts of Mayhem"
@@ -3051,16 +3051,16 @@
     "message": "Växla på"
   },
   "app.survey.body": {
-    "message": "Skulle du kunna svara på några frågor angående din upplevelse med Modrinth App?"
+    "message": "Skulle du kunna svara på några frågor angående din upplevelse med Dr3sh App?"
   },
   "app.survey.footer": {
-    "message": "Den här återkopplingen kommer gå direkt till Modrinth-teamet och hjälper till att vägleda framtida uppdateringar!"
+    "message": "Den här återkopplingen kommer gå direkt till Dr3sh App-teamet och hjälper till att vägleda framtida uppdateringar!"
   },
   "app.survey.no-thanks": {
     "message": "Nej tack"
   },
   "app.survey.title": {
-    "message": "Hej där Modrinth-användare!"
+    "message": "Hej där Dr3sh App-användare!"
   },
   "app.sync-instances-update.badge": {
     "message": "Nytt den här uppdateringen"
@@ -3162,13 +3162,13 @@
     "message": "Synkroniserade resurspaket"
   },
   "app.update-popup.body.download-complete": {
-    "message": "Modrinth App v{version} har laddats ner. Ladda om för att uppdatera nu, eller automatiskt när du stänger Modrinth App."
+    "message": "Dr3sh App v{version} har laddats ner. Ladda om för att uppdatera nu, eller automatiskt när du stänger Dr3sh App."
   },
   "app.update-popup.body.linux": {
-    "message": "Modrinth App v{version} är tillgänglig. Använd din pakethanterare för att uppdatera och få tillgång till de senaste funktionerna och buggfixarna!"
+    "message": "Dr3sh App v{version} är tillgänglig. Använd din pakethanterare för att uppdatera och få tillgång till de senaste funktionerna och buggfixarna!"
   },
   "app.update-popup.body.metered": {
-    "message": "Modrinth App v{version} är nu tillgänglig! Eftersom du använder ett nätverk med datatrafikbegränsningar har vi inte laddat ner det automatiskt."
+    "message": "Dr3sh App v{version} är nu tillgänglig! Eftersom du använder ett nätverk med datatrafikbegränsningar har vi inte laddat ner det automatiskt."
   },
   "app.update-popup.changelog": {
     "message": "Ändringslogg"
@@ -3213,10 +3213,10 @@
     "message": "Tryck på <shortcut>N</shortcut> för att snabbt skapa en instans"
   },
   "app.welcome-screen.title": {
-    "message": "Välkommen till Modrinth"
+    "message": "Välkommen till Dr3sh App"
   },
   "app.world.server-modal.placeholder-address": {
-    "message": "exempel.modrinth.gg"
+    "message": "exempel.Dr3sh App.gg"
   },
   "app.world.server-modal.select-an-option": {
     "message": "Välj ett alternativ"
@@ -3276,10 +3276,10 @@
     "message": "Det kan vara annorlunda från deras Minecraft-användarnamn!"
   },
   "friends.add-friend.username.placeholder": {
-    "message": "Ange Modrinth-användarnamn..."
+    "message": "Ange Dr3sh App-användarnamn..."
   },
   "friends.add-friend.username.title": {
-    "message": "Vad är din väns Modrinth-användarnamn?"
+    "message": "Vad är din väns Dr3sh App-användarnamn?"
   },
   "friends.add-friends-to-share": {
     "message": "<link>Lägg till vänner</link> för att se vad de spelar!"
@@ -3324,7 +3324,7 @@
     "message": "{title} - {count}"
   },
   "friends.sign-in-to-add-friends": {
-    "message": "<link>Logga in på ett Modrinth-konto</link> för att lägga till vänner och se vad de spelar!"
+    "message": "<link>Logga in på ett Dr3sh App-konto</link> för att lägga till vänner och se vad de spelar!"
   },
   "installation-settings.shared-instance.linked-title": {
     "message": "Länkad delad instans"
@@ -3342,7 +3342,7 @@
     "message": "Avpublicera delad instans"
   },
   "installation-settings.shared-instance.unpublish-description": {
-    "message": "Ta bort den delade instansen från Modrinth och sluta skicka uppdateringar till alla som använder den. Din lokala instans kommer inte att påverkas."
+    "message": "Ta bort den delade instansen från Dr3sh App och sluta skicka uppdateringar till alla som använder den. Din lokala instans kommer inte att påverkas."
   },
   "installation-settings.shared-instance.unpublishing-button": {
     "message": "Avpublicerar..."
@@ -3354,7 +3354,7 @@
     "message": "Avlänka delad instans"
   },
   "installation-settings.unpublish-shared-instance.modal.admonition-body": {
-    "message": "Det här raderar den delade instansen från Modrinths servrar. De som använder den i Modrinth App kommer inte längre få uppdateringar, men din lokala instans och dess innehåll är kvar på den här enheten."
+    "message": "Det här raderar den delade instansen från Dr3sh Apps servrar. De som använder den i Dr3sh App kommer inte längre få uppdateringar, men din lokala instans och dess innehåll är kvar på den här enheten."
   },
   "installation-settings.unpublish-shared-instance.modal.admonition-header": {
     "message": "Avpublicerar delad instans"
@@ -3918,7 +3918,7 @@
     "message": "Skapa ett konto"
   },
   "modal.modrinth-account-required.description": {
-    "message": "Du måste logga in på ditt Modrinth-konto innan du kan använda den här funktionen."
+    "message": "Du måste logga in på ditt Dr3sh App-konto innan du kan använda den här funktionen."
   },
   "modal.modrinth-account-required.header": {
     "message": "Konto krävs"
@@ -3927,10 +3927,10 @@
     "message": "Öppna webbläsare igen"
   },
   "modal.modrinth-account-required.sign-in-button": {
-    "message": "Logga in på Modrinth"
+    "message": "Logga in på Dr3sh App"
   },
   "modal.modrinth-account-required.sign-in-heading": {
-    "message": "Logga in på ett Modrinth-konto"
+    "message": "Logga in på ett Dr3sh App-konto"
   },
   "modal.modrinth-account-required.signing-in-header": {
     "message": "Loggar in"
@@ -3948,7 +3948,7 @@
     "message": "Logga på Minecraft"
   },
   "onboarding-checklist.login-modrinth": {
-    "message": "Logga in på Modrinth"
+    "message": "Logga in på Dr3sh App"
   },
   "onboarding-checklist.title": {
     "message": "Kom igång"

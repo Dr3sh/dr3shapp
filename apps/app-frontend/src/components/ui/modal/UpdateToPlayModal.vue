@@ -310,7 +310,7 @@ const messages = defineMessages({
 	externalWarningDescription: {
 		id: 'app.modal.update-to-play.server-modpack-unknown-files-description',
 		defaultMessage:
-			'This server modpack update contains files that aren’t published on Modrinth. We strongly recommend only installing files from sources you trust.',
+			'This server modpack update contains files that aren’t published on Dr3sh App. We strongly recommend only installing files from sources you trust.',
 	},
 })
 

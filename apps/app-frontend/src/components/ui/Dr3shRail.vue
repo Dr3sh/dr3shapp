@@ -25,6 +25,7 @@ const DR3SH_LOGO_DATA_URI = '/logo.png'
 
 const router = useRouter()
 const {
+	launcherVersion,
 	ownedServers,
 	versions,
 	selectedId,
@@ -225,11 +226,11 @@ const userAvatarUrl = computed(() => {
 			class="brand-lockup"
 			role="button"
 			tabindex="0"
-			title="Dr3sh Launcher v0.2.16"
+			:title="`Dr3sh Launcher v${launcherVersion}`"
 			@click="navigateTo('home')"
 		>
 			<img :src="DR3SH_LOGO_DATA_URI" alt="Dr3sh" class="brand-logo-img" />
-			<span class="brand-version-badge">v0.2.16</span>
+			<span class="brand-version-badge">v{{ launcherVersion }}</span>
 		</div>
 
 		<!-- Section Head: INSTANCIAS -->

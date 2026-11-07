@@ -142,7 +142,7 @@ const failureSummaryMessages = defineMessages({
 	},
 	modrinthUnreachable: {
 		id: 'app.action-bar.install.summary.modrinth-unreachable',
-		defaultMessage: "Couldn't reach Modrinth",
+		defaultMessage: "Couldn't reach Dr3sh App",
 	},
 	packDownloadFailed: {
 		id: 'app.action-bar.install.summary.pack-download-failed',

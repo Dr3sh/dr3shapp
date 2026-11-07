@@ -6,7 +6,7 @@ import { install_create_instance } from '@/helpers/install'
 import { resolveImageUrl, type Dr3shServer, type Dr3shVersion } from './use-dr3sh-launcher'
 
 export interface DownloadProgress {
-	phase: 'idle' | 'preparing' | 'downloading' | 'extracting' | 'finishing'
+	phase: 'idle' | 'preparing' | 'downloading' | 'verifying' | 'extracting' | 'applying' | 'finishing'
 	percent: number
 	phaseText: string
 	downloadedBytes: number
@@ -14,10 +14,46 @@ export interface DownloadProgress {
 	downloadedFormatted: string
 	totalFormatted: string
 	speedFormatted: string
+	etaSeconds?: number | null
+	attempt?: number
+}
+
+export interface Dr3shLastError {
+	code: string
+	op_id: string
+	message: string
+	details: string
+}
+
+export interface Dr3shServerStateEntry {
+	server_id: string
+	instance_id: string | null
+	instance_path: string | null
+	installed_version: string | null
+	state:
+		| 'not_installed'
+		| 'preparing'
+		| 'downloading'
+		| 'verifying'
+		| 'extracting'
+		| 'applying'
+		| 'installed'
+		| 'recovering'
+		| 'error'
+	last_error: Dr3shLastError | null
+	migration_notice_pending: boolean
+	locked: boolean
+	active_op_id: string | null
+	updated_at: string
 }
 
 const isDownloading = ref(false)
 const currentServerId = ref<string | null>(null)
+const currentOpId = ref<string | null>(null)
+const lastOperationError = ref<Dr3shLastError | null>(null)
+const serverStatesMap = ref<Record<string, Dr3shServerStateEntry>>({})
+export const installedVersionsMap = ref<Record<string, string>>({})
+
 const downloadProgress = ref<DownloadProgress>({
 	phase: 'idle',
 	percent: 0,
@@ -27,146 +63,261 @@ const downloadProgress = ref<DownloadProgress>({
 	downloadedFormatted: '',
 	totalFormatted: '',
 	speedFormatted: '',
+	etaSeconds: null,
+	attempt: 0,
 })
 
-// Reactive map of installed versions so Vue computed properties update immediately
-function loadInitialInstalledVersions(): Record<string, string> {
-	const map: Record<string, string> = {}
-	try {
-		for (let i = 0; i < localStorage.length; i++) {
-			const key = localStorage.key(i)
-			if (key && key.startsWith('dr3sh.installed_version.')) {
-				const serverId = key.slice('dr3sh.installed_version.'.length)
-				const val = localStorage.getItem(key)
-				if (serverId && val) {
-					map[serverId] = val
-				}
-			}
-		}
-	} catch {}
-	return map
+function formatBytesUi(bytes: number): string {
+	if (!bytes || bytes <= 0) return '0 MB'
+	const gb = 1024 * 1024 * 1024
+	const mb = 1024 * 1024
+	if (bytes >= gb) return `${(bytes / gb).toFixed(2)} GB`
+	if (bytes >= mb) return `${(bytes / mb).toFixed(1)} MB`
+	return `${Math.round(bytes / 1024)} KB`
 }
 
-export const installedVersionsMap = ref<Record<string, string>>(loadInitialInstalledVersions())
+function syncMapsFromState(states: Record<string, Dr3shServerStateEntry>) {
+	serverStatesMap.value = states
+	const nextVersions: Record<string, string> = {}
+	for (const [sid, entry] of Object.entries(states)) {
+		if (entry && entry.installed_version) {
+			nextVersions[sid] = entry.installed_version
+		}
+	}
+	installedVersionsMap.value = nextVersions
+}
+
+let stateInitialized = false
+let globalStateUnlisten: UnlistenFn | null = null
+
+export async function initDr3shBackendState(): Promise<Record<string, Dr3shServerStateEntry>> {
+	if (!stateInitialized) {
+		stateInitialized = true
+		try {
+			const legacyEntries: Record<
+				string,
+				{
+					installed_version?: string | null
+					installed_folder?: string | null
+					installed_instance_id?: string | null
+				}
+			> = {}
+			const keysToRemove: string[] = []
+			for (let i = 0; i < localStorage.length; i++) {
+				const key = localStorage.key(i)
+				if (!key) continue
+				if (key.startsWith('dr3sh.installed_version.')) {
+					const sid = key.slice('dr3sh.installed_version.'.length)
+					legacyEntries[sid] = legacyEntries[sid] || {}
+					legacyEntries[sid].installed_version = localStorage.getItem(key)
+					keysToRemove.push(key)
+				} else if (key.startsWith('dr3sh.installed_folder.')) {
+					const sid = key.slice('dr3sh.installed_folder.'.length)
+					legacyEntries[sid] = legacyEntries[sid] || {}
+					legacyEntries[sid].installed_folder = localStorage.getItem(key)
+					keysToRemove.push(key)
+				} else if (key.startsWith('dr3sh.installed_instance_id.')) {
+					const sid = key.slice('dr3sh.installed_instance_id.'.length)
+					legacyEntries[sid] = legacyEntries[sid] || {}
+					legacyEntries[sid].installed_instance_id = localStorage.getItem(key)
+					keysToRemove.push(key)
+				}
+			}
+
+			if (Object.keys(legacyEntries).length > 0) {
+				const migrated = await invoke<Record<string, Dr3shServerStateEntry>>(
+					'dr3sh_migrate_local_state',
+					{ entries: legacyEntries },
+				)
+				for (const k of keysToRemove) {
+					localStorage.removeItem(k)
+				}
+				syncMapsFromState(migrated)
+			} else {
+				const current = await invoke<Record<string, Dr3shServerStateEntry>>('dr3sh_get_state')
+				syncMapsFromState(current)
+			}
+		} catch (e) {
+			console.warn('Failed to initialize dr3sh backend state:', e)
+		}
+
+		if (!globalStateUnlisten) {
+			listen<Dr3shServerStateEntry>('dr3sh://state', (ev) => {
+				const entry = ev.payload
+				if (!entry || !entry.server_id) return
+				serverStatesMap.value = {
+					...serverStatesMap.value,
+					[entry.server_id]: entry,
+				}
+				if (entry.installed_version) {
+					installedVersionsMap.value = {
+						...installedVersionsMap.value,
+						[entry.server_id]: entry.installed_version,
+					}
+				} else {
+					const next = { ...installedVersionsMap.value }
+					delete next[entry.server_id]
+					installedVersionsMap.value = next
+				}
+				if (entry.last_error) {
+					lastOperationError.value = entry.last_error
+				}
+			})
+				.then((fn) => {
+					globalStateUnlisten = fn
+				})
+				.catch(() => {})
+		}
+	} else {
+		try {
+			const current = await invoke<Record<string, Dr3shServerStateEntry>>('dr3sh_get_state')
+			syncMapsFromState(current)
+		} catch {}
+	}
+	return serverStatesMap.value
+}
+
+void initDr3shBackendState()
+
+export function getServerBackendState(serverId: string): Dr3shServerStateEntry | null {
+	if (!serverId) return null
+	return serverStatesMap.value[serverId] || null
+}
 
 export function getInstalledVersion(serverId: string): string | null {
 	if (!serverId) return null
-	const fromMap = installedVersionsMap.value[serverId]
-	if (fromMap) return fromMap
-	try {
-		const raw = localStorage.getItem(`dr3sh.installed_version.${serverId}`)
-		if (raw) {
-			installedVersionsMap.value[serverId] = raw
-			return raw
-		}
-	} catch {}
-	return null
-}
-
-export function getInstalledFolder(serverId: string, serverTitle?: string): string | null {
-	try {
-		const raw = localStorage.getItem(`dr3sh.installed_folder.${serverId}`) || null
-		if (!raw) return null
-		const leaf = raw.split(/[\\/]/).filter(Boolean).pop()?.toLowerCase().trim() || ''
-		const normTitle = (serverTitle || '').toLowerCase().trim()
-		const normId = serverId.toLowerCase().trim()
-		if (normTitle && leaf && leaf !== normTitle && leaf !== normId) {
-			const numTitle = normTitle.match(/\d+$/)?.[0]
-			const numLeaf = leaf.match(/\d+$/)?.[0]
-			if (numTitle !== numLeaf && (numTitle || numLeaf)) {
-				localStorage.removeItem(`dr3sh.installed_folder.${serverId}`)
-				return null
-			}
-		}
-		return raw
-	} catch {
-		return null
-	}
-}
-
-export function getInstalledInstanceId(serverId: string): string | null {
-	try {
-		return localStorage.getItem(`dr3sh.installed_instance_id.${serverId}`) || null
-	} catch {
-		return null
-	}
-}
-
-export function findMatchingInstance(server: Dr3shServer | null | undefined, instancesList: any[]): any | null {
-	if (!server || !Array.isArray(instancesList) || instancesList.length === 0) return null
-	const norm = (s: unknown) =>
-		String(s || '')
-			.toLowerCase()
-			.replace(/[\s_-]+/g, ' ')
-			.trim()
-
-	const targetId = norm(server.id)
-	const targetTitle = norm(server.title)
-	const validNames = new Set<string>([targetId, targetTitle])
-	if (Array.isArray(server.aliases)) {
-		for (const alias of server.aliases) {
-			if (alias) validNames.add(norm(alias))
-		}
-	}
-	if (server.id === 'cobbleverse') {
-		validNames.add('desgraciamon')
-		validNames.add('desgraciamon 1')
-	}
-
-	// 1. Check explicitly bound instance ID first, verifying its name matches this server (not Desgraciamon 2/4)
-	const savedInstId = getInstalledInstanceId(server.id)
-	if (savedInstId) {
-		const byId = instancesList.find(
-			(inst: any) =>
-				(inst.id === savedInstId || inst.path === savedInstId) &&
-				validNames.has(norm(inst.name)),
-		)
-		if (byId) return byId
-	}
-
-	// 2. Strict exact match by normalized name or folder path (NEVER substring .includes()!)
 	return (
-		instancesList.find((inst: any) => {
-			const instName = norm(inst.name)
-			const instPath = norm(inst.path)
-			return validNames.has(instName) || validNames.has(instPath)
-		}) || null
+		serverStatesMap.value[serverId]?.installed_version ||
+		installedVersionsMap.value[serverId] ||
+		null
 	)
 }
 
-export function setInstalledVersion(serverId: string, version: string, folder?: string, instanceId?: string) {
-	try {
-		localStorage.setItem(`dr3sh.installed_version.${serverId}`, version)
-		if (folder) {
-			localStorage.setItem(`dr3sh.installed_folder.${serverId}`, folder)
+export function getInstalledFolder(serverId: string): string | null {
+	if (!serverId) return null
+	return serverStatesMap.value[serverId]?.instance_path || null
+}
+
+export function getInstalledInstanceId(serverId: string): string | null {
+	if (!serverId) return null
+	return serverStatesMap.value[serverId]?.instance_id || null
+}
+
+export function isServerReadyToPlay(serverId: string): boolean {
+	if (!serverId) return false
+	const entry = serverStatesMap.value[serverId]
+	if (!entry) return false
+	return entry.state === 'installed' && !entry.locked
+}
+
+export function findMatchingInstance(
+	server: Dr3shServer | null | undefined,
+	instancesList: any[],
+): any | null {
+	if (!server || !Array.isArray(instancesList) || instancesList.length === 0) return null
+
+	const boundId = getInstalledInstanceId(server.id)
+	if (boundId) {
+		const byBoundId = instancesList.find(
+			(inst: any) => inst.id === boundId || inst.path === boundId,
+		)
+		if (byBoundId) return byBoundId
+	}
+
+	if (Array.isArray(server.aliases) && server.aliases.length > 0) {
+		const exactAliases = new Set(
+			server.aliases.map((a) => String(a || '').trim().toLowerCase()).filter(Boolean),
+		)
+		const matchedByAlias = instancesList.find((inst: any) => {
+			const instName = String(inst.name || '').trim().toLowerCase()
+			const instPath = String(inst.path || '').trim().toLowerCase()
+			return exactAliases.has(instName) || exactAliases.has(instPath)
+		})
+		if (matchedByAlias) {
+			const matchedId = matchedByAlias.path || matchedByAlias.id
+			if (matchedId) {
+				setInstalledVersion(
+					server.id,
+					getInstalledVersion(server.id) || server.version || '1.0.0',
+					getInstalledFolder(server.id) || undefined,
+					matchedId,
+				)
+			}
+			return matchedByAlias
 		}
-		if (instanceId) {
-			localStorage.setItem(`dr3sh.installed_instance_id.${serverId}`, instanceId)
-		}
-	} catch {}
+	}
+
+	return null
+}
+
+export function setInstalledVersion(
+	serverId: string,
+	version: string,
+	folder?: string,
+	instanceId?: string,
+) {
 	installedVersionsMap.value = {
 		...installedVersionsMap.value,
 		[serverId]: version,
 	}
+	const prev = serverStatesMap.value[serverId]
+	serverStatesMap.value = {
+		...serverStatesMap.value,
+		[serverId]: {
+			server_id: serverId,
+			instance_id: instanceId ?? prev?.instance_id ?? null,
+			instance_path: folder ?? prev?.instance_path ?? null,
+			installed_version: version,
+			state: 'installed',
+			last_error: null,
+			migration_notice_pending: prev?.migration_notice_pending ?? false,
+			locked: false,
+			active_op_id: null,
+			updated_at: new Date().toISOString(),
+		},
+	}
+	void invoke('dr3sh_migrate_local_state', {
+		entries: {
+			[serverId]: {
+				installed_version: version,
+				installed_folder: folder ?? prev?.instance_path ?? null,
+				installed_instance_id: instanceId ?? prev?.instance_id ?? null,
+			},
+		},
+	}).catch(() => {})
 }
 
 export function removeInstalledVersion(serverId: string) {
-	try {
-		localStorage.removeItem(`dr3sh.installed_version.${serverId}`)
-		localStorage.removeItem(`dr3sh.installed_folder.${serverId}`)
-		localStorage.removeItem(`dr3sh.installed_instance_id.${serverId}`)
-	} catch {}
 	const next = { ...installedVersionsMap.value }
 	delete next[serverId]
 	installedVersionsMap.value = next
+
+	const nextStates = { ...serverStatesMap.value }
+	delete nextStates[serverId]
+	serverStatesMap.value = nextStates
 }
 
-export async function cancelActiveDownload() {
+export async function cancelActiveDownload(opId?: string | null) {
 	try {
-		await invoke('dr3sh_cancel_download')
+		await invoke('dr3sh_cancel', { opId: opId || currentOpId.value || '*' })
 	} catch (e) {
-		console.warn('Error cancelling download:', e)
+		console.warn('Error cancelling operation:', e)
 	}
+}
+
+export async function getDiagnosticsText(opId?: string | null, serverId?: string | null): Promise<string> {
+	return await invoke<string>('dr3sh_get_diagnostics', {
+		opId: opId || currentOpId.value || null,
+		serverId: serverId || currentServerId.value || null,
+	})
+}
+
+export async function openLogsFolder(): Promise<void> {
+	await invoke('dr3sh_open_logs_folder')
+}
+
+export async function acknowledgeMigrationNotice(serverId: string): Promise<void> {
+	await invoke('dr3sh_ack_migration_notice', { serverId })
 }
 
 let isReconcilingOrphans = false
@@ -179,9 +330,10 @@ export async function reconcileOrphanedInstalledInstances(
 	isReconcilingOrphans = true
 	let changed = false
 	try {
+		await initDr3shBackendState()
 		for (const server of serversList) {
 			const installedVer = getInstalledVersion(server.id)
-			const savedFolder = getInstalledFolder(server.id, server.title)
+			const savedFolder = getInstalledFolder(server.id)
 			if (!installedVer || !savedFolder) continue
 
 			const existingMatch = findMatchingInstance(server, instancesList)
@@ -242,168 +394,157 @@ export async function reconcileOrphanedInstalledInstances(
 }
 
 export function useDr3shDownloader() {
-	async function downloadAndInstallModpack(options: {
+	async function runBackendOperation(options: {
+		mode: 'install' | 'repair'
 		server: Dr3shServer
 		version: Dr3shVersion
-		matchingInstanceId?: string | null
 		customFolder?: string | null
+		bypassGate?: boolean
 		onSuccess?: () => void
 		onError?: (err: any) => void
 	}) {
-		const { server, version, matchingInstanceId, customFolder, onSuccess, onError } = options
+		const { mode, server, version, customFolder, bypassGate, onSuccess, onError } = options
 
 		if (isDownloading.value) {
-			console.warn('A download is already in progress.')
 			return
-		}
-
-		const downloadUrl = version.link
-		if (!downloadUrl) {
-			const err = new Error(`La versión ${version.version || ''} no tiene enlace de descarga disponible.`)
-			if (onError) onError(err)
-			throw err
 		}
 
 		isDownloading.value = true
 		currentServerId.value = server.id
+		lastOperationError.value = null
+
+		const estTotalBytes = Math.round((version.size_mb || 220) * 1024 * 1024)
 		downloadProgress.value = {
 			phase: 'preparing',
-			percent: 2,
-			phaseText: `Preparando ${server.title}...`,
+			percent: 1,
+			phaseText:
+				mode === 'repair'
+					? `Verificando archivos de ${server.title}...`
+					: `Preparando ${server.title}...`,
 			downloadedBytes: 0,
-			totalBytes: (version.size_mb || 220) * 1024 * 1024,
+			totalBytes: estTotalBytes,
 			downloadedFormatted: '0 MB',
-			totalFormatted: `${version.size_mb || 220} MB`,
+			totalFormatted: formatBytesUi(estTotalBytes),
 			speedFormatted: '',
+			etaSeconds: null,
+			attempt: 0,
 		}
 
-		let unlisten: UnlistenFn | null = null
+		let unlistenProgress: UnlistenFn | null = null
+		let unlistenDone: UnlistenFn | null = null
 
 		try {
-			// Listen for real-time Rust progress events
-			unlisten = await listen<any>('dr3sh-download-progress', (event) => {
-				const p = event.payload
-				if (!p || p.serverId !== server.id) return
-				// Keep phaseText short and clean without technical clutter
-				const rawText = String(p.phaseText || downloadProgress.value.phaseText)
-				const cleanText = rawText
-					.replace(/\s*\([^)]*\/[^)]*\)\s*/g, '')
-					.replace(/\s*•.*$/g, '')
-					.trim()
-				downloadProgress.value = {
-					phase: p.phase || 'downloading',
-					percent: typeof p.percent === 'number' ? p.percent : downloadProgress.value.percent,
-					phaseText: cleanText || `Descargando ${server.title}...`,
-					downloadedBytes: p.downloadedBytes ?? 0,
-					totalBytes: p.totalBytes ?? 0,
-					downloadedFormatted: p.downloadedFormatted || '0 MB',
-					totalFormatted: p.totalFormatted || '',
-					speedFormatted: p.speedFormatted || '',
-				}
-			})
-
-			// 1. Ensure instance exists or create it in Theseus
-			let targetInstanceId = matchingInstanceId || null
-			if (!targetInstanceId) {
-				await invoke('dr3sh_cleanup_deleted_instance', { customFolder: null }).catch(() => {})
-				const finalName = server.title
-				const gameVersion = version.minecraft_version || server.minecraft_version || '1.21.1'
-				const rawLoader = (version.mod_loader || server.mod_loader || 'fabric').toLowerCase()
-				const modloader = (['fabric', 'forge', 'neoforge', 'quilt'].includes(rawLoader)
-					? rawLoader
-					: 'fabric') as any
-				const loaderVersion = version.mod_loader_version || server.mod_loader_version || null
-				const rawIcon = server.logo_square || server.logo || server.image || ''
-				const resolvedIcon = rawIcon ? resolveImageUrl(rawIcon) : null
-
-				let snap: any = null
-				try {
-					snap = await install_create_instance({
-						name: finalName,
-						gameVersion,
-						loader: modloader,
-						loaderVersion,
-						iconPath: resolvedIcon && resolvedIcon.startsWith('http') ? resolvedIcon : null,
-					})
-				} catch (firstErr) {
-					console.warn('Retrying instance creation with automatic loader version & null icon:', firstErr)
-					snap = await install_create_instance({
-						name: finalName,
-						gameVersion,
-						loader: modloader,
-						loaderVersion: null,
-						iconPath: null,
-					})
-				}
-
-				targetInstanceId = snap?.instance_id || snap?.id || null
-			}
-
-			if (!targetInstanceId) {
-				throw new Error('No se pudo crear el perfil de la instancia en el launcher.')
-			}
-
-			// 2. Wait for Theseus base instance setup (Minecraft + Loader) to finish BEFORE modifying or linking the folder
-			downloadProgress.value = {
-				...downloadProgress.value,
-				phase: 'preparing',
-				percent: 2,
-				phaseText: `Preparando perfil de ${server.title}...`,
-				speedFormatted: '',
-			}
-			try {
-				await Promise.race([
-					invoke('dr3sh_wait_for_instance_ready', { instanceId: targetInstanceId }),
-					new Promise((resolve) => setTimeout(resolve, 45000)),
-				])
-			} catch (waitErr) {
-				console.warn('Initial wait for instance ready warning:', waitErr)
-			}
-
-			// 3. Resolve the Theseus instance path
-			const instanceDir = await get_full_path(targetInstanceId)
-			if (!instanceDir) {
-				throw new Error('No se pudo determinar el directorio de instalación para la instancia.')
-			}
-
-			// 4. Execute high-speed native Rust download & delta extraction
-			downloadProgress.value = {
-				...downloadProgress.value,
-				phase: 'downloading',
-				percent: 2,
-				phaseText: `Conectando con el servidor de descarga...`,
-				speedFormatted: 'Conectando...',
-			}
-			const finalInstalledPath = await invoke<string>('dr3sh_download_modpack', {
-				serverId: server.id,
-				serverTitle: server.title,
-				downloadUrl,
+			const rawIcon = server.logo_square || server.logo || server.image || ''
+			const resolvedIcon = rawIcon ? resolveImageUrl(rawIcon) : null
+			const versionRefPayload = {
+				id: version.version || '1.0.0',
+				name: version.version || server.title,
+				serverName: server.title,
+				gameVersion: version.minecraft_version || server.minecraft_version || '1.21.1',
+				loader: (version.mod_loader || server.mod_loader || 'fabric').toLowerCase(),
+				loaderVersion: version.mod_loader_version || server.mod_loader_version || null,
+				downloadUrl: version.link || null,
 				manifestUrl: version.manifest ? resolveImageUrl(version.manifest) : null,
-				instanceDir,
-				customDir: customFolder?.trim() || null,
-				expectedSizeMb: version.size_mb || 220,
-				expectedSha256: version.sha256 || null,
-				instanceId: targetInstanceId,
+				sha256: version.sha256 || null,
+				sizeMb: version.size_mb || null,
+				iconUrl: resolvedIcon && resolvedIcon.startsWith('http') ? resolvedIcon : null,
+				bypassGate: Boolean(bypassGate),
+			}
+
+			const donePromise = new Promise<any>((resolve, reject) => {
+				listen<any>('dr3sh://done', (ev) => {
+					const payload = ev.payload
+					if (!payload || payload.serverId !== server.id) return
+					if (currentOpId.value && payload.opId !== currentOpId.value) return
+					if (payload.ok) {
+						resolve(payload)
+					} else {
+						const errPayload: Dr3shLastError = payload.error || {
+							code: 'E_UNKNOWN',
+							op_id: payload.opId || 'unknown',
+							message: 'Error inesperado durante la instalación.',
+							details: '',
+						}
+						lastOperationError.value = errPayload
+						const errObj = Object.assign(new Error(errPayload.message), errPayload)
+						reject(errObj)
+					}
+				})
+					.then((fn) => {
+						unlistenDone = fn
+					})
+					.catch(reject)
 			})
 
-			// 5. Ensure any post-extraction Theseus job has settled
-			downloadProgress.value = {
-				...downloadProgress.value,
-				phase: 'finishing',
-				percent: 99,
-				phaseText: 'Finalizando instalación...',
-				speedFormatted: '',
-			}
-			try {
-				await Promise.race([
-					invoke('dr3sh_wait_for_instance_ready', { instanceId: targetInstanceId }),
-					new Promise((resolve) => setTimeout(resolve, 20000)),
-				])
-			} catch (waitErr) {
-				console.warn('Wait for instance ready warning:', waitErr)
-			}
+			unlistenProgress = await listen<any>('dr3sh://progress', (ev) => {
+				const p = ev.payload
+				const pServerId = p?.serverId ?? p?.server_id
+				const pOpId = p?.opId ?? p?.op_id
+				if (!p || pServerId !== server.id) return
+				if (currentOpId.value && pOpId && pOpId !== currentOpId.value) return
 
-			// 5. Mark installed version reactively
+				const stageMap: Record<string, DownloadProgress['phase']> = {
+					preflight: 'preparing',
+					base: 'preparing',
+					download: 'downloading',
+					verify: 'verifying',
+					extract: 'extracting',
+					apply: 'applying',
+				}
+				const mappedPhase = stageMap[p.stage] || p.phase || 'downloading'
+				const dlBytes =
+					typeof p.downloadedBytes === 'number'
+						? p.downloadedBytes
+						: typeof p.bytes_done === 'number'
+							? p.bytes_done
+							: 0
+				const totBytes =
+					typeof p.totalBytes === 'number' && p.totalBytes > 0
+						? p.totalBytes
+						: typeof p.bytes_total === 'number' && p.bytes_total > 0
+							? p.bytes_total
+							: estTotalBytes
+				const spdBps =
+					typeof p.speedBps === 'number'
+						? p.speedBps
+						: typeof p.speed_bps === 'number'
+							? p.speed_bps
+							: 0
+				const statusText =
+					p.stageText || p.phaseText || p.status_text || downloadProgress.value.phaseText
+
+				downloadProgress.value = {
+					phase: mappedPhase,
+					percent:
+						typeof p.percent === 'number' ? Math.round(p.percent) : downloadProgress.value.percent,
+					phaseText: statusText,
+					downloadedBytes: dlBytes,
+					totalBytes: totBytes,
+					downloadedFormatted: p.downloadedFormatted || formatBytesUi(dlBytes),
+					totalFormatted: p.totalFormatted || formatBytesUi(totBytes),
+					speedFormatted:
+						p.speedFormatted || (spdBps > 0 ? `${formatBytesUi(spdBps)}/s` : ''),
+					etaSeconds: p.eta_s ?? null,
+					attempt: p.retry?.attempt ?? p.attempt ?? 0,
+				}
+			})
+
+			const opId =
+				mode === 'repair'
+					? await invoke<string>('dr3sh_repair', {
+							serverId: server.id,
+							versionRef: versionRefPayload,
+						})
+					: await invoke<string>('dr3sh_install_or_update', {
+							serverId: server.id,
+							versionRef: versionRefPayload,
+							customDir: customFolder?.trim() || null,
+						})
+
+			currentOpId.value = opId
+
+			const doneResult = await donePromise
+
 			downloadProgress.value = {
 				...downloadProgress.value,
 				phase: 'finishing',
@@ -412,24 +553,25 @@ export function useDr3shDownloader() {
 				speedFormatted: '',
 			}
 
-			setInstalledVersion(
-				server.id,
-				version.version || '1.0.0',
-				finalInstalledPath || instanceDir,
-				targetInstanceId,
-			)
+			await initDr3shBackendState()
+
+			if (doneResult?.version) {
+				installedVersionsMap.value = {
+					...installedVersionsMap.value,
+					[server.id]: doneResult.version,
+				}
+			}
 
 			if (onSuccess) await onSuccess()
 		} catch (err: any) {
-			console.error('Error during download & install pipeline:', err)
 			if (onError) onError(err)
 			throw err
 		} finally {
-			if (unlisten) {
-				unlisten()
-			}
+			if (unlistenProgress) unlistenProgress()
+			if (unlistenDone) unlistenDone()
 			isDownloading.value = false
 			currentServerId.value = null
+			currentOpId.value = null
 			setTimeout(() => {
 				if (!isDownloading.value) {
 					downloadProgress.value.phase = 'idle'
@@ -438,18 +580,54 @@ export function useDr3shDownloader() {
 		}
 	}
 
+	async function downloadAndInstallModpack(options: {
+		server: Dr3shServer
+		version: Dr3shVersion
+		matchingInstanceId?: string | null
+		customFolder?: string | null
+		bypassGate?: boolean
+		onSuccess?: () => void
+		onError?: (err: any) => void
+	}) {
+		return await runBackendOperation({
+			mode: 'install',
+			...options,
+		})
+	}
+
+	async function repairModpack(options: {
+		server: Dr3shServer
+		version: Dr3shVersion
+		onSuccess?: () => void
+		onError?: (err: any) => void
+	}) {
+		return await runBackendOperation({
+			mode: 'repair',
+			...options,
+		})
+	}
+
 	return {
 		isDownloading,
 		currentServerId,
+		currentOpId,
+		lastOperationError,
+		serverStatesMap,
 		downloadProgress,
 		installedVersionsMap,
+		getServerBackendState,
 		getInstalledVersion,
 		getInstalledFolder,
 		getInstalledInstanceId,
+		isServerReadyToPlay,
 		findMatchingInstance,
 		setInstalledVersion,
 		removeInstalledVersion,
-		cancelDownload: cancelActiveDownload,
+		cancelActiveDownload,
+		getDiagnosticsText,
+		openLogsFolder,
+		acknowledgeMigrationNotice,
 		downloadAndInstallModpack,
+		repairModpack,
 	}
 }

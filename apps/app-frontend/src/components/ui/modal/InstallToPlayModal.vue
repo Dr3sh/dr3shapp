@@ -404,7 +404,7 @@ const messages = defineMessages({
 	inviteWarning: {
 		id: 'app.modal.install-to-play.invite-warning',
 		defaultMessage:
-			'This invite was created by another Modrinth user, not Modrinth. Only accept invites from people you trust.',
+			'This invite was created by another Dr3sh App user, not Dr3sh App. Only accept invites from people you trust.',
 	},
 	sharedInstance: {
 		id: 'app.modal.install-to-play.shared-instance',
@@ -429,7 +429,7 @@ const messages = defineMessages({
 	unknownFilesDescription: {
 		id: 'app.modal.install-to-play.unknown-files-description',
 		defaultMessage:
-			'This server modpack contains files that aren’t published on Modrinth. We strongly recommend only installing files from sources you trust.',
+			'This server modpack contains files that aren’t published on Dr3sh App. We strongly recommend only installing files from sources you trust.',
 	},
 	unrecognizedFiles: {
 		id: 'app.modal.install-to-play.unrecognized-files',

@@ -167,7 +167,7 @@ impl Settings {
             friends_offline_collapsed: res.friends_offline_collapsed == 1,
             friends_pending_collapsed: res.friends_pending_collapsed == 1,
             telemetry: res.telemetry == 1,
-            discord_rpc: res.discord_rpc == 1,
+            discord_rpc: false,
             developer_mode: res.developer_mode == 1,
             personalized_ads: res.personalized_ads == 1,
             extra_launch_args: res

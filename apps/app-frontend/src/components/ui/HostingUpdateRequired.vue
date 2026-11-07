@@ -15,11 +15,11 @@ const { formatMessage } = useVIntl()
 const messages = defineMessages({
 	title: {
 		id: 'app.hosting.update-required.title',
-		defaultMessage: 'Modrinth App update required',
+		defaultMessage: 'Dr3sh App update required',
 	},
 	description: {
 		id: 'app.hosting.update-required.description',
-		defaultMessage: 'You need to update to use Modrinth Hosting through the Modrinth App',
+		defaultMessage: 'You need to update to use Dr3sh App Hosting through the Dr3sh App',
 	},
 	downloadToUpdate: {
 		id: 'app.hosting.update-required.download',
@@ -35,7 +35,7 @@ const messages = defineMessages({
 	},
 	excitedRinthbotAlt: {
 		id: 'app.hosting.update-required.rinthbot-alt',
-		defaultMessage: 'Excited Modrinth Bot',
+		defaultMessage: 'Excited Dr3sh App Bot',
 	},
 })
 

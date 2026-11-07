@@ -1,9 +1,8 @@
 [package]
 name = "theseus_gui"
-# The actual version is set by the theseus-build workflow on tagging
-version = "1.0.0-local"
+version = "1.0.5"
 edition.workspace = true
-description = "The Modrinth App is a desktop application for managing your Minecraft mods"
+description = "Dr3sh App desktop launcher"
 repository = "https://github.com/modrinth/code/apps/app/"
 license = "GPL-3.0-only"
 
@@ -17,6 +16,7 @@ dashmap = { workspace = true }
 either = { workspace = true }
 enumset = { workspace = true, features = ["serde"] }
 hkdf = { workspace = true }
+httpdate = { workspace = true }
 hyper = { workspace = true, features = ["server"] }
 hyper-util = { workspace = true }
 image = { workspace = true, features = ["gif", "jpeg", "png", "webp"] }
@@ -25,6 +25,7 @@ p256 = { workspace = true, features = ["ecdh"] }
 paste = { workspace = true }
 path-util = { workspace = true }
 rand = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
@@ -73,7 +74,9 @@ features = [
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
+  "Win32_Storage_FileSystem",
   "Win32_System_Com",
+  "Win32_System_IO",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ]

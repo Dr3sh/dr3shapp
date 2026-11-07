@@ -51,8 +51,16 @@ pub async fn finish_login(
 #[tracing::instrument]
 pub async fn add_offline_user(name: &str) -> crate::Result<Credentials> {
     let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return Err(anyhow::anyhow!("El nombre de usuario no puede estar vacio").into());
+    if trimmed.len() < 3
+        || trimmed.len() > 16
+        || !trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err(anyhow::anyhow!(
+            "El nombre de usuario offline debe tener entre 3 y 16 caracteres (solo letras, números y guion bajo)"
+        )
+        .into());
     }
 
     let state = State::get().await?;

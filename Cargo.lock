@@ -10255,7 +10255,7 @@ dependencies = [
 
 [[package]]
 name = "theseus_gui"
-version = "1.0.0-local"
+version = "1.0.5"
 dependencies = [
  "aes-gcm 0.11.1",
  "anyhow",
@@ -10267,6 +10267,7 @@ dependencies = [
  "either",
  "enumset",
  "hkdf",
+ "httpdate",
  "hyper",
  "hyper-util",
  "image",
@@ -10276,6 +10277,7 @@ dependencies = [
  "paste",
  "path-util",
  "rand 0.10.3",
+ "regex",
  "serde",
  "serde_json",
  "serde_with",

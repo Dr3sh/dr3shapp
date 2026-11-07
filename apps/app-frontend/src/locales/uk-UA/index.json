@@ -78,7 +78,7 @@
     "message": "Не вдалося встановити Minecraft"
   },
   "app.action-bar.install.summary.modrinth-unreachable": {
-    "message": "Не вдалося зʼєднатися з Modrinth"
+    "message": "Не вдалося зʼєднатися з Dr3sh App"
   },
   "app.action-bar.install.summary.no-write-permission": {
     "message": "Бракує прав для запису"
@@ -135,7 +135,7 @@
     "message": "Прийняти всі"
   },
   "app.ads-consent.body": {
-    "message": "Реклама підтримує існування Modrinth і фінансує виплати творцям. Наші партнери можуть зберігати й отримувати доступ до cookie в застосунку, щоб персоналізувати рекламу та збирати метрики."
+    "message": "Реклама підтримує існування Dr3sh App і фінансує виплати творцям. Наші партнери можуть зберігати й отримувати доступ до cookie в застосунку, щоб персоналізувати рекламу та збирати метрики."
   },
   "app.ads-consent.manage": {
     "message": "Налаштувати"
@@ -144,7 +144,7 @@
     "message": "Відхилити всі"
   },
   "app.ads-consent.title": {
-    "message": "Ваша приватність і як реклама підтримує Modrinth"
+    "message": "Ваша приватність і як реклама підтримує Dr3sh App"
   },
   "app.appearance-settings.compact-mode.description": {
     "message": "Показувати примірники у вигляді компактних рядків."
@@ -165,7 +165,7 @@
     "message": "Приховати ім'я"
   },
   "app.appearance-settings.minimize-launcher.description": {
-    "message": "Згортати Modrinth App під час запуску Minecraft."
+    "message": "Згортати Dr3sh App під час запуску Minecraft."
   },
   "app.appearance-settings.minimize-launcher.title": {
     "message": "Згортати застосунок"
@@ -189,7 +189,7 @@
     "message": "Приховати праву бічну панель"
   },
   "app.appearance-settings.unknown-pack-warning.description": {
-    "message": "Показувати попередження про безпеку перед встановленням Modrinth Pack (.mrpack), який не розміщено на Modrinth."
+    "message": "Показувати попередження про безпеку перед встановленням Dr3sh App Pack (.mrpack), який не розміщено на Dr3sh App."
   },
   "app.appearance-settings.unknown-pack-warning.title": {
     "message": "Попереджати перед установленням невідомих збірок"
@@ -207,7 +207,7 @@
     "message": "Головна й уміст"
   },
   "app.behavior-settings.refocus-on-game-close.description": {
-    "message": "Виводити Modrinth App на передній план, коли Minecraft закривається."
+    "message": "Виводити Dr3sh App на передній план, коли Minecraft закривається."
   },
   "app.behavior-settings.refocus-on-game-close.title": {
     "message": "Повернути фокус при закритті Minecraft"
@@ -513,16 +513,16 @@
     "message": "Переглянути примірник"
   },
   "app.hosting.update-required.description": {
-    "message": "Вам потрібно оновитися, щоб використовувати Modrinth Hosting через застосунок Modrinth"
+    "message": "Вам потрібно оновитися, щоб використовувати Dr3sh App Hosting через застосунок Dr3sh App"
   },
   "app.hosting.update-required.download": {
     "message": "Завантажити для оновлення"
   },
   "app.hosting.update-required.rinthbot-alt": {
-    "message": "Схвильований бот Modrinth"
+    "message": "Схвильований бот Dr3sh App"
   },
   "app.hosting.update-required.title": {
-    "message": "Потрібне оновлення Modrinth App"
+    "message": "Потрібне оновлення Dr3sh App"
   },
   "app.install.phase.downloading_content": {
     "message": "Завантаження вмісту"
@@ -840,13 +840,13 @@
     "message": "Увійти як"
   },
   "app.instance.shared-instance-wrong-account.signed-out-header": {
-    "message": "Ви повинні ввійти в Modrinth"
+    "message": "Ви повинні ввійти в Dr3sh App"
   },
   "app.instance.shared-instance-wrong-account.user-admonition-body-v2": {
     "message": "щоб отримувати оновлення для цього спільного примірника."
   },
   "app.instance.shared-instance-wrong-account.warning-header": {
-    "message": "Ви використовуєте не той обліковий запис Modrinth"
+    "message": "Ви використовуєте не той обліковий запис Dr3sh App"
   },
   "app.instance.shortcut.created": {
     "message": "Ярлик створено"
@@ -1272,10 +1272,10 @@
     "message": "Установити"
   },
   "app.modal.install-to-play.invite-warning": {
-    "message": "Це запрошення створив інший користувач Modrinth, не сам Modrinth. Приймайте запрошення лише від тих людей, яким довіряєте."
+    "message": "Це запрошення створив інший користувач Dr3sh App, не сам Dr3sh App. Приймайте запрошення лише від тих людей, яким довіряєте."
   },
   "app.modal.install-to-play.invite-warning-with-creator": {
-    "message": "Це запрошення створив користувач <creator>{username}</creator>, не Modrinth. Приймайте запрошення лише від людей, яким довіряєте."
+    "message": "Це запрошення створив користувач <creator>{username}</creator>, не Dr3sh App. Приймайте запрошення лише від людей, яким довіряєте."
   },
   "app.modal.install-to-play.managed-content.modpack-header": {
     "message": "Уміст збірки"
@@ -1308,7 +1308,7 @@
     "message": "Для отримання допомоги зв'яжіться з нашою <support-link>командою підтримки</support-link>. Для створення звіту про помилки відкрийте <github-link>issue в GitHub</github-link>."
   },
   "app.modal.install-to-play.reviewed-files": {
-    "message": "Файли, які не опубліковані на Modrinth, не перевіряються."
+    "message": "Файли, які не опубліковані на Dr3sh App, не перевіряються."
   },
   "app.modal.install-to-play.shared-instance": {
     "message": "Спільний примірник"
@@ -1317,7 +1317,7 @@
     "message": "Уміст спільного примірника"
   },
   "app.modal.install-to-play.shared-instance-unknown-files-description": {
-    "message": "Цей спільний примірник містить файли, які не опубліковані на Modrinth. Наполегливо радимо встановлювати вміст лише з тих джерел, яким ви довіряєте."
+    "message": "Цей спільний примірник містить файли, які не опубліковані на Dr3sh App. Наполегливо радимо встановлювати вміст лише з тих джерел, яким ви довіряєте."
   },
   "app.modal.install-to-play.unavailable-description": {
     "message": "Версія збірки, яку використовує цей сервер, наразі не може завантажитися. Вона може бути неопублікована або під розглядом. Спробуйте пізніше або зв'яжіться з власником сервера."
@@ -1326,7 +1326,7 @@
     "message": "Збірка цього сервера недоступна"
   },
   "app.modal.install-to-play.unknown-files-description": {
-    "message": "Ця збірка сервера містить файли, які не опубліковані на Modrinth. Наполегливо радимо встановлювати вміст лише з тих джерел, яким ви довіряєте."
+    "message": "Ця збірка сервера містить файли, які не опубліковані на Dr3sh App. Наполегливо радимо встановлювати вміст лише з тих джерел, яким ви довіряєте."
   },
   "app.modal.install-to-play.unknown-files-warning": {
     "message": "Попередження про невідомі файли"
@@ -1347,7 +1347,7 @@
     "message": "Видалено"
   },
   "app.modal.update-to-play.server-modpack-unknown-files-description": {
-    "message": "Це оновлення збірки сервера містить файли, які не опубліковані на Modrinth. Наполегливо радимо встановлювати вміст лише з тих джерел, яким ви довіряєте."
+    "message": "Це оновлення збірки сервера містить файли, які не опубліковані на Dr3sh App. Наполегливо радимо встановлювати вміст лише з тих джерел, яким ви довіряєте."
   },
   "app.modal.update-to-play.shared-instance-added-label": {
     "message": "Додано"
@@ -1356,7 +1356,7 @@
     "message": "Видалено"
   },
   "app.modal.update-to-play.shared-instance-unknown-files-description": {
-    "message": "Це оновлення спільного примірника містить файли, які не опубліковані на Modrinth. Наполегливо радимо встановлювати вміст лише з тих джерел, яким ви довіряєте."
+    "message": "Це оновлення спільного примірника містить файли, які не опубліковані на Dr3sh App. Наполегливо радимо встановлювати вміст лише з тих джерел, яким ви довіряєте."
   },
   "app.modal.update-to-play.update-required": {
     "message": "Необхідне оновлення"
@@ -1377,10 +1377,10 @@
     "message": "Завантаження профілю..."
   },
   "app.nav.modrinth-account": {
-    "message": "Обліковий запис Modrinth"
+    "message": "Обліковий запис Dr3sh App"
   },
   "app.nav.modrinth-hosting": {
-    "message": "Modrinth Hosting"
+    "message": "Dr3sh App Hosting"
   },
   "app.nav.remove-account": {
     "message": "Вилучити обліковий запис"
@@ -1389,13 +1389,13 @@
     "message": "Знімки екрана"
   },
   "app.nav.sign-in-to-modrinth-account": {
-    "message": "Увійти до Modrinth"
+    "message": "Увійти до Dr3sh App"
   },
   "app.nav.switch-account": {
     "message": "Змінити обліковий запис"
   },
   "app.nav.upgrade-to-modrinth-plus": {
-    "message": "Покращитися до Modrinth+"
+    "message": "Покращитися до Dr3sh App+"
   },
   "app.nav.view-profile": {
     "message": "Переглянути профіль"
@@ -1611,7 +1611,7 @@
     "message": "Експортувати ZIP"
   },
   "app.screenshots.selection.global-export-filename": {
-    "message": "Знімки екрана Modrinth.zip"
+    "message": "Знімки екрана Dr3sh App.zip"
   },
   "app.screenshots.selection.instance-export-filename": {
     "message": "Знімки екрана {instance}.zip"
@@ -1641,7 +1641,7 @@
     "message": "Найстаріші"
   },
   "app.settings.app-version": {
-    "message": "Modrinth App {version}"
+    "message": "Dr3sh App {version}"
   },
   "app.settings.default-instance-options.environment-variables.description": {
     "message": "Змінні середовища встановлюються, коли примірник запускається."
@@ -1908,7 +1908,7 @@
     "message": "Деякі з ваших примірників не можуть використовувати цей параметр"
   },
   "app.settings.game-options.compatibility.reason.launcher-controlled": {
-    "message": "Цей параметр керується налаштуваннями запуску Modrinth."
+    "message": "Цей параметр керується налаштуваннями запуску Dr3sh App."
   },
   "app.settings.game-options.custom-value.placeholder": {
     "message": "Уведіть значення"
@@ -2742,16 +2742,16 @@
     "message": "macOS"
   },
   "app.settings.privacy.ads-consent.intro": {
-    "message": "Реклама підтримує існування Modrinth і фінансує виплати творцям. Наші партнери можуть зберігати й отримувати доступ до cookie в застосунку, щоб персоналізувати рекламу та збирати метрики. Ви можете відмовитися від них або керувати налаштуваннями нижче."
+    "message": "Реклама підтримує існування Dr3sh App і фінансує виплати творцям. Наші партнери можуть зберігати й отримувати доступ до cookie в застосунку, щоб персоналізувати рекламу та збирати метрики. Ви можете відмовитися від них або керувати налаштуваннями нижче."
   },
   "app.settings.privacy.discord-rich-presence.description": {
-    "message": "Показувати Modrinth App як вашу поточну активність у Discord. Це не впливає на активність, додану модами. Потребує перезапуску застосунку."
+    "message": "Показувати Dr3sh App як вашу поточну активність у Discord. Це не впливає на активність, додану модами. Потребує перезапуску застосунку."
   },
   "app.settings.privacy.discord-rich-presence.title": {
     "message": "Discord Rich Presence"
   },
   "app.settings.privacy.telemetry.description": {
-    "message": "Modrinth збирає анонімізовану аналітику та дані про використання для покращення зручності та адаптації сервісу. Вимкнувши цю опцію, ви відмовляєтеся від збору, і ваші дані більше не збиратимуться."
+    "message": "Dr3sh App збирає анонімізовану аналітику та дані про використання для покращення зручності та адаптації сервісу. Вимкнувши цю опцію, ви відмовляєтеся від збору, і ваші дані більше не збиратимуться."
   },
   "app.settings.privacy.telemetry.title": {
     "message": "Телеметрія"
@@ -2766,7 +2766,7 @@
     "message": "Застосунок може завантажуватися повільніше, поки кеш не відновиться."
   },
   "app.settings.resource-management.app-cache.description": {
-    "message": "Очистити кешовані дані та завантажити їх знову з Modrinth. Застосунок може завантажуватися повільніше, поки кеш відновиться."
+    "message": "Очистити кешовані дані та завантажити їх знову з Dr3sh App. Застосунок може завантажуватися повільніше, поки кеш відновиться."
   },
   "app.settings.resource-management.app-cache.title": {
     "message": "Кеш застосунку"
@@ -2784,7 +2784,7 @@
     "message": "Оглянути каталог застосунку"
   },
   "app.settings.resource-management.app-directory.description": {
-    "message": "Де Modrinth App зберігає примірники й інші файли. Зміни набудуть чинності після перезапуску застосунку."
+    "message": "Де Dr3sh App зберігає примірники й інші файли. Зміни набудуть чинності після перезапуску застосунку."
   },
   "app.settings.resource-management.app-directory.select": {
     "message": "Вибрати новий каталог застосунку"
@@ -2793,7 +2793,7 @@
     "message": "Каталог застосунку"
   },
   "app.settings.resource-management.debug-info.description": {
-    "message": "Експортує журнал застосунку та діагностичні дані в ZIP-файл, яким можна поділитися з підтримкою Modrinth."
+    "message": "Експортує журнал застосунку та діагностичні дані в ZIP-файл, яким можна поділитися з підтримкою Dr3sh App."
   },
   "app.settings.resource-management.debug-info.export": {
     "message": "Експортувати інформацію налагодження"
@@ -2955,7 +2955,7 @@
     "message": "Ці налаштування змінилися десь ще"
   },
   "app.settings.synced-options.game-settings.custom-empty": {
-    "message": "Додані модами налаштування з'являться тут після того, як Modrinth знайде їх в одному з ваших примірників."
+    "message": "Додані модами налаштування з'являться тут після того, як Dr3sh App знайде їх в одному з ваших примірників."
   },
   "app.settings.synced-options.game-settings.description": {
     "message": "Використовувати однакові налаштування гри у всіх примірниках."
@@ -3135,7 +3135,7 @@
     "message": "Скопіювати деталі реклами"
   },
   "app.settings.troubleshooting.report-ad.description": {
-    "message": "Побачили неприйнятну чи образливу рекламу? Скопіюйте її деталі під час її показу та надішліть їх <support>підтримці Modrinth</support>. Ми переглянемо й видалимо її."
+    "message": "Побачили неприйнятну чи образливу рекламу? Скопіюйте її деталі під час її показу та надішліть їх <support>підтримці Dr3sh App</support>. Ми переглянемо й видалимо її."
   },
   "app.settings.troubleshooting.report-ad.no-ad.text": {
     "message": "Дочекайтеся завантаження реклами, і спробуйте знову."
@@ -3282,13 +3282,13 @@
     "message": "MINECON Earth 2017"
   },
   "app.skins.section.modrinth": {
-    "message": "Modrinth"
+    "message": "Dr3sh App"
   },
   "app.skins.section.modrinth-pride": {
-    "message": "Modrinth Pride"
+    "message": "Dr3sh App Pride"
   },
   "app.skins.section.modrinth-pride.tooltip": {
-    "message": "Ви отримали ці скіни за участь у благодійній акції Modrinth Pride під час місяця прайду."
+    "message": "Ви отримали ці скіни за участь у благодійній акції Dr3sh App Pride під час місяця прайду."
   },
   "app.skins.section.mounts-of-mayhem": {
     "message": "Mounts of Mayhem"
@@ -3324,10 +3324,10 @@
     "message": "Увімкнути"
   },
   "app.survey.body": {
-    "message": "Не бажаєте відповісти на кілька запитань про ваш досвід користування Modrinth App?"
+    "message": "Не бажаєте відповісти на кілька запитань про ваш досвід користування Dr3sh App?"
   },
   "app.survey.footer": {
-    "message": "Цей відгук надійде безпосередньо команді Modrinth і допоможе у створенні майбутніх оновлень!"
+    "message": "Цей відгук надійде безпосередньо команді Dr3sh App і допоможе у створенні майбутніх оновлень!"
   },
   "app.survey.no-thanks": {
     "message": "Ні, дякую"
@@ -3336,7 +3336,7 @@
     "message": "Пройти опитування"
   },
   "app.survey.title": {
-    "message": "Привіт, користувачу Modrinth!"
+    "message": "Привіт, користувачу Dr3sh App!"
   },
   "app.sync-instances-update.badge": {
     "message": "У цьому оновленні"
@@ -3468,13 +3468,13 @@
     "message": "Синхронізовані пакети ресурсів"
   },
   "app.update-popup.body.download-complete": {
-    "message": "Modrinth App v{version} завантажено. Перезапустіть, щоб оновити зараз, або це відбудеться автоматично після закриття застосунку."
+    "message": "Dr3sh App v{version} завантажено. Перезапустіть, щоб оновити зараз, або це відбудеться автоматично після закриття застосунку."
   },
   "app.update-popup.body.linux": {
-    "message": "Modrinth App v{version} вже доступно. Скористайтеся менеджером пакетів, щоб отримати найновіші функції та виправлення!"
+    "message": "Dr3sh App v{version} вже доступно. Скористайтеся менеджером пакетів, щоб отримати найновіші функції та виправлення!"
   },
   "app.update-popup.body.metered": {
-    "message": "Modrinth App v{version} вже доступно! Оскільки ви використовуєте лімітне підключення, ми не завантажили його автоматично."
+    "message": "Dr3sh App v{version} вже доступно! Оскільки ви використовуєте лімітне підключення, ми не завантажили його автоматично."
   },
   "app.update-popup.changelog": {
     "message": "Список змін"
@@ -3519,10 +3519,10 @@
     "message": "Натисніть <shortcut>N</shortcut> для створення примірника"
   },
   "app.welcome-screen.title": {
-    "message": "Вітаємо в Modrinth"
+    "message": "Вітаємо в Dr3sh App"
   },
   "app.world.server-modal.placeholder-address": {
-    "message": "example.modrinth.gg"
+    "message": "example.Dr3sh App.gg"
   },
   "app.world.server-modal.select-an-option": {
     "message": "Виберіть опцію"
@@ -3591,7 +3591,7 @@
     "message": "Уведіть ім’я користувача…"
   },
   "friends.add-friend.username.title": {
-    "message": "Яке ім’я користувача Modrinth у вашого друга?"
+    "message": "Яке ім’я користувача Dr3sh App у вашого друга?"
   },
   "friends.add-friends-to-share": {
     "message": "<link>Додайте друзів</link>, щоб бачити, у що вони грають!"
@@ -3636,7 +3636,7 @@
     "message": "{title} — {count}"
   },
   "friends.sign-in-to-add-friends": {
-    "message": "<link>Увійдіть в обліковий запис Modrinth</link>, щоб додати друзів і бачити, у що вони грають!"
+    "message": "<link>Увійдіть в обліковий запис Dr3sh App</link>, щоб додати друзів і бачити, у що вони грають!"
   },
   "installation-settings.shared-instance.linked-title": {
     "message": "Пов'язаний спільний примірник"
@@ -3657,7 +3657,7 @@
     "message": "Скасувати публікацію спільного примірника"
   },
   "installation-settings.shared-instance.unpublish-description": {
-    "message": "Видалити цей спільний примірник із Modrinth і припинити надсилати оновлення всім, хто ним користується. Це не вплине на ваш локальний примірник."
+    "message": "Видалити цей спільний примірник із Dr3sh App і припинити надсилати оновлення всім, хто ним користується. Це не вплине на ваш локальний примірник."
   },
   "installation-settings.shared-instance.unpublishing-button": {
     "message": "Скасування публікації..."
@@ -3672,7 +3672,7 @@
     "message": "Відв'язати спільний примірник"
   },
   "installation-settings.unpublish-shared-instance.modal.admonition-body": {
-    "message": "Це видалить спільний примірник із серверів Modrinth. Користувачі Modrinth App припинять отримувати оновлення, але ваш локальний примірник і його вміст залишаться на цьому пристрої."
+    "message": "Це видалить спільний примірник із серверів Dr3sh App. Користувачі Dr3sh App припинять отримувати оновлення, але ваш локальний примірник і його вміст залишаться на цьому пристрої."
   },
   "installation-settings.unpublish-shared-instance.modal.admonition-header": {
     "message": "Скасування публікації спільного примірника"
@@ -4305,7 +4305,7 @@
     "message": "Створити обліковий запис"
   },
   "modal.modrinth-account-required.description": {
-    "message": "Ви повинні ввійти у свій обліковий запис Modrinth, перш ніж використовувати цей функціонал."
+    "message": "Ви повинні ввійти у свій обліковий запис Dr3sh App, перш ніж використовувати цей функціонал."
   },
   "modal.modrinth-account-required.header": {
     "message": "Необхідний обліковий запис"
@@ -4314,10 +4314,10 @@
     "message": "Знову відкрити переглядач"
   },
   "modal.modrinth-account-required.sign-in-button": {
-    "message": "Увійти в Modrinth"
+    "message": "Увійти в Dr3sh App"
   },
   "modal.modrinth-account-required.sign-in-heading": {
-    "message": "Вхід в обліковий запис Modrinth"
+    "message": "Вхід в обліковий запис Dr3sh App"
   },
   "modal.modrinth-account-required.signing-in-header": {
     "message": "Вхід"
@@ -4335,7 +4335,7 @@
     "message": "Увійти в Minecraft"
   },
   "onboarding-checklist.login-modrinth": {
-    "message": "Увійти в Modrinth"
+    "message": "Увійти в Dr3sh App"
   },
   "onboarding-checklist.title": {
     "message": "Почнімо"

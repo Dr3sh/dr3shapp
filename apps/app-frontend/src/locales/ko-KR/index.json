@@ -78,7 +78,7 @@
     "message": "Minecraft 설정에 실패했습니다"
   },
   "app.action-bar.install.summary.modrinth-unreachable": {
-    "message": "Modrinth에 연결할 수 없습니다"
+    "message": "Dr3sh App에 연결할 수 없습니다"
   },
   "app.action-bar.install.summary.no-write-permission": {
     "message": "쓰기 권한이 없습니다"
@@ -135,7 +135,7 @@
     "message": "모두 수락"
   },
   "app.ads-consent.body": {
-    "message": "광고는 Modrinth가 운영될 수 있도록 하며, 크리에이터에게 지급되는 보상을 지원합니다. 저희의 파트너는 개인에 맞는 광고를 제공하고 성과를 측정하기 위해 쿠키를 저장하거나 접근할 수 있습니다."
+    "message": "광고는 Dr3sh App가 운영될 수 있도록 하며, 크리에이터에게 지급되는 보상을 지원합니다. 저희의 파트너는 개인에 맞는 광고를 제공하고 성과를 측정하기 위해 쿠키를 저장하거나 접근할 수 있습니다."
   },
   "app.ads-consent.manage": {
     "message": "환경설정 관리"
@@ -144,7 +144,7 @@
     "message": "모두 거절"
   },
   "app.ads-consent.title": {
-    "message": "개인정보 및 광고가 Modrinth를 지원하는 방식"
+    "message": "개인정보 및 광고가 Dr3sh App를 지원하는 방식"
   },
   "app.appearance-settings.compact-mode.description": {
     "message": "라이브러리 인스턴스를 간결한 행 형태의 레이아웃으로 표시합니다."
@@ -165,7 +165,7 @@
     "message": "이름표 숨기기"
   },
   "app.appearance-settings.minimize-launcher.description": {
-    "message": "Minecraft가 시작되면 Modrinth 앱을 최소화합니다."
+    "message": "Minecraft가 시작되면 Dr3sh App 앱을 최소화합니다."
   },
   "app.appearance-settings.minimize-launcher.title": {
     "message": "앱 최소화"
@@ -189,7 +189,7 @@
     "message": "오른쪽 사이드바 숨기기"
   },
   "app.appearance-settings.unknown-pack-warning.description": {
-    "message": "Modrinth에 호스팅되지 않은 Modrinth Pack(.mrpack)을 설치하기 전에 안전 경고를 표시합니다."
+    "message": "Dr3sh App에 호스팅되지 않은 Dr3sh App Pack(.mrpack)을 설치하기 전에 안전 경고를 표시합니다."
   },
   "app.appearance-settings.unknown-pack-warning.title": {
     "message": "출처를 알 수 없는 모드팩 설치 전 경고"
@@ -207,7 +207,7 @@
     "message": "홈 및 콘텐츠"
   },
   "app.behavior-settings.refocus-on-game-close.description": {
-    "message": "Minecraft를 종료하면 Modrinth 앱을 앞으로 띄웁니다."
+    "message": "Minecraft를 종료하면 Dr3sh App 앱을 앞으로 띄웁니다."
   },
   "app.behavior-settings.refocus-on-game-close.title": {
     "message": "Minecraft를 닫을 때 앱 다시 띄우기"
@@ -219,7 +219,7 @@
     "message": "로그인한 모든 기기에서 이 설정을 사용합니다. 이 기기에서 별도의 설정을 사용하려면 이 옵션을 끄세요."
   },
   "app.behavior-settings.sync-across-devices.signed-out-tooltip": {
-    "message": "Modrinth 계정에 로그인하여 설정을 동기화하세요."
+    "message": "Dr3sh App 계정에 로그인하여 설정을 동기화하세요."
   },
   "app.behavior-settings.sync-across-devices.title": {
     "message": "기기 간 동기화"
@@ -471,7 +471,7 @@
     "message": "로그인한 모든 곳에서 이 기능 설정을 사용합니다. 이를 끄면 이 기기에서 별도의 설정을 유지합니다."
   },
   "app.features-settings.sync-across-devices.signed-out-tooltip": {
-    "message": "Modrinth 계정에 로그인하여 설정을 동기화합니다."
+    "message": "Dr3sh App 계정에 로그인하여 설정을 동기화합니다."
   },
   "app.features-settings.sync-across-devices.title": {
     "message": "기기 간 동기화"
@@ -513,16 +513,16 @@
     "message": "인스턴스 보기"
   },
   "app.hosting.update-required.description": {
-    "message": "업데이트해야 Modrinth 앱을 통해 Modrinth 호스팅을 사용할 수 있습니다"
+    "message": "업데이트해야 Dr3sh App 앱을 통해 Dr3sh App 호스팅을 사용할 수 있습니다"
   },
   "app.hosting.update-required.download": {
     "message": "다운로드하여 업데이트"
   },
   "app.hosting.update-required.rinthbot-alt": {
-    "message": "들뜬 Modrinth Bot"
+    "message": "들뜬 Dr3sh App Bot"
   },
   "app.hosting.update-required.title": {
-    "message": "Modrinth 앱 업데이트 필요"
+    "message": "Dr3sh App 앱 업데이트 필요"
   },
   "app.install.phase.downloading_content": {
     "message": "콘텐츠 다운로드 중"
@@ -849,13 +849,13 @@
     "message": "계정 로그인:"
   },
   "app.instance.shared-instance-wrong-account.signed-out-header": {
-    "message": "Modrinth에 로그인해야 합니다"
+    "message": "Dr3sh App에 로그인해야 합니다"
   },
   "app.instance.shared-instance-wrong-account.user-admonition-body-v2": {
     "message": "이 공유 인스턴스의 업데이트를 받으려면 로그인하세요."
   },
   "app.instance.shared-instance-wrong-account.warning-header": {
-    "message": "잘못된 Modrinth 계정을 사용하고 있습니다"
+    "message": "잘못된 Dr3sh App 계정을 사용하고 있습니다"
   },
   "app.instance.shortcut.created": {
     "message": "바로가기 생성됨"
@@ -1281,10 +1281,10 @@
     "message": "설치"
   },
   "app.modal.install-to-play.invite-warning": {
-    "message": "이 초대는 Modrinth가 아니라 그 사용자 중 한 명이 생성했어요. 신뢰할 수 있는 사람의 초대만 수락하세요."
+    "message": "이 초대는 Dr3sh App가 아니라 그 사용자 중 한 명이 생성했어요. 신뢰할 수 있는 사람의 초대만 수락하세요."
   },
   "app.modal.install-to-play.invite-warning-with-creator": {
-    "message": "이 초대는 Modrinth가 아니라 <creator>{username}</creator> 사용자가 생성했어요. 신뢰할 수 있는 사람의 초대만 수락하세요."
+    "message": "이 초대는 Dr3sh App가 아니라 <creator>{username}</creator> 사용자가 생성했어요. 신뢰할 수 있는 사람의 초대만 수락하세요."
   },
   "app.modal.install-to-play.managed-content.modpack-header": {
     "message": "모드팩 콘텐츠"
@@ -1317,7 +1317,7 @@
     "message": "지원 요청은 <support-link>지원 팀</support-link> 문의를 이용해 주세요. 버그 제보는 <github-link>GitHub 이슈</github-link>를 등록하세요."
   },
   "app.modal.install-to-play.reviewed-files": {
-    "message": "Modrinth에 게시되지 않은 파일은 검증되지 않았습니다."
+    "message": "Dr3sh App에 게시되지 않은 파일은 검증되지 않았습니다."
   },
   "app.modal.install-to-play.shared-instance": {
     "message": "인스턴스 공유됨"
@@ -1326,7 +1326,7 @@
     "message": "공유 인스턴스 콘텐츠"
   },
   "app.modal.install-to-play.shared-instance-unknown-files-description": {
-    "message": "이 공유 인스턴스에는 Modrinth에 게시되지 않은 파일이 포함되어 있습니다. 신뢰할 수 있는 출처의 파일만 설치하는 것을 강력히 권장합니다."
+    "message": "이 공유 인스턴스에는 Dr3sh App에 게시되지 않은 파일이 포함되어 있습니다. 신뢰할 수 있는 출처의 파일만 설치하는 것을 강력히 권장합니다."
   },
   "app.modal.install-to-play.unavailable-description": {
     "message": "이 서버에서 사용하는 모드팩 버전을 현재 다운로드할 수 없습니다. 아직 게시되지 않았거나 검토 중일 수 있습니다. 나중에 다시 시도하거나 서버 관리자에게 문의하세요."
@@ -1335,7 +1335,7 @@
     "message": "이 서버의 모드팩을 사용할 수 없습니다"
   },
   "app.modal.install-to-play.unknown-files-description": {
-    "message": "이 서버의 모드팩은 Modrinth에 게시되지 않은 파일을 포함하고 있습니다. 신뢰할 수 있는 출처의 파일만 설치하는 것을 강력히 권장합니다."
+    "message": "이 서버의 모드팩은 Dr3sh App에 게시되지 않은 파일을 포함하고 있습니다. 신뢰할 수 있는 출처의 파일만 설치하는 것을 강력히 권장합니다."
   },
   "app.modal.install-to-play.unknown-files-warning": {
     "message": "출처를 알 수 없는 파일"
@@ -1356,7 +1356,7 @@
     "message": "제거됨"
   },
   "app.modal.update-to-play.server-modpack-unknown-files-description": {
-    "message": "이 서버 모드팩 업데이트에는 Modrinth에 게시되지 않은 파일이 포함되어 있습니다. 신뢰할 수 있는 출처의 파일만 설치하는 것을 강력히 권장합니다."
+    "message": "이 서버 모드팩 업데이트에는 Dr3sh App에 게시되지 않은 파일이 포함되어 있습니다. 신뢰할 수 있는 출처의 파일만 설치하는 것을 강력히 권장합니다."
   },
   "app.modal.update-to-play.shared-instance-added-label": {
     "message": "추가됨"
@@ -1365,7 +1365,7 @@
     "message": "제거됨"
   },
   "app.modal.update-to-play.shared-instance-unknown-files-description": {
-    "message": "이 공유 인스턴스 업데이트에는 Modrinth에 게시되지 않은 파일이 포함되어 있습니다. 신뢰할 수 있는 출처의 파일만 설치하는 것을 강력히 권장합니다."
+    "message": "이 공유 인스턴스 업데이트에는 Dr3sh App에 게시되지 않은 파일이 포함되어 있습니다. 신뢰할 수 있는 출처의 파일만 설치하는 것을 강력히 권장합니다."
   },
   "app.modal.update-to-play.update-required": {
     "message": "업데이트 필요"
@@ -1386,10 +1386,10 @@
     "message": "프로필 불러오는 중..."
   },
   "app.nav.modrinth-account": {
-    "message": "Modrinth 계정"
+    "message": "Dr3sh App 계정"
   },
   "app.nav.modrinth-hosting": {
-    "message": "Modrinth 호스팅"
+    "message": "Dr3sh App 호스팅"
   },
   "app.nav.remove-account": {
     "message": "계정 제거"
@@ -1398,13 +1398,13 @@
     "message": "스크린샷들"
   },
   "app.nav.sign-in-to-modrinth-account": {
-    "message": "Modrinth에 로그인"
+    "message": "Dr3sh App에 로그인"
   },
   "app.nav.switch-account": {
     "message": "계정 변경"
   },
   "app.nav.upgrade-to-modrinth-plus": {
-    "message": "Modrinth+ 로 업그레이드"
+    "message": "Dr3sh App+ 로 업그레이드"
   },
   "app.nav.view-profile": {
     "message": "프로필 보기"
@@ -1620,7 +1620,7 @@
     "message": "ZIP 내보내기"
   },
   "app.screenshots.selection.global-export-filename": {
-    "message": "Modrinth 스크린샷.zip"
+    "message": "Dr3sh App 스크린샷.zip"
   },
   "app.screenshots.selection.instance-export-filename": {
     "message": "{instance} 스크린샷.zip"
@@ -1650,7 +1650,7 @@
     "message": "오래됨"
   },
   "app.settings.app-version": {
-    "message": "Modrinth 앱 {version}"
+    "message": "Dr3sh App 앱 {version}"
   },
   "app.settings.default-instance-options.environment-variables.description": {
     "message": "인스턴스를 실행할 때 설정되는 환경 변수입니다."
@@ -1917,7 +1917,7 @@
     "message": "인스턴스 중 하나가 이 설정을 사용할 수 없습니다"
   },
   "app.settings.game-options.compatibility.reason.launcher-controlled": {
-    "message": "이 설정은 Modrinth의 실행 설정에 의해 관리됩니다."
+    "message": "이 설정은 Dr3sh App의 실행 설정에 의해 관리됩니다."
   },
   "app.settings.game-options.custom-value.placeholder": {
     "message": "값 입력"
@@ -2751,16 +2751,16 @@
     "message": "macOS"
   },
   "app.settings.privacy.ads-consent.intro": {
-    "message": "광고는 Modrinth가 운영될 수 있도록 하며, 크리에이터에게 지급되는 보상을 지원합니다. 우리의 파트너는 앱에서 광고를 개인 맞춤으로 제공하고 성과를 측정하기 위해 쿠키를 저장하거나 접근할 수 있습니다. 아래에서 거부하거나 환경 설정을 관리할 수 있습니다."
+    "message": "광고는 Dr3sh App가 운영될 수 있도록 하며, 크리에이터에게 지급되는 보상을 지원합니다. 우리의 파트너는 앱에서 광고를 개인 맞춤으로 제공하고 성과를 측정하기 위해 쿠키를 저장하거나 접근할 수 있습니다. 아래에서 거부하거나 환경 설정을 관리할 수 있습니다."
   },
   "app.settings.privacy.discord-rich-presence.description": {
-    "message": "Discord의 현재 활동 상태에 Modrinth 앱을 표시합니다. 모드가 인스턴스에 추가한 Rich Presence에는 영향을 미치지 않습니다. 앱 재시작이 필요합니다."
+    "message": "Discord의 현재 활동 상태에 Dr3sh App 앱을 표시합니다. 모드가 인스턴스에 추가한 Rich Presence에는 영향을 미치지 않습니다. 앱 재시작이 필요합니다."
   },
   "app.settings.privacy.discord-rich-presence.title": {
     "message": "Discord 활동 상태"
   },
   "app.settings.privacy.telemetry.description": {
-    "message": "Modrinth는 사용자 경험 향상 및 맞춤 설정을 위해 익명화된 분석 데이터와 사용 데이터를 수집합니다. 이 옵션을 비활성화하면 데이터 수집을 거부하게 되며, 더 이상 데이터가 수집되지 않습니다."
+    "message": "Dr3sh App는 사용자 경험 향상 및 맞춤 설정을 위해 익명화된 분석 데이터와 사용 데이터를 수집합니다. 이 옵션을 비활성화하면 데이터 수집을 거부하게 되며, 더 이상 데이터가 수집되지 않습니다."
   },
   "app.settings.privacy.telemetry.title": {
     "message": "원격 분석"
@@ -2775,7 +2775,7 @@
     "message": "캐시가 재구축될 때까지 앱 불러오기가 느려질 수 있습니다."
   },
   "app.settings.resource-management.app-cache.description": {
-    "message": "캐시 데이터를 비우고 Modrinth에서 다시 다운로드합니다. 캐시가 재구축될 때까지 앱 불러오기가 느려질 수 있습니다."
+    "message": "캐시 데이터를 비우고 Dr3sh App에서 다시 다운로드합니다. 캐시가 재구축될 때까지 앱 불러오기가 느려질 수 있습니다."
   },
   "app.settings.resource-management.app-cache.title": {
     "message": "앱 캐시"
@@ -2793,7 +2793,7 @@
     "message": "앱 디렉터리 찾아보기"
   },
   "app.settings.resource-management.app-directory.description": {
-    "message": "Modrinth 앱이 인스턴스 및 기타 파일을 저장하는 위치입니다. 변경 사항은 앱을 재시작한 후 적용됩니다."
+    "message": "Dr3sh App 앱이 인스턴스 및 기타 파일을 저장하는 위치입니다. 변경 사항은 앱을 재시작한 후 적용됩니다."
   },
   "app.settings.resource-management.app-directory.select": {
     "message": "새 앱 디렉터리 선택"
@@ -2802,7 +2802,7 @@
     "message": "앱 경로"
   },
   "app.settings.resource-management.debug-info.description": {
-    "message": "앱 로그와 진단 데이터를 ZIP 파일로 내보내 Modrinth 지원팀에 공유할 수 있습니다."
+    "message": "앱 로그와 진단 데이터를 ZIP 파일로 내보내 Dr3sh App 지원팀에 공유할 수 있습니다."
   },
   "app.settings.resource-management.debug-info.export": {
     "message": "디버그 정보 내보내기"
@@ -2964,7 +2964,7 @@
     "message": "이 설정은 어딘가에서 변경되었습니다"
   },
   "app.settings.synced-options.game-settings.custom-empty": {
-    "message": "Modrinth가 인스턴스 중에 모드가 추가한 설정을 발견하면 여기에 나타납니다."
+    "message": "Dr3sh App가 인스턴스 중에 모드가 추가한 설정을 발견하면 여기에 나타납니다."
   },
   "app.settings.synced-options.game-settings.description": {
     "message": "인스턴스 간에 동일한 게임 옵션을 사용합니다."
@@ -3144,7 +3144,7 @@
     "message": "광고 정보 복사"
   },
   "app.settings.troubleshooting.report-ad.description": {
-    "message": "부적절하거나 불쾌감을 주는 광고를 발견하셨나요? 광고가 표시되는 동안 광고 정보를 복사하여 <support>Modrinth 지원팀</support>에 보내 주세요. 검토 후 해당 광고를 삭제하겠습니다."
+    "message": "부적절하거나 불쾌감을 주는 광고를 발견하셨나요? 광고가 표시되는 동안 광고 정보를 복사하여 <support>Dr3sh App 지원팀</support>에 보내 주세요. 검토 후 해당 광고를 삭제하겠습니다."
   },
   "app.settings.troubleshooting.report-ad.no-ad.text": {
     "message": "광고를 불러올 때까지 기다린 후 다시 시도하세요."
@@ -3297,13 +3297,13 @@
     "message": "MINECON Earth 2017"
   },
   "app.skins.section.modrinth": {
-    "message": "Modrinth"
+    "message": "Dr3sh App"
   },
   "app.skins.section.modrinth-pride": {
-    "message": "Modrinth 프라이드"
+    "message": "Dr3sh App 프라이드"
   },
   "app.skins.section.modrinth-pride.tooltip": {
-    "message": "프라이드 월간 동안 Modrinth 프라이드 모금 행사에 기부하여 이 스킨들을 받았습니다."
+    "message": "프라이드 월간 동안 Dr3sh App 프라이드 모금 행사에 기부하여 이 스킨들을 받았습니다."
   },
   "app.skins.section.mounts-of-mayhem": {
     "message": "Mounts of Mayhem"
@@ -3339,10 +3339,10 @@
     "message": "켜기"
   },
   "app.survey.body": {
-    "message": "Modrinth 앱 이용 경험에 대한 몇 가지 질문에 답변해 주시겠습니까?"
+    "message": "Dr3sh App 앱 이용 경험에 대한 몇 가지 질문에 답변해 주시겠습니까?"
   },
   "app.survey.footer": {
-    "message": "이 피드백은 Modrinth 팀에 직접 전달되어 향후 업데이트에 반영됩니다!"
+    "message": "이 피드백은 Dr3sh App 팀에 직접 전달되어 향후 업데이트에 반영됩니다!"
   },
   "app.survey.no-thanks": {
     "message": "괜찮습니다"
@@ -3351,7 +3351,7 @@
     "message": "설문 참여하기"
   },
   "app.survey.title": {
-    "message": "안녕하세요, Modrinth 사용자님!"
+    "message": "안녕하세요, Dr3sh App 사용자님!"
   },
   "app.sync-instances-update.badge": {
     "message": "이번 업데이트로 추가됨"
@@ -3483,13 +3483,13 @@
     "message": "동기화된 리소스 팩"
   },
   "app.update-popup.body.download-complete": {
-    "message": "Modrinth 앱 v{version} 다운로드를 마쳤습니다. 다시 불러와 바로 업데이트하거나 Modrinth 앱을 종료하면 자동으로 진행됩니다."
+    "message": "Dr3sh App 앱 v{version} 다운로드를 마쳤습니다. 다시 불러와 바로 업데이트하거나 Dr3sh App 앱을 종료하면 자동으로 진행됩니다."
   },
   "app.update-popup.body.linux": {
-    "message": "Modrinth 앱 v{version}을 사용할 수 있습니다. 최신 기능과 오류 수정을 적용하려면 패키지 관리자를 통해 업데이트하세요!"
+    "message": "Dr3sh App 앱 v{version}을 사용할 수 있습니다. 최신 기능과 오류 수정을 적용하려면 패키지 관리자를 통해 업데이트하세요!"
   },
   "app.update-popup.body.metered": {
-    "message": "Modrinth 앱 v{version}을 지금 사용할 수 있습니다! 데이터 통신 연결을 사용 중이므로, 자동으로 다운로드하지 않았습니다."
+    "message": "Dr3sh App 앱 v{version}을 지금 사용할 수 있습니다! 데이터 통신 연결을 사용 중이므로, 자동으로 다운로드하지 않았습니다."
   },
   "app.update-popup.changelog": {
     "message": "변경 내역"
@@ -3534,10 +3534,10 @@
     "message": "<shortcut>N</shortcut> 키를 눌러 인스턴스를 빠르게 생성합니다"
   },
   "app.welcome-screen.title": {
-    "message": "Modrinth에 오신 것을 환영합니다"
+    "message": "Dr3sh App에 오신 것을 환영합니다"
   },
   "app.world.server-modal.placeholder-address": {
-    "message": "example.modrinth.gg"
+    "message": "example.Dr3sh App.gg"
   },
   "app.world.server-modal.select-an-option": {
     "message": "옵션 선택"
@@ -3603,10 +3603,10 @@
     "message": "Minecraft 사용자명과 다를 수 있습니다!"
   },
   "friends.add-friend.username.placeholder": {
-    "message": "Modrinth 사용자명 입력..."
+    "message": "Dr3sh App 사용자명 입력..."
   },
   "friends.add-friend.username.title": {
-    "message": "친구의 Modrinth 사용자명이 무엇인가요?"
+    "message": "친구의 Dr3sh App 사용자명이 무엇인가요?"
   },
   "friends.add-friends-to-share": {
     "message": "<link>친구 추가</link>를 통해 친구들이 무엇을 하는지 확인해 보세요!"
@@ -3651,7 +3651,7 @@
     "message": "{title} - {count}"
   },
   "friends.sign-in-to-add-friends": {
-    "message": "<link>Modrinth 계정으로 로그인</link>하여 친구를 추가하고 무엇을 플레이 중인지 확인하세요!"
+    "message": "<link>Dr3sh App 계정으로 로그인</link>하여 친구를 추가하고 무엇을 플레이 중인지 확인하세요!"
   },
   "installation-settings.shared-instance.linked-title": {
     "message": "연동된 공유 인스턴스"
@@ -3672,7 +3672,7 @@
     "message": "공유 인스턴스 게시 취소"
   },
   "installation-settings.shared-instance.unpublish-description": {
-    "message": "Modrinth에서 이 공유 인스턴스를 삭제하고 이용자에게 업데이트 전송을 중단합니다. 본인의 로컬 인스턴스는 영향을 받지 않습니다."
+    "message": "Dr3sh App에서 이 공유 인스턴스를 삭제하고 이용자에게 업데이트 전송을 중단합니다. 본인의 로컬 인스턴스는 영향을 받지 않습니다."
   },
   "installation-settings.shared-instance.unpublishing-button": {
     "message": "게시 취소 중..."
@@ -3687,7 +3687,7 @@
     "message": "공유 인스턴스 연동 해제"
   },
   "installation-settings.unpublish-shared-instance.modal.admonition-body": {
-    "message": "이 작업은 Modrinth 서버에서 공유 인스턴스를 삭제합니다. Modrinth 앱에서 이를 이용 중인 사용자는 더 이상 업데이트를 받지 않지만, 본인의 로컬 인스턴스 및 콘텐츠는 이 기기에 유지됩니다."
+    "message": "이 작업은 Dr3sh App 서버에서 공유 인스턴스를 삭제합니다. Dr3sh App 앱에서 이를 이용 중인 사용자는 더 이상 업데이트를 받지 않지만, 본인의 로컬 인스턴스 및 콘텐츠는 이 기기에 유지됩니다."
   },
   "installation-settings.unpublish-shared-instance.modal.admonition-header": {
     "message": "공유 인스턴스 게시 취소 중"
@@ -4353,7 +4353,7 @@
     "message": "계정 생성"
   },
   "modal.modrinth-account-required.description": {
-    "message": "이 기능을 사용하려면 Modrinth 계정에 로그인해야 합니다."
+    "message": "이 기능을 사용하려면 Dr3sh App 계정에 로그인해야 합니다."
   },
   "modal.modrinth-account-required.header": {
     "message": "계정 필요"
@@ -4362,10 +4362,10 @@
     "message": "브라우저 다시 열기"
   },
   "modal.modrinth-account-required.sign-in-button": {
-    "message": "Modrinth 로그인"
+    "message": "Dr3sh App 로그인"
   },
   "modal.modrinth-account-required.sign-in-heading": {
-    "message": "Modrinth 계정 로그인"
+    "message": "Dr3sh App 계정 로그인"
   },
   "modal.modrinth-account-required.signing-in-header": {
     "message": "로그인 중"
@@ -4383,7 +4383,7 @@
     "message": "Minecraft에 로그인"
   },
   "onboarding-checklist.login-modrinth": {
-    "message": "Modrinth에 로그인"
+    "message": "Dr3sh App에 로그인"
   },
   "onboarding-checklist.title": {
     "message": "시작하기"

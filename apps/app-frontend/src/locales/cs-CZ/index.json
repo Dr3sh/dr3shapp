@@ -78,7 +78,7 @@
     "message": "Nastavení Minecraftu se nezdařilo"
   },
   "app.action-bar.install.summary.modrinth-unreachable": {
-    "message": "Nepodařilo se připojit k Modrinth"
+    "message": "Nepodařilo se připojit k Dr3sh App"
   },
   "app.action-bar.install.summary.no-write-permission": {
     "message": "Nemáte oprávnění k zápisu"
@@ -144,7 +144,7 @@
     "message": "Odmítnout vše"
   },
   "app.ads-consent.title": {
-    "message": "Vaše soukromí a způsob, jakým reklamy podporují Modrinth"
+    "message": "Vaše soukromí a způsob, jakým reklamy podporují Dr3sh App"
   },
   "app.appearance-settings.compact-mode.description": {
     "message": "Zobrazit instanční knihovny v kompaktních řádcích."
@@ -165,7 +165,7 @@
     "message": "Skrýt jmenovku"
   },
   "app.appearance-settings.minimize-launcher.description": {
-    "message": "Minimalizovat Modrinth aplikaci při spuštění Minecraftu."
+    "message": "Minimalizovat Dr3sh App aplikaci při spuštění Minecraftu."
   },
   "app.appearance-settings.minimize-launcher.title": {
     "message": "Minimalizovat aplikaci"
@@ -189,7 +189,7 @@
     "message": "Skrýt pravý postranní panel"
   },
   "app.appearance-settings.unknown-pack-warning.description": {
-    "message": "Zobrazit bezpečnostní varování před instalací Modrinth Pack (.mrpack), který není hostován v Modrinth."
+    "message": "Zobrazit bezpečnostní varování před instalací Dr3sh App Pack (.mrpack), který není hostován v Dr3sh App."
   },
   "app.appearance-settings.unknown-pack-warning.title": {
     "message": "Upozorni mě před instalací neznámých modpacků"
@@ -207,7 +207,7 @@
     "message": "Domovská stránka a kontent"
   },
   "app.behavior-settings.refocus-on-game-close.description": {
-    "message": "Zobrazit Modrinth App na popředí po opuštění Minecraftu."
+    "message": "Zobrazit Dr3sh App na popředí po opuštění Minecraftu."
   },
   "app.behavior-settings.refocus-on-game-close.title": {
     "message": "Přenést aplikaci na popředí po opuštění Minecraftu"
@@ -219,7 +219,7 @@
     "message": "Používejte toto nastavení všude, kde jste přihlášeni. Vypněte ho, pokud chcete různé nastavení na různých zařízeních."
   },
   "app.behavior-settings.sync-across-devices.signed-out-tooltip": {
-    "message": "Přihlašte se do vašeho Modrinth účtu aby jste si mohli synchronizovat nastavení."
+    "message": "Přihlašte se do vašeho Dr3sh App účtu aby jste si mohli synchronizovat nastavení."
   },
   "app.behavior-settings.sync-across-devices.title": {
     "message": "Synchronizovat nastavení mezi různými zařízeními"
@@ -471,7 +471,7 @@
     "message": "Použije tyto nastavení všude, kde jste přihlášeni. Vypněte toto pro zachování oddělených nastavení na tomto zařízení."
   },
   "app.features-settings.sync-across-devices.signed-out-tooltip": {
-    "message": "Přihlaste se Modrinth účtem pro synchronizaci nastavení."
+    "message": "Přihlaste se Dr3sh App účtem pro synchronizaci nastavení."
   },
   "app.features-settings.sync-across-devices.title": {
     "message": "Synchronizovat nastavení napříč zařízeními"
@@ -513,16 +513,16 @@
     "message": "Zobrazit instanci"
   },
   "app.hosting.update-required.description": {
-    "message": "Musíte aktualizovat Modrinth Hosting přes Modrinth App"
+    "message": "Musíte aktualizovat Dr3sh App Hosting přes Dr3sh App"
   },
   "app.hosting.update-required.download": {
     "message": "Stáhnout novou aktualizaci"
   },
   "app.hosting.update-required.rinthbot-alt": {
-    "message": "Nadšený Modrinth Bot"
+    "message": "Nadšený Dr3sh App Bot"
   },
   "app.hosting.update-required.title": {
-    "message": "Modrinth App potřebuje být aktualizovaná"
+    "message": "Dr3sh App potřebuje být aktualizovaná"
   },
   "app.install.phase.downloading_content": {
     "message": "Stahování obsahu"
@@ -846,13 +846,13 @@
     "message": "Přihlásit se jako"
   },
   "app.instance.shared-instance-wrong-account.signed-out-header": {
-    "message": "Musíte se přihlásit do Modrinthu"
+    "message": "Musíte se přihlásit do Dr3sh Appu"
   },
   "app.instance.shared-instance-wrong-account.user-admonition-body-v2": {
     "message": "dostávat aktualizace pro tuto sdílenou instanci."
   },
   "app.instance.shared-instance-wrong-account.warning-header": {
-    "message": "Používate nesprávný Modrinth účet"
+    "message": "Používate nesprávný Dr3sh App účet"
   },
   "app.instance.shortcut.created": {
     "message": "Zkratka vytvořena"
@@ -1278,10 +1278,10 @@
     "message": "Instalovat"
   },
   "app.modal.install-to-play.invite-warning": {
-    "message": "Tuto pozvánku vytvořil jiný uživatel platformy Modrinth, nikoliv samotný Modrinth. Přijímejte pozvánky pouze od lidí, kterým důvěřujete."
+    "message": "Tuto pozvánku vytvořil jiný uživatel platformy Dr3sh App, nikoliv samotný Dr3sh App. Přijímejte pozvánky pouze od lidí, kterým důvěřujete."
   },
   "app.modal.install-to-play.invite-warning-with-creator": {
-    "message": "Tuto pozvánku vytvořil/a <creator>{username}</creator>, nikoliv Modrinth. Přijímejte pozvánky pouze od lidí, kterým důvěřujete."
+    "message": "Tuto pozvánku vytvořil/a <creator>{username}</creator>, nikoliv Dr3sh App. Přijímejte pozvánky pouze od lidí, kterým důvěřujete."
   },
   "app.modal.install-to-play.managed-content.modpack-header": {
     "message": "Obsah modpacku"
@@ -1314,7 +1314,7 @@
     "message": "V případě žádostí o podporu kontaktujte náš <support-link>tým podpory</support-link>. Pro nahlášení chyb vytvořte <github-link>GitHub issue</github-link>."
   },
   "app.modal.install-to-play.reviewed-files": {
-    "message": "Soubory, které nejsou publikovány na Modrinthu, nejsou kontrolovány."
+    "message": "Soubory, které nejsou publikovány na Dr3sh Appu, nejsou kontrolovány."
   },
   "app.modal.install-to-play.shared-instance": {
     "message": "Sdílená instance"
@@ -1323,7 +1323,7 @@
     "message": "Společný obsah instance"
   },
   "app.modal.install-to-play.shared-instance-unknown-files-description": {
-    "message": "Tato sdílená instance obsahuje soubory, které nejsou publikované na Modrinthu. Silně doporučujeme instalovat pouze soubory ze zdroje, kterému důveřujete."
+    "message": "Tato sdílená instance obsahuje soubory, které nejsou publikované na Dr3sh Appu. Silně doporučujeme instalovat pouze soubory ze zdroje, kterému důveřujete."
   },
   "app.modal.install-to-play.unavailable-description": {
     "message": "Verzi modpacku, kterou tento server používá, momentálně nelze stáhnout. Možná byla stažena z nabídky nebo prochází kontrolou. Zkuste to znovu později, případně kontaktujte vlastníka serveru."
@@ -1332,7 +1332,7 @@
     "message": "Modpack tohoto serveru není k dispozici"
   },
   "app.modal.install-to-play.unknown-files-description": {
-    "message": "Tento serverový modpack obsahuje soubory, které nejsou publikované na Modrinthu. Silně doporučujeme instalovat pouze soubory ze zdroje, kterému důveřujete."
+    "message": "Tento serverový modpack obsahuje soubory, které nejsou publikované na Dr3sh Appu. Silně doporučujeme instalovat pouze soubory ze zdroje, kterému důveřujete."
   },
   "app.modal.install-to-play.unknown-files-warning": {
     "message": "Upozornění na neznámý soubor"
@@ -1353,7 +1353,7 @@
     "message": "Odstraněno"
   },
   "app.modal.update-to-play.server-modpack-unknown-files-description": {
-    "message": "Tato aktualizace serverového modpacku obsahuje soubory, které nejsou publikované na Modrinthu. Silně doporučujeme instalovat pouze soubory ze zdroje, kterému důveřujete."
+    "message": "Tato aktualizace serverového modpacku obsahuje soubory, které nejsou publikované na Dr3sh Appu. Silně doporučujeme instalovat pouze soubory ze zdroje, kterému důveřujete."
   },
   "app.modal.update-to-play.shared-instance-added-label": {
     "message": "Přidáno"
@@ -1362,7 +1362,7 @@
     "message": "Odstraněno"
   },
   "app.modal.update-to-play.shared-instance-unknown-files-description": {
-    "message": "Tato aktualizace sdílené instance obsahuje soubory, které nejsou publikované na Modrinthu. Silně doporučujeme instalovat pouze soubory ze zdroje, kterému důveřujete."
+    "message": "Tato aktualizace sdílené instance obsahuje soubory, které nejsou publikované na Dr3sh Appu. Silně doporučujeme instalovat pouze soubory ze zdroje, kterému důveřujete."
   },
   "app.modal.update-to-play.update-required": {
     "message": "Je vyžadována aktualizace"
@@ -1383,10 +1383,10 @@
     "message": "Načítání profilu..."
   },
   "app.nav.modrinth-account": {
-    "message": "Modrinth účet"
+    "message": "Dr3sh App účet"
   },
   "app.nav.modrinth-hosting": {
-    "message": "Modrinth Hosting"
+    "message": "Dr3sh App Hosting"
   },
   "app.nav.remove-account": {
     "message": "Odebrat účet"
@@ -1395,13 +1395,13 @@
     "message": "Screenshoty"
   },
   "app.nav.sign-in-to-modrinth-account": {
-    "message": "Přihlásit se do Modrinth"
+    "message": "Přihlásit se do Dr3sh App"
   },
   "app.nav.switch-account": {
     "message": "Změnit účet"
   },
   "app.nav.upgrade-to-modrinth-plus": {
-    "message": "Upgradovat na Modrinth+"
+    "message": "Upgradovat na Dr3sh App+"
   },
   "app.nav.view-profile": {
     "message": "Zobrazit profil"
@@ -1617,7 +1617,7 @@
     "message": "Exportovat ZIP"
   },
   "app.screenshots.selection.global-export-filename": {
-    "message": "Modrinth screenshots.zip"
+    "message": "Dr3sh App screenshots.zip"
   },
   "app.screenshots.selection.instance-export-filename": {
     "message": "{instance} screenshots.zip"
@@ -1647,7 +1647,7 @@
     "message": "Nejstarší"
   },
   "app.settings.app-version": {
-    "message": "Modrinth App {version}"
+    "message": "Dr3sh App {version}"
   },
   "app.settings.default-instance-options.environment-variables.description": {
     "message": "Nastavení proměnného prostředí při spuštění instance."
@@ -1914,7 +1914,7 @@
     "message": "Některé z vašich instancí nemohou použít toto nastavení"
   },
   "app.settings.game-options.compatibility.reason.launcher-controlled": {
-    "message": "Toto nastavení se řídí nastavením spouštění v Modrinthu."
+    "message": "Toto nastavení se řídí nastavením spouštění v Dr3sh Appu."
   },
   "app.settings.game-options.custom-value.placeholder": {
     "message": "Vložte hodnotu"
@@ -2844,13 +2844,13 @@
     "message": "MINECON Earth 2017"
   },
   "app.skins.section.modrinth": {
-    "message": "Modrinth"
+    "message": "Dr3sh App"
   },
   "app.skins.section.modrinth-pride": {
-    "message": "Modrinth Pride"
+    "message": "Dr3sh App Pride"
   },
   "app.skins.section.modrinth-pride.tooltip": {
-    "message": "Tyto skiny jsi obdržel za přispění do sbírky Modrinth Pride behěm Pride měsíce."
+    "message": "Tyto skiny jsi obdržel za přispění do sbírky Dr3sh App Pride behěm Pride měsíce."
   },
   "app.skins.section.mounts-of-mayhem": {
     "message": "Mounts of Mayhem"
@@ -2877,10 +2877,10 @@
     "message": "Výběr skinu"
   },
   "app.survey.body": {
-    "message": "Mohli byste prosím odpovědět na pár otázek ohledně vašich zkušeností s Modrinth App?"
+    "message": "Mohli byste prosím odpovědět na pár otázek ohledně vašich zkušeností s Dr3sh App?"
   },
   "app.survey.footer": {
-    "message": "Tato zpětná vazba půjde přímo k týmu Modrinthu a pomůže při budoucích aktualizacích!"
+    "message": "Tato zpětná vazba půjde přímo k týmu Dr3sh Appu a pomůže při budoucích aktualizacích!"
   },
   "app.survey.no-thanks": {
     "message": "Ne, děkuji"
@@ -2889,16 +2889,16 @@
     "message": "Zapoj se do ankety"
   },
   "app.survey.title": {
-    "message": "Ahoj Modrinth uživateli!"
+    "message": "Ahoj Dr3sh App uživateli!"
   },
   "app.update-popup.body.download-complete": {
-    "message": "Stahování Modrinth App v{version} bylo dokončeno. Aktualizujte ji znovunačtením nebo se automaticky aktualizuje po zavření."
+    "message": "Stahování Dr3sh App v{version} bylo dokončeno. Aktualizujte ji znovunačtením nebo se automaticky aktualizuje po zavření."
   },
   "app.update-popup.body.linux": {
-    "message": "Modrinth App v{version} je k dispozici. Aktualizujte ji pomocí svého správce balíčků, abyste získali nejnovější funkce a opravy!"
+    "message": "Dr3sh App v{version} je k dispozici. Aktualizujte ji pomocí svého správce balíčků, abyste získali nejnovější funkce a opravy!"
   },
   "app.update-popup.body.metered": {
-    "message": "Modrinth App v{version} je nyní k dispozici! Protože jste v měřené síti, nebyla stažena automaticky."
+    "message": "Dr3sh App v{version} je nyní k dispozici! Protože jste v měřené síti, nebyla stažena automaticky."
   },
   "app.update-popup.changelog": {
     "message": "Seznam změn"
@@ -2943,10 +2943,10 @@
     "message": "Stiskněte <shortcut>N</shortcut> pro rychlé vytvoření instance"
   },
   "app.welcome-screen.title": {
-    "message": "Vítejte v Modrinthu"
+    "message": "Vítejte v Dr3sh Appu"
   },
   "app.world.server-modal.placeholder-address": {
-    "message": "priklad.modrinth.gg"
+    "message": "priklad.Dr3sh App.gg"
   },
   "app.world.server-modal.select-an-option": {
     "message": "Vybrat možnost"
@@ -2985,10 +2985,10 @@
     "message": "Může se lišit od jejich Minecraft přezdívky!"
   },
   "friends.add-friend.username.placeholder": {
-    "message": "Zadej přezdívku na Modrinthu..."
+    "message": "Zadej přezdívku na Dr3sh Appu..."
   },
   "friends.add-friend.username.title": {
-    "message": "Jaká je přezdívka tvého přítele na Modrinthu?"
+    "message": "Jaká je přezdívka tvého přítele na Dr3sh Appu?"
   },
   "friends.add-friends-to-share": {
     "message": "<link>Přidej si přátele</link>, abys viděl, co hrají!"
@@ -3033,7 +3033,7 @@
     "message": "{title} - {count}"
   },
   "friends.sign-in-to-add-friends": {
-    "message": "<link>Přihlas se k Modrinth účtu</link>, abys mohl přidávat přátele a vidět, co hrají!"
+    "message": "<link>Přihlas se k Dr3sh App účtu</link>, abys mohl přidávat přátele a vidět, co hrají!"
   },
   "installation-settings.shared-instance.unlinking-button": {
     "message": "Odpojování..."
@@ -3423,10 +3423,10 @@
     "message": "Znovu otevřít prohlížeč"
   },
   "modal.modrinth-account-required.sign-in-button": {
-    "message": "Přihlásit se do Modrinth"
+    "message": "Přihlásit se do Dr3sh App"
   },
   "modal.modrinth-account-required.sign-in-heading": {
-    "message": "Přihlaste se k Modrinth účtu"
+    "message": "Přihlaste se k Dr3sh App účtu"
   },
   "modal.modrinth-account-required.signing-in-header": {
     "message": "Přihlášení"

@@ -4,6 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useDr3shLauncher } from '@/composables/use-dr3sh-launcher'
 
 const {
+	launcherVersion,
 	selectedServer,
 	currentView,
 	loading,
@@ -74,7 +75,7 @@ async function close() {
 				<span class="admin-pill-dot" />
 				<span>Modo Testing Activo</span>
 			</div>
-			<span class="topbar-version-pill" title="Versión del launcher: v0.2.16">v0.2.16</span>
+			<span class="topbar-version-pill" :title="`Versión del launcher: v${launcherVersion}`">v{{ launcherVersion }}</span>
 			<button
 				type="button"
 				class="icon-button"

@@ -26,6 +26,13 @@ pub(crate) async fn remove_instance(
 
     delete_instance_row_and_locks(&instance.id, state).await?;
 
+    crate::state::instances::watcher::unwatch_instance_folder(
+        &instance.path,
+        &state.file_watcher,
+        &state.directories,
+    )
+    .await;
+
     let path = state.directories.instances_dir().join(&instance.path);
     if std::fs::symlink_metadata(&path).is_ok() {
         // First try unlinking a directory junction or empty directory directly

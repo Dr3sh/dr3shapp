@@ -162,3 +162,29 @@ pub async fn remove(instance_id: &str) -> crate::Result<()> {
 
     Ok(())
 }
+
+pub async fn unwatch_instance(instance_path: &str) -> crate::Result<()> {
+    let state = State::get().await?;
+    crate::state::instances::watcher::unwatch_instance_folder(
+        instance_path,
+        &state.file_watcher,
+        &state.directories,
+    )
+    .await;
+    Ok(())
+}
+
+pub async fn watch_instance(
+    instance_id: &str,
+    instance_path: &str,
+) -> crate::Result<()> {
+    let state = State::get().await?;
+    crate::state::instances::watcher::watch_instance_folder(
+        instance_id,
+        instance_path,
+        &state.file_watcher,
+        &state.directories,
+    )
+    .await;
+    Ok(())
+}

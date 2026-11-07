@@ -41,7 +41,7 @@ const messages = defineMessages({
 	},
 	syncAcrossDevicesSignedOutTooltip: {
 		id: 'app.behavior-settings.sync-across-devices.signed-out-tooltip',
-		defaultMessage: 'Sign into a Modrinth account to sync settings.',
+		defaultMessage: 'Sign into a Dr3sh App account to sync settings.',
 	},
 	startupAndNavigationTitle: {
 		id: 'app.behavior-settings.startup-and-navigation.title',
@@ -61,7 +61,7 @@ const messages = defineMessages({
 	},
 	minimizeLauncherDescription: {
 		id: 'app.appearance-settings.minimize-launcher.description',
-		defaultMessage: 'Minimize Modrinth App when Minecraft starts.',
+		defaultMessage: 'Minimize Dr3sh App when Minecraft starts.',
 	},
 	refocusOnGameCloseTitle: {
 		id: 'app.behavior-settings.refocus-on-game-close.title',
@@ -69,7 +69,7 @@ const messages = defineMessages({
 	},
 	refocusOnGameCloseDescription: {
 		id: 'app.behavior-settings.refocus-on-game-close.description',
-		defaultMessage: 'Bring Modrinth App to the foreground when Minecraft exits.',
+		defaultMessage: 'Bring Dr3sh App to the foreground when Minecraft exits.',
 	},
 	defaultLandingPageHome: {
 		id: 'app.appearance-settings.default-landing-page.home',
@@ -118,7 +118,7 @@ const messages = defineMessages({
 	unknownPackWarningDescription: {
 		id: 'app.appearance-settings.unknown-pack-warning.description',
 		defaultMessage:
-			"Show a safety warning before installing a Modrinth Pack (.mrpack) that isn't hosted on Modrinth.",
+			"Show a safety warning before installing a Modpack (.mrpack) that isn't hosted on Dr3sh App.",
 	},
 	skipNonEssentialWarningsTitle: {
 		id: 'app.appearance-settings.skip-non-essential-warnings.title',

@@ -132,7 +132,7 @@
     "message": "קבל הכל"
   },
   "app.ads-consent.body": {
-    "message": "פרסומות מאפשרות את הפעילות של Modrinth ואת הון התשלום ליוצרים. ייתכן כי השותפים שלנו ישמרו או יגשו לעוגיות באפליקציה על מנת להגיש פרסומות אישיות ולמדוד ביצועים."
+    "message": "פרסומות מאפשרות את הפעילות של Dr3sh App ואת הון התשלום ליוצרים. ייתכן כי השותפים שלנו ישמרו או יגשו לעוגיות באפליקציה על מנת להגיש פרסומות אישיות ולמדוד ביצועים."
   },
   "app.ads-consent.manage": {
     "message": "ניהול העדפות"
@@ -141,7 +141,7 @@
     "message": "דחה הכל"
   },
   "app.ads-consent.title": {
-    "message": "הפרטיות שלך ואיך פרסומות תומכות בModrinth"
+    "message": "הפרטיות שלך ואיך פרסומות תומכות בDr3sh App"
   },
   "app.appearance-settings.compact-mode.description": {
     "message": "הצכ התקנות בפריסת שורות קומפקטית."
@@ -162,7 +162,7 @@
     "message": "הסתר שם משתמש"
   },
   "app.appearance-settings.minimize-launcher.description": {
-    "message": "מזער את אפליקציית Modrinth בעת הפעלת Minecraft."
+    "message": "מזער את אפליקציית Dr3sh App בעת הפעלת Minecraft."
   },
   "app.appearance-settings.minimize-launcher.title": {
     "message": "הקטן אפליקציה"
@@ -186,7 +186,7 @@
     "message": "הסתר את סרגל הצד הימני"
   },
   "app.appearance-settings.unknown-pack-warning.description": {
-    "message": "הצג אזהרת בטיחות לפני התקנת חבילת Modrinth (.mrpack) שאינה מאורחת ב-Modrinth."
+    "message": "הצג אזהרת בטיחות לפני התקנת חבילת Dr3sh App (.mrpack) שאינה מאורחת ב-Dr3sh App."
   },
   "app.appearance-settings.unknown-pack-warning.title": {
     "message": "הזהר אותי לפני התקנת חבילות תוכן לא מוכרות"
@@ -210,7 +210,7 @@
     "message": "שתמש בהגדרות התנהגות אלו בכל מקום שבו אתה מחובר. כבה אפשרות זו כדי לשמור על הגדרות נפרדות במכשיר זה."
   },
   "app.behavior-settings.sync-across-devices.signed-out-tooltip": {
-    "message": "התחבר לחשבון Modrinth כדי לסנכרן הגדרות."
+    "message": "התחבר לחשבון Dr3sh App כדי לסנכרן הגדרות."
   },
   "app.behavior-settings.sync-across-devices.title": {
     "message": "סנכרן התנהגות בין מכשירים"
@@ -378,7 +378,7 @@
     "message": "שמור הגדרות הפיצ'רים האלה בכל מקום שאתה מחובר. כבה הגדרה זאת כדי להשאיר הגדרות שונות במכשיר זה."
   },
   "app.features-settings.sync-across-devices.signed-out-tooltip": {
-    "message": "התחבר לחשבון Modrinth כדי לסנכרן הגדרות."
+    "message": "התחבר לחשבון Dr3sh App כדי לסנכרן הגדרות."
   },
   "app.features-settings.sync-across-devices.title": {
     "message": "סנכרן פיצ'רים בין מכשירים"
@@ -411,16 +411,16 @@
     "message": "הצג התקנה"
   },
   "app.hosting.update-required.description": {
-    "message": "עליך לעדכן בכדי להשתמש ב- Modrinth Hosting דרך אפליקציית ה Modrinth"
+    "message": "עליך לעדכן בכדי להשתמש ב- Dr3sh App Hosting דרך אפליקציית ה Dr3sh App"
   },
   "app.hosting.update-required.download": {
     "message": "הורד על מנת לעדכן"
   },
   "app.hosting.update-required.rinthbot-alt": {
-    "message": "רובוט Modrinth מתרגש"
+    "message": "רובוט Dr3sh App מתרגש"
   },
   "app.hosting.update-required.title": {
-    "message": "אפליקציית ה- Modrinth דורשת עדכון"
+    "message": "אפליקציית ה- Dr3sh App דורשת עדכון"
   },
   "app.install.phase.downloading_content": {
     "message": "מוריד תוכן"
@@ -747,13 +747,13 @@
     "message": "התחברו בתור"
   },
   "app.instance.shared-instance-wrong-account.signed-out-header": {
-    "message": "צריך להתחבר ל-Modrinth"
+    "message": "צריך להתחבר ל-Dr3sh App"
   },
   "app.instance.shared-instance-wrong-account.user-admonition-body-v2": {
     "message": "כדי לקבל עדכונים עבור ההתקנה המשותפת הזו."
   },
   "app.instance.shared-instance-wrong-account.warning-header": {
-    "message": "אתם משתמשים בחשבון Modrinth הלא נכון"
+    "message": "אתם משתמשים בחשבון Dr3sh App הלא נכון"
   },
   "app.instance.shortcut.created": {
     "message": "קיצור הדרך נוצר"
@@ -1215,7 +1215,7 @@
     "message": "לפניות בנושא תמיכה, צרו קשר עם <support-link>צוות התמיכה</support-link> שלנו. לדיווח על באגים, פתחו <github-link>בעיית Github</github-link>."
   },
   "app.modal.install-to-play.reviewed-files": {
-    "message": "קבצים שלא עלו בModrinth לא מקבלים בדיקה."
+    "message": "קבצים שלא עלו בDr3sh App לא מקבלים בדיקה."
   },
   "app.modal.install-to-play.shared-instance": {
     "message": "התקנה משותפת"
@@ -1224,10 +1224,10 @@
     "message": "שתף תוכן ההתקן"
   },
   "app.modal.install-to-play.shared-instance-unknown-files-description": {
-    "message": "התקן משותף זה מכיל קבצים שאינם מפורסמים ב-Modrinth. אנו ממליצים בחום להתקין קבצים אך ורק ממקורות שאתם סומכים עליהם."
+    "message": "התקן משותף זה מכיל קבצים שאינם מפורסמים ב-Dr3sh App. אנו ממליצים בחום להתקין קבצים אך ורק ממקורות שאתם סומכים עליהם."
   },
   "app.modal.install-to-play.unknown-files-description": {
-    "message": "שרת חבילת מודים זה מכיל קבצים שאינם מפורסמים ב-Modrinth. אנו ממליצים בחום להתקין קבצים אך ורק ממקורות שאתם סומכים עליהם."
+    "message": "שרת חבילת מודים זה מכיל קבצים שאינם מפורסמים ב-Dr3sh App. אנו ממליצים בחום להתקין קבצים אך ורק ממקורות שאתם סומכים עליהם."
   },
   "app.modal.install-to-play.unknown-files-warning": {
     "message": "הזהרת קבצים לא ידועים"
@@ -1248,7 +1248,7 @@
     "message": "נמחק"
   },
   "app.modal.update-to-play.server-modpack-unknown-files-description": {
-    "message": "עדכון שרת חבילת מודים זה מכיל קבצים שאינם מפורסמים ב-Modrinth. אנו ממליצים בחום להתקין קבצים אך ורק ממקורות שאתם סומכים עליהם."
+    "message": "עדכון שרת חבילת מודים זה מכיל קבצים שאינם מפורסמים ב-Dr3sh App. אנו ממליצים בחום להתקין קבצים אך ורק ממקורות שאתם סומכים עליהם."
   },
   "app.modal.update-to-play.shared-instance-added-label": {
     "message": "נוסף"
@@ -1257,7 +1257,7 @@
     "message": "נמחק"
   },
   "app.modal.update-to-play.shared-instance-unknown-files-description": {
-    "message": "עדכון התקן משותף זה מכיל קבצים שאינם מפורסמים ב-Modrinth. אנו ממליצים בחום להתקין קבצים אך ורק ממקורות שאתם סומכים עליהם."
+    "message": "עדכון התקן משותף זה מכיל קבצים שאינם מפורסמים ב-Dr3sh App. אנו ממליצים בחום להתקין קבצים אך ורק ממקורות שאתם סומכים עליהם."
   },
   "app.modal.update-to-play.update-required": {
     "message": "נדרש עדכון"
@@ -1278,10 +1278,10 @@
     "message": "טוען פרופיל..."
   },
   "app.nav.modrinth-account": {
-    "message": "משתמש Modrinth"
+    "message": "משתמש Dr3sh App"
   },
   "app.nav.modrinth-hosting": {
-    "message": "שרתי Modrinth"
+    "message": "שרתי Dr3sh App"
   },
   "app.nav.remove-account": {
     "message": "מחק חשבון"
@@ -1290,13 +1290,13 @@
     "message": "צילומי מסך"
   },
   "app.nav.sign-in-to-modrinth-account": {
-    "message": "התחבר לModrinth"
+    "message": "התחבר לDr3sh App"
   },
   "app.nav.switch-account": {
     "message": "החלף חשבון"
   },
   "app.nav.upgrade-to-modrinth-plus": {
-    "message": "שדרג לModrinth+"
+    "message": "שדרג לDr3sh App+"
   },
   "app.nav.view-profile": {
     "message": "ראה פרופיל"
@@ -1482,13 +1482,13 @@
     "message": "שמור סקין"
   },
   "app.update-popup.body.download-complete": {
-    "message": "Modrinth App v{version} סיימה את תהליך ההורדה. יש לרענן כדי לעדכן עכשיו, או באופן אוטומטי בעת סגירת האפליקציה."
+    "message": "Dr3sh App v{version} סיימה את תהליך ההורדה. יש לרענן כדי לעדכן עכשיו, או באופן אוטומטי בעת סגירת האפליקציה."
   },
   "app.update-popup.body.linux": {
-    "message": "Modrinth App v{version} זמין. יש להשתמש במנהל חבילות שלך כדי לעדכן בשביל התכונות החדשות ותיקונים!"
+    "message": "Dr3sh App v{version} זמין. יש להשתמש במנהל חבילות שלך כדי לעדכן בשביל התכונות החדשות ותיקונים!"
   },
   "app.update-popup.body.metered": {
-    "message": "Modrinth App v{version} זמינה עכשיו! בגלל החיבור לפי שימוש, לא הורדנו אותה אוטומטית."
+    "message": "Dr3sh App v{version} זמינה עכשיו! בגלל החיבור לפי שימוש, לא הורדנו אותה אוטומטית."
   },
   "app.update-popup.changelog": {
     "message": "יומן שינויים"
@@ -1509,7 +1509,7 @@
     "message": "גרסה {version} הותקנה בהצלחה!"
   },
   "app.world.server-modal.placeholder-address": {
-    "message": "example.modrinth.gg"
+    "message": "example.Dr3sh App.gg"
   },
   "app.world.server-modal.select-an-option": {
     "message": "בחר אופציה"
@@ -1539,10 +1539,10 @@
     "message": "זה יכול להיות שונה מהמשתמש Minecraft!"
   },
   "friends.add-friend.username.placeholder": {
-    "message": "שם משתמש Modrinth..."
+    "message": "שם משתמש Dr3sh App..."
   },
   "friends.add-friend.username.title": {
-    "message": "מה השם משתמש של החבר שלך בModrinth?"
+    "message": "מה השם משתמש של החבר שלך בDr3sh App?"
   },
   "friends.add-friends-to-share": {
     "message": "ניתן <link>להוסיף חברים</link> כדי לראות במה הם משחקים!"
@@ -1584,7 +1584,7 @@
     "message": "{title} - {count}"
   },
   "friends.sign-in-to-add-friends": {
-    "message": "אפשר <link>להתחבר לחשבון Modrinth</link> כדי להוסיף חברים ולראות במה הם משחקים!"
+    "message": "אפשר <link>להתחבר לחשבון Dr3sh App</link> כדי להוסיף חברים ולראות במה הם משחקים!"
   },
   "instance.add-server.add-and-play": {
     "message": "הוסף ושחק"
