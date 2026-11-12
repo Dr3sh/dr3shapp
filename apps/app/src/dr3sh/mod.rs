@@ -566,17 +566,105 @@ async fn fetch_manifest_if_available(
     };
 
     let client = build_http_client()?;
-    let resp = match client
-        .get(&m_url)
-        .timeout(Duration::from_secs(20))
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
+    const MAX_MANIFEST_RETRIES: u32 = 3;
+    let mut last_error_status: Option<String> = None;
+    let mut bytes_opt: Option<Vec<u8>> = None;
+
+    for attempt in 1..=MAX_MANIFEST_RETRIES {
+        let send_res = client
+            .get(&m_url)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await;
+
+        let resp = match send_res {
+            Ok(r) => r,
+            Err(e) => {
+                let err_msg = format!("network: {e}");
+                last_error_status = Some(err_msg.clone());
+                if attempt < MAX_MANIFEST_RETRIES {
+                    let delay = Duration::from_millis(600 * attempt as u64);
+                    log_event(
+                        Some(op_id),
+                        "MANIFEST",
+                        "WARN",
+                        &format!("manifest fetch transient error on attempt {attempt}/{MAX_MANIFEST_RETRIES}: {err_msg}; retrying..."),
+                        &[("url", sanitize_url(&m_url)), ("attempt", attempt.to_string())],
+                    );
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                break;
+            }
+        };
+
+        let status = resp.status();
+        if !status.is_success() {
+            let status_str = status.as_u16().to_string();
+            last_error_status = Some(status_str.clone());
+            let is_transient = status.is_server_error() || status.as_u16() == 429 || status.as_u16() == 408;
+            if is_transient && attempt < MAX_MANIFEST_RETRIES {
+                let delay = Duration::from_millis(600 * attempt as u64);
+                log_event(
+                    Some(op_id),
+                    "MANIFEST",
+                    "WARN",
+                    &format!("manifest fetch status {status_str} on attempt {attempt}/{MAX_MANIFEST_RETRIES}; retrying..."),
+                    &[("url", sanitize_url(&m_url)), ("attempt", attempt.to_string())],
+                );
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+            break;
+        }
+
+        match resp.bytes().await {
+            Ok(b) => {
+                bytes_opt = Some(b.to_vec());
+                break;
+            }
+            Err(e) => {
+                let err_msg = format!("read: {e}");
+                last_error_status = Some(err_msg.clone());
+                if attempt < MAX_MANIFEST_RETRIES {
+                    let delay = Duration::from_millis(600 * attempt as u64);
+                    log_event(
+                        Some(op_id),
+                        "MANIFEST",
+                        "WARN",
+                        &format!("manifest body read error on attempt {attempt}/{MAX_MANIFEST_RETRIES}: {err_msg}; retrying..."),
+                        &[("url", sanitize_url(&m_url)), ("attempt", attempt.to_string())],
+                    );
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+
+    let bytes = match bytes_opt {
+        Some(b) => b,
+        None => {
+            let err_status = last_error_status.unwrap_or_else(|| "unknown".to_string());
+            if !zip_url.is_empty() {
+                log_event(
+                    Some(op_id),
+                    "MANIFEST",
+                    "WARN",
+                    "failed to fetch remote manifest; falling back to full modpack ZIP download and synthesis",
+                    &[
+                        ("url", sanitize_url(&m_url)),
+                        ("status", err_status),
+                        ("is_explicit", is_explicit.to_string()),
+                    ],
+                );
+                return Ok(None);
+            }
+
             if is_explicit {
                 return Err(Dr3shError::ManifestFetch {
-                    status: format!("network: {e}"),
+                    status: err_status,
                     host: extract_host(&m_url),
                 });
             }
@@ -584,26 +672,11 @@ async fn fetch_manifest_if_available(
         }
     };
 
-    if !resp.status().is_success() {
-        if is_explicit {
-            return Err(Dr3shError::ManifestFetch {
-                status: resp.status().as_u16().to_string(),
-                host: extract_host(&m_url),
-            });
-        }
-        return Ok(None);
-    }
-
-    let bytes = resp.bytes().await.map_err(|e| Dr3shError::ManifestFetch {
-        status: format!("read: {e}"),
-        host: extract_host(&m_url),
-    })?;
-
     let fallback_mc_ver = spec.game_version.as_deref().unwrap_or("1.21.1");
     let fallback_loader = spec.loader.as_deref().unwrap_or("fabric");
     let fallback_loader_ver = spec.loader_version.as_deref().unwrap_or("");
 
-    let parsed = Manifest::from_json_or_legacy(
+    let parsed = match Manifest::from_json_or_legacy(
         &bytes,
         server_id,
         fallback_mc_ver,
@@ -611,7 +684,25 @@ async fn fetch_manifest_if_available(
         fallback_loader_ver,
         &zip_url,
         Some(op_id),
-    )?;
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            if !zip_url.is_empty() {
+                log_event(
+                    Some(op_id),
+                    "MANIFEST",
+                    "WARN",
+                    "fetched manifest bytes failed to parse; falling back to full modpack ZIP download and synthesis",
+                    &[
+                        ("url", sanitize_url(&m_url)),
+                        ("parse_error", e.to_string()),
+					],
+                );
+                return Ok(None);
+            }
+            return Err(e);
+        }
+    };
 
     // Only treat as authoritative full manifest if it has files[] (schema 1)
     if parsed.files.is_empty() {
@@ -1771,6 +1862,171 @@ pub fn dr3sh_cleanup_deleted_instance(
                     let _ = fs::remove_dir_all(&canon);
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    fn sample_schema_1_manifest_json(zip_url: &str) -> String {
+        format!(
+            r#"{{
+                "schema": 1,
+                "pack_id": "cobbleverse",
+                "version": "9",
+                "minecraft_version": "1.21.1",
+                "loader": "fabric",
+                "loader_version": "0.16.9",
+                "zip": {{
+                    "url": "{zip_url}",
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "size": 1024
+                }},
+                "rules": [
+                    {{
+                        "pattern": "**",
+                        "policy": "managed"
+                    }}
+                ],
+                "files": [
+                    {{
+                        "path": "mods/example.jar",
+                        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "size": 512,
+                        "policy": "managed"
+                    }}
+                ]
+            }}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn test_manifest_fetch_retries_on_504_and_succeeds() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let req_count = Arc::new(AtomicUsize::new(0));
+        let req_count_clone = req_count.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let count = req_count_clone.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    if count == 0 {
+                        let resp = "HTTP/1.1 504 Gateway Time-out\r\nContent-Length: 0\r\n\r\n";
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    } else {
+                        let body = sample_schema_1_manifest_json("https://github.com/Dr3sh/cobbleverse-modpack/releases/download/v9/cobbleverse.zip");
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    }
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        let spec = VersionRefSpec {
+            id: "9".to_string(),
+            manifest_url: Some(format!("http://{addr}/manifest.json")),
+            download_url: Some("https://github.com/Dr3sh/cobbleverse-modpack/releases/download/v9/cobbleverse.zip".to_string()),
+            ..Default::default()
+        };
+
+        let result = fetch_manifest_if_available("sim_op_retry", "cobbleverse", &spec).await;
+        assert!(result.is_ok(), "fetch should succeed after retry: {result:?}");
+        let opt = result.unwrap();
+        assert!(opt.is_some(), "manifest should be parsed");
+        let manifest = opt.unwrap();
+        assert_eq!(manifest.pack_id, "cobbleverse");
+        assert_eq!(manifest.version, "9");
+        assert_eq!(manifest.files.len(), 1);
+        assert_eq!(req_count.load(Ordering::SeqCst), 2, "must have made 2 attempts");
+    }
+
+    #[tokio::test]
+    async fn test_manifest_fetch_fallback_to_none_when_504_persists() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let req_count = Arc::new(AtomicUsize::new(0));
+        let req_count_clone = req_count.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                req_count_clone.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let resp = "HTTP/1.1 504 Gateway Time-out\r\nContent-Length: 0\r\n\r\n";
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        let spec = VersionRefSpec {
+            id: "9".to_string(),
+            manifest_url: Some(format!("http://{addr}/manifest.json")),
+            download_url: Some(format!("http://{addr}/pack.zip")),
+            ..Default::default()
+        };
+
+        let result = fetch_manifest_if_available("sim_op_fallback", "cobbleverse", &spec).await;
+        assert!(result.is_ok(), "should not return Err when fallback ZIP is available: {result:?}");
+        let opt = result.unwrap();
+        assert!(opt.is_none(), "must fall back to Ok(None) to let ZIP pipeline synthesize manifest");
+        assert_eq!(req_count.load(Ordering::SeqCst), 3, "must have exhausted 3 retries");
+    }
+
+    #[tokio::test]
+    async fn test_manifest_fetch_fails_when_no_download_url_and_504() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let resp = "HTTP/1.1 504 Gateway Time-out\r\nContent-Length: 0\r\n\r\n";
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        let spec = VersionRefSpec {
+            id: "9".to_string(),
+            manifest_url: Some(format!("http://{addr}/manifest.json")),
+            download_url: None,
+            ..Default::default()
+        };
+
+        let result = fetch_manifest_if_available("sim_op_fail", "cobbleverse", &spec).await;
+        assert!(result.is_err(), "must return Err when no fallback download_url is present");
+        match result.unwrap_err() {
+            Dr3shError::ManifestFetch { status, .. } => {
+                assert_eq!(status, "504");
+            }
+            other => panic!("expected ManifestFetch error, got {other:?}"),
         }
     }
 }

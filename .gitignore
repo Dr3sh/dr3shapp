@@ -100,3 +100,16 @@ dr3sh_updater.key
 
 packages/tooling-config/script-utils/import-sort.js
 references/
+
+# Binary installers and build packages
+*.exe
+*.msi
+*.appimage
+*.deb
+*.dmg
+*.rpm
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo

@@ -1,6 +1,6 @@
 [package]
 name = "theseus_gui"
-version = "1.0.5"
+version = "1.0.6"
 edition.workspace = true
 description = "Dr3sh App desktop launcher"
 repository = "https://github.com/modrinth/code/apps/app/"

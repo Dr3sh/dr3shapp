@@ -2,13 +2,13 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 
-let pkg = { version: '1.0.5' };
+let pkg = { version: '1.0.6' };
 try {
 	pkg = JSON.parse(
 		fs.readFileSync(path.resolve(__dirname, '../apps/app-frontend/package.json'), 'utf8'),
 	);
 } catch {
-	pkg = { version: '1.0.5' };
+	pkg = { version: '1.0.6' };
 }
 
 const args = process.argv.slice(2);
@@ -19,7 +19,7 @@ function getArg(flag, fallback) {
 
 const OWNER = 'Dr3sh';
 const REPO = getArg('--repo', 'dr3shapp');
-const rawVer = getArg('--version', pkg.version || '1.0.5');
+const rawVer = getArg('--version', pkg.version || '1.0.6');
 const cleanVer = rawVer.replace(/^v/i, '');
 const TAG = `v${cleanVer}`;
 const TITLE = `Dr3sh Launcher ${TAG} (Tauri 2.0)`;
