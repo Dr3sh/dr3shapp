@@ -1,5 +1,6 @@
 import { computed, ref, watch } from 'vue'
 import { getVersion } from '@tauri-apps/api/app'
+import { invoke } from '@tauri-apps/api/core'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import pkg from '../../package.json'
 import {
@@ -86,13 +87,40 @@ export const testingMode = ref(false)
 export const testingHours = ref(1)
 export const launcherRefreshMode = ref<'automatic' | 'manual_global' | 'manual_user'>('automatic')
 export const launcherRefreshId = ref('initial')
+export const developerToken = ref<string>(
+	(
+		localStorage.getItem('dr3sh.developer_token') ||
+		localStorage.getItem('dr3sh.github_token') ||
+		''
+	).trim(),
+)
+
+export function setDeveloperToken(token: string) {
+	const clean = token.trim()
+	developerToken.value = clean
+	try {
+		if (clean) {
+			localStorage.setItem('dr3sh.developer_token', clean)
+			localStorage.setItem('dr3sh.github_token', clean)
+		} else {
+			localStorage.removeItem('dr3sh.developer_token')
+			localStorage.removeItem('dr3sh.github_token')
+		}
+	} catch {}
+}
+
+void invoke<{ token?: string } | null>('dr3sh_load_dev_session')
+	.then((session) => {
+		const saved = session?.token?.trim()
+		if (saved && !developerToken.value) {
+			setDeveloperToken(saved)
+		}
+	})
+	.catch(() => {})
+
 export const isDeveloper = computed(() => {
 	try {
-		const token = (
-			localStorage.getItem('dr3sh.developer_token') ||
-			localStorage.getItem('dr3sh.github_token') ||
-			''
-		).trim()
+		const token = developerToken.value.trim()
 		if (!token) return false
 		// Require genuine GitHub PAT or token format to prevent trivial localStorage bypasses
 		const isClassicPat = /^ghp_[a-zA-Z0-9]{36}$/.test(token)
@@ -503,6 +531,12 @@ export function preloadCatalogImages(serverList: Dr3shServer[]) {
 	})
 }
 
+export function clearSpecialModesOverride() {
+	try {
+		localStorage.removeItem('dr3sh.special_modes_override')
+	} catch {}
+}
+
 export function setSpecialModes(patch: {
 	maintenance_mode?: boolean
 	maintenance_message?: string
@@ -536,24 +570,37 @@ export function setSpecialModes(patch: {
 	} catch {}
 }
 
-export function applyCatalogData(data: any, persistCache = true) {
+export function applyCatalogData(data: any, persistCache = true, forceApply = false) {
 	if (!data || typeof data !== 'object') return
+
+	const incomingRefreshId = String(data.launcher_refresh_id || 'initial')
+	// Protect against GitHub CDN returning stale versions.json after a recent publish
+	if (
+		!forceApply &&
+		launcherRefreshId.value &&
+		launcherRefreshId.value !== 'initial' &&
+		incomingRefreshId !== 'initial' &&
+		incomingRefreshId < launcherRefreshId.value
+	) {
+		return
+	}
+
 	const rawServers: Dr3shServer[] = Array.isArray(data.servers) ? data.servers : []
 	const rawTopVersions: Dr3shVersion[] = Array.isArray(data.versions) ? data.versions : []
 
 	allCatalogServers.value = rawServers
 	allCatalogVersions.value = rawTopVersions
 
-	const refreshId = String(data.launcher_refresh_id || 'initial')
+	const refreshId = incomingRefreshId
 	launcherRefreshId.value = refreshId
 	launcherRefreshMode.value =
 		data.launcher_refresh_mode === 'manual_global' || data.launcher_refresh_mode === 'manual_user'
 			? data.launcher_refresh_mode
 			: 'automatic'
 
-	// Security: Only allow local overrides if the user is an authenticated developer
+	// Security: Only allow local overrides if the user is an authenticated developer and not forcing remote truth
 	let localOverride: any = null
-	if (isDeveloper.value) {
+	if (isDeveloper.value && !forceApply) {
 		try {
 			const rawOverride = localStorage.getItem('dr3sh.special_modes_override')
 			if (rawOverride) localOverride = JSON.parse(rawOverride)
@@ -561,21 +608,26 @@ export function applyCatalogData(data: any, persistCache = true) {
 	}
 
 	const isStaleOct24Commit = refreshId === '2026-10-24T06:29:30.407Z' || refreshId === 'initial'
-	if (localOverride && (!refreshId || refreshId <= String(localOverride.updated_at || ''))) {
+	if (localOverride && (!refreshId || refreshId < String(localOverride.updated_at || ''))) {
 		maintenanceMode.value = Boolean(localOverride.maintenance_mode)
 		maintenanceMessage.value = String(localOverride.maintenance_message ?? data.maintenance_message ?? '')
 		testingMode.value = Boolean(localOverride.testing_mode)
 		testingHours.value = Number(localOverride.testing_hours || data.testing_hours || 1)
-	} else if (isStaleOct24Commit) {
-		maintenanceMode.value = false
-		maintenanceMessage.value = String(data.maintenance_message || '')
-		testingMode.value = false
-		testingHours.value = Number(data.testing_hours || 1)
 	} else {
-		maintenanceMode.value = Boolean(data.maintenance_mode)
-		maintenanceMessage.value = String(data.maintenance_message || '')
-		testingMode.value = Boolean(data.testing_mode)
-		testingHours.value = Number(data.testing_hours || 1)
+		if (localOverride) {
+			clearSpecialModesOverride()
+		}
+		if (isStaleOct24Commit) {
+			maintenanceMode.value = false
+			maintenanceMessage.value = String(data.maintenance_message || '')
+			testingMode.value = false
+			testingHours.value = Number(data.testing_hours || 1)
+		} else {
+			maintenanceMode.value = Boolean(data.maintenance_mode)
+			maintenanceMessage.value = String(data.maintenance_message || '')
+			testingMode.value = Boolean(data.testing_mode)
+			testingHours.value = Number(data.testing_hours || 1)
+		}
 	}
 
 	// Normalize servers & attach versions just like Electron's normalizeCatalog()
@@ -770,6 +822,7 @@ export function useDr3shLauncher() {
 		fetchVersionsData,
 		applyCatalogData,
 		setSpecialModes,
+		clearSpecialModesOverride,
 		addOwned,
 		removeOwned,
 		resolveImageUrl,

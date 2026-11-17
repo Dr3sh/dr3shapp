@@ -116,6 +116,7 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .user_agent(ua)
         .tcp_nodelay(true)
+        .pool_max_idle_per_host(8)
         .connect_timeout(Duration::from_secs(20))
         .tcp_keepalive(Some(Duration::from_secs(10)))
         .redirect(reqwest::redirect::Policy::limited(10))
@@ -376,6 +377,271 @@ pub async fn download_zip_resumable(spec: DownloadSpec<'_>) -> Result<DownloadOu
     }
 }
 
+async fn try_multipart_download(
+    spec: &DownloadSpec<'_>,
+) -> Result<Option<(u64, String, u64, u32)>, Dr3shError> {
+    const MULTIPART_THRESHOLD: u64 = 10 * 1024 * 1024;
+    const PART_COUNT: u64 = 4;
+    const PART_RETRIES: u32 = 4;
+
+    if spec.expected_size.is_some_and(|s| s > 0 && s < MULTIPART_THRESHOLD) {
+        return Ok(None);
+    }
+
+    let client = shared_http_client();
+    let probe_res = tokio::select! {
+        r = client.get(spec.url).header(reqwest::header::RANGE, "bytes=0-0").send() => r,
+        _ = wait_until_cancelled(spec.cancel_flag) => {
+            return Err(Dr3shError::Cancelled { stage: "DOWNLOAD".to_string() });
+        }
+    };
+
+    let Ok(probe) = probe_res else {
+        return Ok(None);
+    };
+
+    if probe.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        return Ok(None);
+    }
+
+    let final_url = probe.url().clone();
+    let total_bytes = probe
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_total_from_content_range)
+        .unwrap_or(0);
+
+    if total_bytes < MULTIPART_THRESHOLD {
+        return Ok(None);
+    }
+
+    let first_chunk = match probe.bytes().await {
+        Ok(b) => b,
+        Err(_) => return Ok(None),
+    };
+    if first_chunk.first().copied() != Some(0x50) {
+        return Ok(None);
+    }
+
+    if let Some(parent) = spec.part_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| map_io_error(parent, e))?;
+    }
+    let prealloc = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(spec.part_path)
+        .map_err(|e| map_io_error(spec.part_path, e))?;
+    if let Err(e) = prealloc.set_len(total_bytes) {
+        drop(prealloc);
+        let _ = fs::remove_file(spec.part_path);
+        return Err(map_io_error(spec.part_path, e));
+    }
+    drop(prealloc);
+
+    log_event(
+        Some(spec.op_id),
+        "DOWNLOAD",
+        "INFO",
+        "Iniciando descarga multiparte en paralelo",
+        &[
+            ("parts", PART_COUNT.to_string()),
+            ("total_bytes", total_bytes.to_string()),
+            ("host", extract_host(final_url.as_str())),
+        ],
+    );
+
+    let chunk_size = total_bytes.div_ceil(PART_COUNT);
+    let total_downloaded = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let total_retries = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let start_time = Instant::now();
+
+    let mut handles = Vec::new();
+    for idx in 0..PART_COUNT {
+        let start = idx * chunk_size;
+        if start >= total_bytes {
+            break;
+        }
+        let end = ((idx + 1) * chunk_size - 1).min(total_bytes - 1);
+        let url_clone = final_url.clone();
+        let part_path = spec.part_path.to_path_buf();
+        let cancel_flag = Arc::clone(spec.cancel_flag);
+        let dl_counter = Arc::clone(&total_downloaded);
+        let retry_counter = Arc::clone(&total_retries);
+
+        handles.push(tokio::spawn(async move {
+            use std::io::{Seek, SeekFrom};
+
+            let mut offset = start;
+            let mut attempt = 0u32;
+
+            while offset <= end {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    return Err(Dr3shError::Cancelled {
+                        stage: "DOWNLOAD".to_string(),
+                    });
+                }
+
+                let mut resp = match shared_http_client()
+                    .get(url_clone.clone())
+                    .header(reqwest::header::RANGE, format!("bytes={offset}-{end}"))
+                    .send()
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        if attempt >= PART_RETRIES {
+                            return Err(Dr3shError::Network {
+                                last_cause: format!("Error en fragmento {idx}: {e}"),
+                                retries: attempt,
+                                offset,
+                            });
+                        }
+                        attempt += 1;
+                        retry_counter.fetch_add(1, Ordering::Relaxed);
+                        tokio::time::sleep(backoff_with_jitter(attempt)).await;
+                        continue;
+                    }
+                };
+
+                if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+                    if attempt >= PART_RETRIES {
+                        return Err(Dr3shError::Network {
+                            last_cause: format!("HTTP {} en fragmento {idx}", resp.status().as_u16()),
+                            retries: attempt,
+                            offset,
+                        });
+                    }
+                    attempt += 1;
+                    retry_counter.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::sleep(backoff_with_jitter(attempt)).await;
+                    continue;
+                }
+
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .open(&part_path)
+                    .map_err(|e| map_io_error(&part_path, e))?;
+                file.seek(SeekFrom::Start(offset))
+                    .map_err(|e| map_io_error(&part_path, e))?;
+                let mut writer = BufWriter::with_capacity(512 * 1024, file);
+
+                loop {
+                    if cancel_flag.load(Ordering::Relaxed) {
+                        let _ = writer.flush();
+                        return Err(Dr3shError::Cancelled {
+                            stage: "DOWNLOAD".to_string(),
+                        });
+                    }
+                    match tokio::time::timeout(Duration::from_secs(12), resp.chunk()).await {
+                        Ok(Ok(Some(chunk))) => {
+                            let max_keep = ((end - offset) + 1) as usize;
+                            let slice = &chunk[..chunk.len().min(max_keep)];
+                            writer.write_all(slice).map_err(|e| map_io_error(&part_path, e))?;
+                            let n = slice.len() as u64;
+                            offset += n;
+                            dl_counter.fetch_add(n, Ordering::Relaxed);
+                            if offset > end {
+                                break;
+                            }
+                        }
+                        Ok(Ok(None)) => break,
+                        Ok(Err(_)) | Err(_) => {
+                            let _ = writer.flush();
+                            if attempt >= PART_RETRIES {
+                                return Err(Dr3shError::Network {
+                                    last_cause: format!("Stream interrumpido en fragmento {idx}"),
+                                    retries: attempt,
+                                    offset,
+                                });
+                            }
+                            attempt += 1;
+                            retry_counter.fetch_add(1, Ordering::Relaxed);
+                            tokio::time::sleep(backoff_with_jitter(attempt)).await;
+                            break;
+                        }
+                    }
+                }
+                writer.flush().map_err(|e| map_io_error(&part_path, e))?;
+            }
+            Ok::<(), Dr3shError>(())
+        }));
+    }
+
+    let mut smoothed_speed: f64 = 0.0;
+    let mut last_bytes: u64 = 0;
+    let mut last_tick = Instant::now();
+
+    loop {
+        if spec.cancel_flag.load(Ordering::Relaxed) {
+            for h in &handles {
+                h.abort();
+            }
+            return Err(Dr3shError::Cancelled {
+                stage: "DOWNLOAD".to_string(),
+            });
+        }
+
+        if handles.iter().all(|h| h.is_finished()) {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let now = Instant::now();
+        let current = total_downloaded.load(Ordering::Relaxed).min(total_bytes);
+        let dt = now.duration_since(last_tick).as_secs_f64().max(0.05);
+        let inst_speed = (current.saturating_sub(last_bytes) as f64) / dt;
+        smoothed_speed = if smoothed_speed <= 0.0 {
+            inst_speed
+        } else {
+            smoothed_speed * 0.65 + inst_speed * 0.35
+        };
+        let pct = Some((10.0 + (current as f64 / total_bytes as f64) * 70.0).round() as u32);
+        if let Some(app_handle) = spec.app {
+            emit_progress(
+                app_handle,
+                spec.op_id,
+                spec.server_id,
+                "download",
+                format!("Descargando {}...", spec.server_title),
+                current,
+                total_bytes,
+                smoothed_speed.max(0.0) as u64,
+                None,
+                pct,
+            );
+        }
+        last_bytes = current;
+        last_tick = now;
+    }
+
+    for h in handles {
+        match h.await {
+            Ok(Ok(())) => {}
+            Ok(Err(Dr3shError::Cancelled { stage })) => return Err(Dr3shError::Cancelled { stage }),
+            Ok(Err(_)) | Err(_) => {
+                let _ = fs::remove_file(spec.part_path);
+                return Ok(None);
+            }
+        }
+    }
+
+    let (hasher, len, first4) = hash_existing_part_file(spec.part_path)
+        .map_err(|e| map_io_error(spec.part_path, e))?;
+    if len != total_bytes || first4 != Some([0x50, 0x4B, 0x03, 0x04]) {
+        let _ = fs::remove_file(spec.part_path);
+        return Ok(None);
+    }
+
+    let digest = hasher.finalize();
+    let actual_hash: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    let total_secs = start_time.elapsed().as_secs_f64().max(0.05);
+    let avg_speed = (total_bytes as f64 / total_secs) as u64;
+    let retries_used = total_retries.load(Ordering::Relaxed);
+    Ok(Some((total_bytes, actual_hash, avg_speed, retries_used)))
+}
+
 async fn run_download_attempts(
     spec: &DownloadSpec<'_>,
 ) -> Result<(u64, String, u64, u32), Dr3shError> {
@@ -390,6 +656,13 @@ async fn run_download_attempts(
             return Err(Dr3shError::Cancelled {
                 stage: "DOWNLOAD".to_string(),
             });
+        }
+
+        if retry_count == 0
+            && !spec.part_path.exists()
+            && let Some(multipart_result) = try_multipart_download(spec).await?
+        {
+            return Ok(multipart_result);
         }
 
         let (mut hasher, mut received_bytes, mut magic_checked) = if spec.part_path.exists() {
@@ -680,7 +953,7 @@ async fn run_download_attempts(
                 });
             }
 
-            let chunk_fut = tokio::time::timeout(Duration::from_secs(20), resp.chunk());
+            let chunk_fut = tokio::time::timeout(Duration::from_secs(12), resp.chunk());
             let chunk_res = tokio::select! {
                 r = chunk_fut => r,
                 _ = wait_until_cancelled(spec.cancel_flag) => {

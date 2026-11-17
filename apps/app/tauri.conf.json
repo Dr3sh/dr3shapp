@@ -12,6 +12,7 @@
 		"copyright": "",
 		"targets": ["nsis"],
 		"externalBin": [],
+		"resources": ["../../scripts/publish_release.cjs", "../../scripts/publish_modpack.cjs"],
 		"icon": ["icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
 		"windows": {
 			"nsis": {

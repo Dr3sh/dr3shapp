@@ -9,16 +9,25 @@ async function publishRelease({
 	archivePath,
 	description = '',
 	targetRepo = 'Dr3sh/modpack-versions',
+	minecraftVersion = '1.21.1',
+	loader = 'fabric',
+	loaderVersion = '',
 }) {
 	return await publishModpack({
 		packId: serverId,
 		version,
 		srcPath: archivePath,
 		repo: targetRepo,
+		minecraftVersion: minecraftVersion || '1.21.1',
+		loader: loader || 'fabric',
+		loaderVersion: loaderVersion || null,
 		title,
 		description,
 		token,
 		dryRun: false,
+		onProgress: (progress) => {
+			console.log(`DR3SH_PROGRESS:${JSON.stringify(progress)}`)
+		},
 	})
 }
 
@@ -26,7 +35,7 @@ if (require.main === module) {
 	const args = process.argv.slice(2)
 	const getArg = (flag) => {
 		const idx = args.indexOf(flag)
-		return idx !== -1 && args[idx + 1] ? args[idx + 1] : ''
+		return idx !== -1 && args[idx + 1] && !args[idx + 1].startsWith('--') ? args[idx + 1] : ''
 	}
 
 	const serverId = getArg('--server') || getArg('--pack')
@@ -35,6 +44,9 @@ if (require.main === module) {
 	const title = getArg('--title')
 	const description = getArg('--description')
 	const repo = getArg('--repo') || 'Dr3sh/modpack-versions'
+	const minecraftVersion = getArg('--mc') || getArg('--mc-version') || '1.21.1'
+	const loader = getArg('--loader') || 'fabric'
+	const loaderVersion = getArg('--loader-version')
 	const token = process.env.GITHUB_TOKEN || getArg('--token')
 
 	publishRelease({
@@ -45,6 +57,9 @@ if (require.main === module) {
 		archivePath,
 		description,
 		targetRepo: repo,
+		minecraftVersion,
+		loader,
+		loaderVersion,
 	})
 		.then((result) => {
 			console.log(`DR3SH_RESULT_JSON_START${JSON.stringify(result)}DR3SH_RESULT_JSON_END`)

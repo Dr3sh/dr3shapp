@@ -8,9 +8,11 @@ use anyhow::Context;
 use native_dialog::{DialogBuilder, MessageLevel};
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{Listener, Manager};
+use tauri::{Emitter, Listener, Manager};
 use tauri_plugin_fs::FsExt;
 use theseus::prelude::*;
 
@@ -53,6 +55,31 @@ fn dr3sh_has_extracted_mods(folder: String) -> bool {
         .unwrap_or(false)
 }
 
+static PUBLISH_RELEASE_CANCEL: AtomicBool = AtomicBool::new(false);
+static PUBLISH_RELEASE_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+#[tauri::command]
+fn dr3sh_cancel_publish_release() {
+    PUBLISH_RELEASE_CANCEL.store(true, Ordering::SeqCst);
+    let pid = PUBLISH_RELEASE_PID.swap(0, Ordering::SeqCst);
+    if pid > 0 {
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            let mut kill_cmd = std::process::Command::new("taskkill");
+            kill_cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+            kill_cmd.creation_flags(0x08000000);
+            let _ = kill_cmd.output();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .output();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishReleaseResult {
     pub tag_name: String,
@@ -74,10 +101,17 @@ async fn dr3sh_publish_release(
     title: String,
     archive_path: String,
     description: Option<String>,
+    minecraft_version: Option<String>,
+    loader: Option<String>,
+    loader_version: Option<String>,
 ) -> api::Result<PublishReleaseResult> {
     use std::process::Command;
     #[cfg(target_os = "windows")]
     use std::os::windows::process::CommandExt;
+
+    if PUBLISH_RELEASE_PID.load(Ordering::SeqCst) > 0 {
+        return Err(anyhow::anyhow!("Ya hay una subida en progreso. Cancélala o espera a que termine.").into());
+    }
 
     let p = PathBuf::from(&archive_path);
     if !p.exists() || !p.is_file() {
@@ -85,22 +119,23 @@ async fn dr3sh_publish_release(
     }
 
     let mut script_candidates = Vec::new();
+    for ancestor in PathBuf::from(env!("CARGO_MANIFEST_DIR")).ancestors() {
+        script_candidates.push(ancestor.join("scripts").join("publish_release.cjs"));
+    }
     if let Ok(cwd) = std::env::current_dir() {
-        script_candidates.push(cwd.join("scripts").join("publish_release.cjs"));
+        for ancestor in cwd.ancestors() {
+            script_candidates.push(ancestor.join("scripts").join("publish_release.cjs"));
+        }
     }
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            script_candidates.push(parent.join("scripts").join("publish_release.cjs"));
-            if let Some(gp) = parent.parent() {
-                script_candidates.push(gp.join("scripts").join("publish_release.cjs"));
-                if let Some(ggp) = gp.parent() {
-                    script_candidates.push(ggp.join("scripts").join("publish_release.cjs"));
-                }
-            }
+        for ancestor in exe.ancestors() {
+            script_candidates.push(ancestor.join("scripts").join("publish_release.cjs"));
         }
     }
     if let Ok(res_dir) = _app.path().resource_dir() {
         script_candidates.push(res_dir.join("scripts").join("publish_release.cjs"));
+        script_candidates.push(res_dir.join("_up_").join("_up_").join("scripts").join("publish_release.cjs"));
+        script_candidates.push(res_dir.join("publish_release.cjs"));
     }
 
     let script_path = script_candidates
@@ -123,14 +158,26 @@ async fn dr3sh_publish_release(
     if let Some(desc) = description.filter(|d| !d.trim().is_empty()) {
         cmd.arg("--description").arg(desc);
     }
+    if let Some(mc) = minecraft_version.filter(|m| !m.trim().is_empty()) {
+        cmd.arg("--mc").arg(mc);
+    }
+    if let Some(ld) = loader.filter(|l| !l.trim().is_empty()) {
+        cmd.arg("--loader").arg(ld);
+    }
+    if let Some(lv) = loader_version.filter(|v| !v.trim().is_empty()) {
+        cmd.arg("--loader-version").arg(lv);
+    }
 
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
-    let output = tokio::task::spawn_blocking(move || cmd.output())
-        .await
-        .map_err(|e| anyhow::anyhow!("Error ejecutando proceso de publicación: {e}"))?
-        .map_err(|e| {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    PUBLISH_RELEASE_CANCEL.store(false, Ordering::SeqCst);
+
+    let app_for_events = _app.clone();
+    let (status_code, stdout, stderr) = tokio::task::spawn_blocking(move || -> anyhow::Result<(std::process::ExitStatus, String, String)> {
+        let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 anyhow::anyhow!("No se encontró Node.js ('node') en el sistema. Asegúrate de tener Node.js instalado en el PATH para publicar releases.")
             } else {
@@ -138,16 +185,57 @@ async fn dr3sh_publish_release(
             }
         })?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+        PUBLISH_RELEASE_PID.store(child.id(), Ordering::SeqCst);
 
-    if !output.status.success() {
+        let stdout_pipe = child.stdout.take();
+        let stderr_pipe = child.stderr.take();
+
+        let stderr_handle = std::thread::spawn(move || {
+            let mut buf = String::new();
+            if let Some(mut s) = stderr_pipe {
+                let _ = s.read_to_string(&mut buf);
+            }
+            buf
+        });
+
+        let mut stdout_acc = String::new();
+        if let Some(s) = stdout_pipe {
+            let reader = BufReader::new(s);
+            for line in reader.lines().map_while(Result::ok) {
+                if PUBLISH_RELEASE_CANCEL.load(Ordering::SeqCst) {
+                    let _ = child.kill();
+                    break;
+                }
+                if let Some(raw_json) = line.strip_prefix("DR3SH_PROGRESS:") {
+                    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(raw_json) {
+                        let _ = app_for_events.emit("dr3sh-release-progress", payload);
+                    }
+                } else {
+                    stdout_acc.push_str(&line);
+                    stdout_acc.push('\n');
+                }
+            }
+        }
+
+        let status = child.wait()?;
+        PUBLISH_RELEASE_PID.store(0, Ordering::SeqCst);
+        let stderr_acc = stderr_handle.join().unwrap_or_default();
+        Ok((status, stdout_acc, stderr_acc))
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Error ejecutando proceso de publicación: {e}"))??;
+
+    if PUBLISH_RELEASE_CANCEL.load(Ordering::SeqCst) {
+        return Err(anyhow::anyhow!("Subida cancelada por el usuario.").into());
+    }
+
+    if !status_code.success() {
         let err_msg = if !stderr.trim().is_empty() {
             stderr.trim().to_string()
         } else if !stdout.trim().is_empty() {
             stdout.trim().to_string()
         } else {
-            format!("El proceso de publicación falló con código {:?}", output.status.code())
+            format!("El proceso de publicación falló con código {:?}", status_code.code())
         };
         return Err(anyhow::anyhow!("{err_msg}").into());
     }
@@ -179,7 +267,145 @@ async fn dr3sh_publish_release(
 fn dr3sh_get_file_size(path: String) -> Option<f64> {
     std::fs::metadata(&path)
         .ok()
-        .map(|m| ((m.len() as f64 / (1024.0 * 1024.0)) * 10.0).round() / 10.0)
+        .filter(|m| m.is_file())
+        .map(|m| {
+            let bytes = m.len();
+            if bytes == 0 {
+                0.0
+            } else {
+                (((bytes as f64) / (1024.0 * 1024.0)) * 10.0).round().max(1.0) / 10.0
+            }
+        })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DevSession {
+    pub token: String,
+    #[serde(default)]
+    pub login: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+}
+
+fn dev_session_path(app: &tauri::AppHandle) -> anyhow::Result<PathBuf> {
+    let dir = app.path().app_data_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.join("dr3sh_dev_session.json"))
+}
+
+#[tauri::command]
+fn dr3sh_load_dev_session(app: tauri::AppHandle) -> Option<DevSession> {
+    let path = dev_session_path(&app).ok()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<DevSession>(&raw).ok()
+}
+
+#[tauri::command]
+fn dr3sh_save_dev_session(app: tauri::AppHandle, session: DevSession) -> api::Result<()> {
+    let path = dev_session_path(&app)?;
+    let json = serde_json::to_string_pretty(&session)?;
+    std::fs::write(path, json).map_err(|e| anyhow::anyhow!("No se pudo guardar la sesión de desarrollador: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn dr3sh_clear_dev_session(app: tauri::AppHandle) -> api::Result<()> {
+    if let Ok(path) = dev_session_path(&app)
+        && path.exists()
+    {
+        let _ = std::fs::remove_file(path);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn dr3sh_detect_github_token() -> Option<String> {
+    tokio::task::spawn_blocking(|| {
+        use std::process::Command;
+        #[cfg(target_os = "windows")]
+        use std::os::windows::process::CommandExt;
+
+        // 1. Try GitHub CLI (`gh auth token`)
+        let mut gh_cmd = Command::new("gh");
+        gh_cmd.args(["auth", "token"]);
+        #[cfg(target_os = "windows")]
+        gh_cmd.creation_flags(0x08000000);
+        if let Ok(out) = gh_cmd.output()
+            && out.status.success()
+        {
+            let tok = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !tok.is_empty() {
+                return Some(tok);
+            }
+        }
+
+        // 2. Try Git Credential Manager (`git credential fill`)
+        let mut git_cred = Command::new("git");
+        git_cred
+            .args(["credential", "fill"])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        #[cfg(target_os = "windows")]
+        git_cred.creation_flags(0x08000000);
+        if let Ok(mut child) = git_cred.spawn() {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(b"protocol=https\nhost=github.com\n\n");
+            }
+            if let Ok(out) = child.wait_with_output()
+                && out.status.success()
+            {
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines() {
+                    if let Some(pass) = line.strip_prefix("password=") {
+                        let tok = pass.trim().to_string();
+                        if !tok.is_empty() {
+                            return Some(tok);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Environment variables
+        for key in ["GITHUB_TOKEN", "GH_TOKEN"] {
+            if let Ok(val) = std::env::var(key) {
+                let tok = val.trim().to_string();
+                if !tok.is_empty() {
+                    return Some(tok);
+                }
+            }
+        }
+
+        // 4. Git remote origin embedded token if configured locally
+        let mut git_remote = Command::new("git");
+        git_remote.args(["config", "--get", "remote.origin.url"]);
+        #[cfg(target_os = "windows")]
+        git_remote.creation_flags(0x08000000);
+        if let Ok(out) = git_remote.output()
+            && out.status.success()
+        {
+            let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            for prefix in ["https://x-access-token:", "https://oauth2:"] {
+                if let Some(rest) = url.strip_prefix(prefix)
+                    && let Some((tok, _)) = rest.split_once('@')
+                {
+                    let clean = tok.trim().to_string();
+                    if !clean.is_empty() {
+                        return Some(clean);
+                    }
+                }
+            }
+        }
+
+        None
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 mod api;
@@ -545,7 +771,12 @@ fn main() {
             dr3sh_link_existing_instance,
             dr3sh_cleanup_deleted_instance,
             dr3sh_publish_release,
+            dr3sh_cancel_publish_release,
             dr3sh_get_file_size,
+            dr3sh_load_dev_session,
+            dr3sh_save_dev_session,
+            dr3sh_clear_dev_session,
+            dr3sh_detect_github_token,
         ]);
 
     tracing::info!("Initializing app...");

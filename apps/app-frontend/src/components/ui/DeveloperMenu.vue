@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { readFile } from '@tauri-apps/plugin-fs'
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { listenNativeDragDrop } from '@/helpers/native-drag-drop'
 import {
 	useDr3shLauncher,
 	type Dr3shServer,
@@ -12,6 +14,7 @@ import {
 	DESGRACIAMON2_SCREENSHOTS,
 	resolveImageUrl,
 	formatLoaderName,
+	setDeveloperToken,
 } from '@/composables/use-dr3sh-launcher'
 
 const props = defineProps<{
@@ -26,11 +29,14 @@ const {
 	fetchVersionsData,
 	applyCatalogData,
 	setSpecialModes,
+	clearSpecialModesOverride,
 	maintenanceMode,
 	maintenanceMessage,
 	testingMode,
 	testingHours,
 } = useDr3shLauncher()
+
+let isHydratingCatalog = false
 
 type DevTab = 'versions' | 'general' | 'screenshots' | 'modes'
 
@@ -72,6 +78,33 @@ const githubUser = ref<{ login: string; avatar_url: string } | null>(null)
 const verifying = ref(false)
 const busy = ref(false)
 const status = ref('')
+const uploadProgress = ref<{
+	active: boolean
+	percent: number
+	message: string
+	uploadedMb?: number
+	totalMb?: number
+	speedMbps?: number
+	etaText?: string
+}>({
+	active: false,
+	percent: 0,
+	message: '',
+})
+
+function formatUploadEta(seconds?: number | null): string | undefined {
+	if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+		return undefined
+	}
+	const s = Math.round(seconds)
+	if (s < 60) return `~${s}s`
+	const mins = Math.floor(s / 60)
+	const rem = s % 60
+	if (mins < 60) return `~${mins}m ${String(rem).padStart(2, '0')}s`
+	const hrs = Math.floor(mins / 60)
+	const remMins = mins % 60
+	return `~${hrs}h ${String(remMins).padStart(2, '0')}m`
+}
 
 // Device Flow state
 const deviceFlowInfo = ref<{
@@ -98,6 +131,7 @@ const selectedServerId = ref('desgraciamon3')
 const devTab = ref<DevTab>('versions')
 const rawJsonOpen = ref(false)
 const rawJsonText = ref('')
+const pendingReleaseDeletions = ref<Array<{ repo: string; tag: string; label: string }>>([])
 
 // New server form
 const newServerTitle = ref('')
@@ -112,7 +146,7 @@ const newVersionLoaderVersion = ref('')
 const newVersionLink = ref('')
 const newVersionManifest = ref('')
 const newVersionDescription = ref('')
-const newVersionSizeMb = ref<number | undefined>(226)
+const newVersionSizeMb = ref<number | undefined>(undefined)
 const newVersionArchivePath = ref('')
 const newVersionZipFile = ref<File | null>(null)
 const isDraggingZip = ref(false)
@@ -155,28 +189,48 @@ function sanitizeError(err: unknown): string {
 	return String((err as any)?.message || err).replace(/(gh[a-z0-9_]{10,}|github_pat_[a-zA-Z0-9_]+)/gi, '***')
 }
 
-// Obfuscated default developer session key so raw token never appears in plain UI
-function getEmbeddedDevKey(): string {
-	const parts = ['gho_', '4YDjZFo96', 'ZWsFhUnEM', 'UmtObn62R', 'ZgM0A6fUb']
-	return parts.join('')
+interface PersistedDevSession {
+	token: string
+	login?: string | null
+	avatar_url?: string | null
+	client_id?: string | null
 }
 
 async function connectDirectGithub() {
-	const token = getEmbeddedDevKey()
-	githubToken.value = token
-	await verifyAndConnectToken(token)
+	try {
+		verifying.value = true
+		busy.value = true
+		status.value = 'Detectando sesión de GitHub en este equipo...'
+		const detected = await invoke<string | null>('dr3sh_detect_github_token')
+		if (!detected || !detected.trim()) {
+			status.value =
+				'No se encontró ninguna sesión de GitHub guardada en Windows (Git Credential Manager o gh CLI). Inicia con Device Flow o Token Personal; quedará guardada para siempre.'
+			return
+		}
+		githubToken.value = detected.trim()
+		await verifyAndConnectToken(detected.trim())
+	} catch (e) {
+		status.value = `Error detectando sesión local de GitHub: ${sanitizeError(e)}`
+	} finally {
+		verifying.value = false
+		busy.value = false
+	}
 }
 
-async function verifyAndConnectToken(token: string) {
+async function verifyAndConnectToken(token: string, silent = false) {
 	const clean = token.trim()
 	if (!clean) {
-		status.value = 'Introduce un token válido o usa el inicio de sesión directo.'
+		if (!silent) {
+			status.value = 'Introduce un token válido o usa el inicio de sesión directo.'
+		}
 		return false
 	}
 	try {
 		verifying.value = true
 		busy.value = true
-		status.value = 'Verificando cuenta en GitHub y cifrando sesión local...'
+		if (!silent) {
+			status.value = 'Verificando cuenta en GitHub y guardando sesión permanente...'
+		}
 		const res = await tauriFetch('https://api.github.com/user', {
 			headers: {
 				Authorization: `token ${clean}`,
@@ -189,20 +243,34 @@ async function verifyAndConnectToken(token: string) {
 			isConnected.value = true
 			changingToken.value = false
 			githubToken.value = clean
-			localStorage.setItem('dr3sh.developer_token', clean)
-			localStorage.setItem('dr3sh.github_token', clean)
+			setDeveloperToken(clean)
+			await invoke('dr3sh_save_dev_session', {
+				session: {
+					token: clean,
+					login: data.login || null,
+					avatar_url: data.avatar_url || null,
+					client_id: githubClientId.value.trim() || null,
+				},
+			}).catch(() => {})
 			status.value = `Sesión iniciada como @${data.login}`
 			await loadCatalogFromGithub()
 			return true
-		} else {
+		} else if (res.status === 401 || res.status === 403) {
 			isConnected.value = false
 			githubUser.value = null
-			status.value = 'No se pudo autenticar con GitHub (sesión inválida o expirada).'
+			status.value = 'El token de GitHub es inválido o expiró. Inicia sesión nuevamente.'
 			return false
+		} else {
+			if (!silent) {
+				status.value = `GitHub respondió HTTP ${res.status} al verificar la sesión.`
+			}
+			return isConnected.value
 		}
 	} catch (e) {
-		status.value = `Error de conexión: ${sanitizeError(e)}`
-		return false
+		if (!silent) {
+			status.value = `Error de conexión: ${sanitizeError(e)}`
+		}
+		return isConnected.value
 	} finally {
 		verifying.value = false
 		busy.value = false
@@ -301,8 +369,8 @@ function disconnectGithub() {
 	githubUser.value = null
 	isConnected.value = false
 	changingToken.value = false
-	localStorage.removeItem('dr3sh.developer_token')
-	localStorage.removeItem('dr3sh.github_token')
+	setDeveloperToken('')
+	void invoke('dr3sh_clear_dev_session').catch(() => {})
 	status.value = 'Sesión de GitHub cerrada en este equipo.'
 }
 
@@ -310,9 +378,26 @@ async function loadCatalogFromGithub() {
 	try {
 		busy.value = true
 		status.value = 'Sincronizando versions.json desde GitHub...'
-		const res = await tauriFetch(
-			`https://raw.githubusercontent.com/Dr3sh/Dr3sh.github.io/main/versions.json?t=${Date.now()}`,
-		)
+		let res: Response
+		if (githubToken.value && githubToken.value.trim()) {
+			res = await tauriFetch(
+				`https://api.github.com/repos/Dr3sh/Dr3sh.github.io/contents/versions.json?ref=main&t=${Date.now()}`,
+				{
+					headers: {
+						Authorization: `token ${githubToken.value.trim()}`,
+						Accept: 'application/vnd.github.v3.raw',
+						'Cache-Control': 'no-cache',
+					},
+				},
+			)
+		} else {
+			res = await tauriFetch(
+				`https://raw.githubusercontent.com/Dr3sh/Dr3sh.github.io/main/versions.json?t=${Date.now()}`,
+				{
+					headers: { 'Cache-Control': 'no-cache' },
+				},
+			)
+		}
 		if (!res.ok) {
 			throw new Error(`HTTP ${res.status}`)
 		}
@@ -328,8 +413,11 @@ async function loadCatalogFromGithub() {
 			: []
 		const safeVersions: Dr3shVersion[] = Array.isArray(loaded.versions) ? loaded.versions : []
 
-		applyCatalogData(loaded, true)
+		clearSpecialModesOverride()
+		applyCatalogData(loaded, true, true)
 
+		isHydratingCatalog = true
+		pendingReleaseDeletions.value = []
 		catalog.value = {
 			...loaded,
 			servers: safeServers,
@@ -338,11 +426,14 @@ async function loadCatalogFromGithub() {
 				? loaded.launcher_refresh_mode
 				: 'automatic',
 			launcher_refresh_id: String(loaded.launcher_refresh_id || 'initial'),
-			maintenance_mode: Boolean(maintenanceMode.value),
-			maintenance_message: String(maintenanceMessage.value || loaded.maintenance_message || ''),
-			testing_mode: Boolean(testingMode.value),
-			testing_hours: Number(testingHours.value || loaded.testing_hours || 1),
+			maintenance_mode: Boolean(loaded.maintenance_mode),
+			maintenance_message: String(loaded.maintenance_message || ''),
+			testing_mode: Boolean(loaded.testing_mode),
+			testing_hours: Number(loaded.testing_hours || 1),
 		}
+		setTimeout(() => {
+			isHydratingCatalog = false
+		}, 0)
 
 		if (
 			safeServers.length > 0 &&
@@ -358,24 +449,106 @@ async function loadCatalogFromGithub() {
 	}
 }
 
+async function restorePersistedSession(): Promise<boolean> {
+	try {
+		const savedDisk = await invoke<PersistedDevSession | null>('dr3sh_load_dev_session').catch(
+			() => null,
+		)
+		if (savedDisk?.client_id && !githubClientId.value) {
+			githubClientId.value = savedDisk.client_id
+			localStorage.setItem('dr3sh.githubClientId', savedDisk.client_id)
+		}
+		const savedToken =
+			savedDisk?.token?.trim() ||
+			localStorage.getItem('dr3sh.developer_token')?.trim() ||
+			githubToken.value.trim()
+		if (!savedToken) return false
+
+		githubToken.value = savedToken
+		setDeveloperToken(savedToken)
+		if (savedDisk?.login) {
+			githubUser.value = {
+				login: savedDisk.login,
+				avatar_url: savedDisk.avatar_url || '',
+			}
+			isConnected.value = true
+		}
+		return await verifyAndConnectToken(savedToken, Boolean(savedDisk?.login))
+	} catch {
+		return false
+	}
+}
+
+let unlistenNativeDrop: UnlistenFn | null = null
+
+function stopNativeDropListener() {
+	if (unlistenNativeDrop) {
+		unlistenNativeDrop()
+		unlistenNativeDrop = null
+	}
+	isDraggingZip.value = false
+}
+
+async function startNativeDropListener() {
+	stopNativeDropListener()
+	try {
+		unlistenNativeDrop = await listenNativeDragDrop(async (ev) => {
+			if (!props.modelValue || isAuthScreen.value || devTab.value !== 'versions') {
+				isDraggingZip.value = false
+				return
+			}
+			if (ev.type === 'enter' || ev.type === 'over') {
+				isDraggingZip.value = true
+				return
+			}
+			if (ev.type === 'leave') {
+				isDraggingZip.value = false
+				return
+			}
+			if (ev.type === 'drop') {
+				isDraggingZip.value = false
+				const zipPath = ev.paths.find((p) => /\.(zip|mrpack)$/i.test(p))
+				if (zipPath) {
+					await applyZipPath(zipPath)
+				} else if (ev.paths.length > 0) {
+					status.value = 'Arrastra un archivo .zip o .mrpack válido.'
+				}
+			}
+		})
+	} catch (e) {
+		console.warn('No se pudo activar el drag-and-drop nativo:', e)
+	}
+}
+
 watch(
 	() => props.modelValue,
 	async (open) => {
-		if (!open) return
+		if (!open) {
+			stopNativeDropListener()
+			return
+		}
+		void startNativeDropListener()
 		changingToken.value = false
-		const saved = localStorage.getItem('dr3sh.developer_token') || githubToken.value
-		if (saved) {
-			await verifyAndConnectToken(saved)
-		} else {
+		if (isConnected.value && githubToken.value.trim()) {
+			await loadCatalogFromGithub()
+			return
+		}
+		const restored = await restorePersistedSession()
+		if (!restored) {
 			await loadCatalogFromGithub()
 		}
 	},
 )
 
 onMounted(() => {
-	if (githubToken.value) {
-		void verifyAndConnectToken(githubToken.value)
+	void restorePersistedSession()
+	if (props.modelValue) {
+		void startNativeDropListener()
 	}
+})
+
+onUnmounted(() => {
+	stopNativeDropListener()
 })
 
 // Server mutations
@@ -432,6 +605,10 @@ function handleAddServer() {
 function handleDeleteSelectedServer() {
 	if (!selectedServer.value) return
 	const srv = selectedServer.value
+	const removedVersions = catalog.value.versions.filter((v) => v.server === srv.id)
+	for (const ver of removedVersions) {
+		queueReleaseDeletionForVersion(ver)
+	}
 	catalog.value.servers = catalog.value.servers.filter((s) => s.id !== srv.id)
 	catalog.value.versions = catalog.value.versions.filter((v) => v.server !== srv.id)
 	selectedServerId.value = catalog.value.servers[0]?.id || ''
@@ -628,52 +805,31 @@ function extractVersionFromFileName(fileName: string): string {
 	return '1.0.0'
 }
 
-function autoGenerateLinks() {
-	if (!selectedServer.value) return
-	const srv = slugify(selectedServer.value.id)
-	const rawVer = newVersionNumber.value.trim() || '1.0.0'
-	const cleanVer = rawVer.replace(/^v/i, '')
-	const verSlug = slugify(cleanVer)
-	const tag = `${srv}-v${verSlug}`
-	const archiveName = `${srv}-${verSlug}.zip`
-
-	newVersionLink.value = `https://github.com/Dr3sh/modpack-versions/releases/download/${tag}/${archiveName}`
-	newVersionManifest.value = `https://github.com/Dr3sh/modpack-versions/releases/download/${tag}/manifest.json`
-}
-
-// Keep download link automatically in sync whenever version or server changes
-watch(newVersionNumber, (newVal) => {
-	if (newVal && (newVersionArchivePath.value || !newVersionLink.value || newVersionLink.value.includes('modpack-versions/releases/download'))) {
-		autoGenerateLinks()
-	}
-})
-
-watch(selectedServerId, () => {
-	if (newVersionArchivePath.value || newVersionNumber.value) {
-		autoGenerateLinks()
-	}
-})
-
 function handleZipSelectedFile(file: File) {
 	if (!isZipFile(file)) {
 		status.value = 'El archivo debe ser un paquete ZIP o mrpack.'
 		return
 	}
+	const nativePath = typeof (file as any).path === 'string' && (file as any).path.length > 0 ? (file as any).path : ''
+	if (!nativePath) {
+		if (!newVersionArchivePath.value) {
+			newVersionZipFile.value = null
+			newVersionSizeMb.value = undefined
+			status.value = 'Por seguridad del sistema, haz clic en el recuadro para seleccionar el archivo ZIP desde el explorador.'
+		}
+		return
+	}
 	newVersionZipFile.value = file
-	newVersionArchivePath.value = file.name
-	const sizeMb = Math.round((file.size / (1024 * 1024)) * 10) / 10
-	newVersionSizeMb.value = sizeMb
+	newVersionArchivePath.value = nativePath
+	const sizeMb = file.size > 0 ? Math.max(0.1, Math.round((file.size / (1024 * 1024)) * 10) / 10) : 0
+	newVersionSizeMb.value = sizeMb > 0 ? sizeMb : undefined
 
-	// If title is empty and server is selected, set default title without changing version
 	if (!newVersionTitle.value.trim() && selectedServer.value) {
 		const verStr = newVersionNumber.value.trim()
 		newVersionTitle.value = verStr ? `${selectedServer.value.title} ${verStr}` : selectedServer.value.title
 	}
 
-	// Keep download link & manifest synced
-	autoGenerateLinks()
-
-	status.value = `¡ZIP cargado (${sizeMb} MB)! Listo para publicar o añadir.`
+	status.value = `¡ZIP listo (${sizeMb} MB)! Pulsa el botón para subir la release y actualizar versions.json.`
 }
 
 function handleZipDrop(event: DragEvent) {
@@ -693,6 +849,44 @@ function handleZipInputSelected(event: Event) {
 	input.value = ''
 }
 
+async function applyZipPath(pathStr: string) {
+	newVersionArchivePath.value = pathStr
+	newVersionZipFile.value = null
+	newVersionSizeMb.value = undefined
+	const fileName = getFileName(pathStr)
+
+	try {
+		const sizeMb = await invoke<number | null>('dr3sh_get_file_size', { path: pathStr })
+		if (typeof sizeMb === 'number' && sizeMb > 0) {
+			newVersionSizeMb.value = sizeMb
+		}
+	} catch (e) {
+		console.warn('Native get_file_size error:', e)
+	}
+
+	if (!newVersionTitle.value.trim() && selectedServer.value) {
+		const verStr = newVersionNumber.value.trim()
+		newVersionTitle.value = verStr ? `${selectedServer.value.title} ${verStr}` : selectedServer.value.title
+	}
+
+	status.value = `ZIP seleccionado: ${fileName}${newVersionSizeMb.value ? ` (${newVersionSizeMb.value} MB)` : ''}. Pulsa el botón para subirlo a GitHub.`
+}
+
+async function cancelUpload() {
+	try {
+		await invoke('dr3sh_cancel_publish_release')
+	} catch (e) {
+		console.warn('Cancel upload error:', e)
+	}
+	uploadProgress.value = {
+		active: false,
+		percent: 0,
+		message: '',
+	}
+	busy.value = false
+	status.value = 'Subida cancelada por el usuario.'
+}
+
 async function triggerChooseZip() {
 	try {
 		const selected = await openDialog({
@@ -701,29 +895,7 @@ async function triggerChooseZip() {
 			filters: [{ name: 'Modpack ZIP', extensions: ['zip', 'mrpack'] }],
 		})
 		if (selected) {
-			const pathStr = String(selected)
-			newVersionArchivePath.value = pathStr
-			const fileName = getFileName(pathStr)
-
-			try {
-				const sizeMb = await invoke<number | null>('dr3sh_get_file_size', { path: pathStr })
-				if (typeof sizeMb === 'number' && sizeMb > 0) {
-					newVersionSizeMb.value = sizeMb
-				}
-			} catch (e) {
-				console.warn('Native get_file_size error:', e)
-			}
-
-			// If title is empty and server is selected, set default title without changing version
-			if (!newVersionTitle.value.trim() && selectedServer.value) {
-				const verStr = newVersionNumber.value.trim()
-				newVersionTitle.value = verStr ? `${selectedServer.value.title} ${verStr}` : selectedServer.value.title
-			}
-
-			// Keep download link & manifest synced
-			autoGenerateLinks()
-
-			status.value = `ZIP seleccionado: ${fileName}${newVersionSizeMb.value ? ` (${newVersionSizeMb.value} MB)` : ''}.`
+			await applyZipPath(String(selected))
 			return
 		}
 	} catch (e) {
@@ -747,6 +919,9 @@ async function publishZipReleaseToGithub(
 	serverId: string,
 	versionStr: string,
 	titleStr: string,
+	minecraftVersion?: string,
+	loader?: string,
+	loaderVersion?: string,
 ): Promise<PublishReleaseResponse> {
 	if (!githubToken.value || !githubToken.value.trim()) {
 		throw new Error(
@@ -756,7 +931,6 @@ async function publishZipReleaseToGithub(
 	const token = githubToken.value.trim()
 	const cleanVer = versionStr.trim().replace(/^v/i, '')
 
-	// Resolve the absolute file path on disk
 	let archivePath = ''
 	if (typeof fileOrPath === 'string') {
 		archivePath = fileOrPath
@@ -766,22 +940,70 @@ async function publishZipReleaseToGithub(
 
 	if (!archivePath) {
 		throw new Error(
-			'No se pudo determinar la ruta del archivo ZIP en el disco. Usa el botón "Seleccionar ZIP del modpack" para seleccionarlo directamente.',
+			'No se pudo determinar la ruta del archivo ZIP en el disco. Arrastra el archivo o haz clic en el recuadro para seleccionarlo.',
 		)
 	}
 
-	status.value = `Generando manifest con Python y subiendo ZIP a GitHub Releases...`
+	uploadProgress.value = {
+		active: true,
+		percent: 3,
+		message: 'Iniciando publicación de la release...',
+	}
+	status.value = `Preparando y subiendo ZIP a GitHub Releases...`
 
-	const result = await invoke<PublishReleaseResponse>('dr3sh_publish_release', {
-		token,
-		serverId,
-		version: cleanVer,
-		title: titleStr,
-		archivePath,
-		description: newVersionDescription.value?.trim() || undefined,
+	const unlisten = await listen<{
+		stage?: string
+		percent?: number
+		message?: string
+		uploadedBytes?: number
+		totalBytes?: number
+		speedBps?: number
+		etaSeconds?: number | null
+	}>('dr3sh-release-progress', (event) => {
+		const p = event.payload || {}
+		const uploadedMb =
+			typeof p.uploadedBytes === 'number'
+				? Math.round((p.uploadedBytes / (1024 * 1024)) * 10) / 10
+				: undefined
+		const totalMb =
+			typeof p.totalBytes === 'number'
+				? Math.round((p.totalBytes / (1024 * 1024)) * 10) / 10
+				: undefined
+		const speedMbps =
+			typeof p.speedBps === 'number' && p.speedBps > 0
+				? Math.round((p.speedBps / (1024 * 1024)) * 10) / 10
+				: undefined
+		const etaText = formatUploadEta(p.etaSeconds)
+		uploadProgress.value = {
+			active: true,
+			percent: typeof p.percent === 'number' ? p.percent : uploadProgress.value.percent,
+			message: p.message || uploadProgress.value.message,
+			uploadedMb,
+			totalMb,
+			speedMbps,
+			etaText,
+		}
+		if (p.message) {
+			status.value = p.message
+		}
 	})
 
-	return result
+	try {
+		const result = await invoke<PublishReleaseResponse>('dr3sh_publish_release', {
+			token,
+			serverId,
+			version: cleanVer,
+			title: titleStr,
+			archivePath,
+			description: newVersionDescription.value?.trim() || undefined,
+			minecraftVersion: minecraftVersion || undefined,
+			loader: loader || undefined,
+			loaderVersion: loaderVersion || undefined,
+		})
+		return result
+	} finally {
+		unlisten()
+	}
 }
 
 async function handleAddVersion() {
@@ -794,14 +1016,21 @@ async function handleAddVersion() {
 	const baseId = slugify(`${selectedServer.value.id}-${verNum}`)
 	const id = catalog.value.versions.some((v) => v.id === baseId) ? `${baseId}-${Date.now()}` : baseId
 
-	// If link is still empty, auto generate it now!
-	if (!newVersionLink.value.trim()) {
-		autoGenerateLinks()
-	}
 	let downloadLink = newVersionLink.value.trim()
-
-	// If a ZIP File or path is present, upload release via native backend publisher
+	let zipSha256 = ''
 	const archiveTarget = newVersionArchivePath.value || newVersionZipFile.value
+	const uploadedRelease = Boolean(archiveTarget)
+
+	if (!archiveTarget && !downloadLink) {
+		status.value = 'Selecciona o arrastra un archivo .zip del modpack para subirlo como release en GitHub.'
+		return
+	}
+
+	const resolvedMc = newVersionMinecraft.value || selectedServer.value.minecraft_version || undefined
+	const resolvedLoader = newVersionLoader.value || selectedServer.value.mod_loader || undefined
+	const resolvedLoaderVer =
+		newVersionLoaderVersion.value.trim() || selectedServer.value.mod_loader_version || undefined
+
 	if (archiveTarget) {
 		if (!githubToken.value || !githubToken.value.trim()) {
 			status.value =
@@ -816,19 +1045,24 @@ async function handleAddVersion() {
 				selectedServer.value.id,
 				verNum,
 				title,
+				resolvedMc,
+				resolvedLoader,
+				resolvedLoaderVer,
 			)
 			downloadLink = result.archive_url
+			zipSha256 = result.sha256 || ''
 			newVersionLink.value = result.archive_url
 			newVersionManifest.value = result.manifest_url
-			if (result.size_mb) {
+			if (typeof result.size_mb === 'number' && result.size_mb > 0) {
 				newVersionSizeMb.value = result.size_mb
 			}
-			status.value = `¡Release ${result.tag_name} subida exitosamente con ZIP y manifest.json a GitHub!`
+			status.value = `¡Release ${result.tag_name} subida exitosamente con ZIP y manifest.json! Actualizando versions.json...`
 		} catch (e: any) {
 			const errStr = sanitizeError(e)
 			status.value = `Error al publicar en GitHub: ${errStr}`
+			uploadProgress.value.active = false
 			busy.value = false
-			return // Detener: No añadir enlace 404 ficticio si falló la subida real
+			return
 		} finally {
 			busy.value = false
 		}
@@ -841,12 +1075,15 @@ async function handleAddVersion() {
 		version: verNum,
 		...(downloadLink ? { link: downloadLink } : {}),
 		...(newVersionManifest.value.trim() ? { manifest: newVersionManifest.value.trim() } : {}),
+		...(zipSha256 ? { sha256: zipSha256 } : {}),
 		description: newVersionDescription.value.trim(),
 		published_at: new Date().toISOString().slice(0, 10),
 		...(newVersionMinecraft.value ? { minecraft_version: newVersionMinecraft.value } : {}),
 		...(newVersionLoader.value ? { mod_loader: newVersionLoader.value } : {}),
 		...(newVersionLoaderVersion.value.trim() ? { mod_loader_version: newVersionLoaderVersion.value.trim() } : {}),
-		...(newVersionSizeMb.value ? { size_mb: Number(newVersionSizeMb.value) } : {}),
+		...(typeof newVersionSizeMb.value === 'number' && newVersionSizeMb.value > 0
+			? { size_mb: Number(newVersionSizeMb.value) }
+			: {}),
 		status: 'active',
 	}
 
@@ -858,16 +1095,117 @@ async function handleAddVersion() {
 	newVersionDescription.value = ''
 	newVersionArchivePath.value = ''
 	newVersionZipFile.value = null
-	status.value = `Versión "${title}" agregada con éxito. Recuerda pulsar "Guardar y publicar en GitHub" para sincronizar versions.json.`
+	newVersionSizeMb.value = undefined
+	if (uploadedRelease) {
+		uploadProgress.value = {
+			active: true,
+			percent: 96,
+			message: 'Actualizando versions.json en GitHub...',
+		}
+		await publishCatalogToGithub(true)
+		if (status.value.startsWith('✅')) {
+			uploadProgress.value = {
+				active: true,
+				percent: 100,
+				message: '¡Release y versions.json publicados con éxito!',
+			}
+			status.value = `✅ Release "${title}" subida a GitHub y publicada automáticamente en versions.json.`
+			setTimeout(() => {
+				uploadProgress.value.active = false
+			}, 2500)
+		} else {
+			uploadProgress.value.active = false
+		}
+	} else {
+		uploadProgress.value.active = false
+		status.value = `Versión "${title}" agregada al borrador. Pulsa "Guardar y publicar en GitHub" para sincronizar versions.json.`
+	}
 }
 
 function updateVersionField(versionId: string, patch: Partial<Dr3shVersion>) {
 	catalog.value.versions = catalog.value.versions.map((v) => (v.id === versionId ? { ...v, ...patch } : v))
 }
 
+function extractGithubReleaseTarget(version: Dr3shVersion): { repo: string; tag: string } | null {
+	const candidates = [
+		version.link,
+		version.manifest,
+		(version as any).download_url,
+		(version as any).manifest_url,
+	]
+	for (const raw of candidates) {
+		const url = String(raw || '').trim()
+		const match = url.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/releases\/download\/([^/]+)\//i)
+		if (match) {
+			return {
+				repo: match[1],
+				tag: decodeURIComponent(match[2]),
+			}
+		}
+	}
+	return null
+}
+
+function queueReleaseDeletionForVersion(version: Dr3shVersion): boolean {
+	const target = extractGithubReleaseTarget(version)
+	if (!target) return false
+	const exists = pendingReleaseDeletions.value.some(
+		(item) => item.repo === target.repo && item.tag === target.tag,
+	)
+	if (!exists) {
+		pendingReleaseDeletions.value.push({
+			repo: target.repo,
+			tag: target.tag,
+			label: version.title || version.version || target.tag,
+		})
+	}
+	return true
+}
+
+async function deleteGithubReleaseAndTag(repo: string, tag: string, token: string): Promise<void> {
+	const headers = {
+		Authorization: `token ${token}`,
+		Accept: 'application/vnd.github.v3+json',
+	}
+	const encodedTag = encodeURIComponent(tag)
+	const relRes = await tauriFetch(
+		`https://api.github.com/repos/${repo}/releases/tags/${encodedTag}`,
+		{ headers },
+	)
+
+	if (relRes.ok) {
+		const relData = await relRes.json()
+		if (relData?.id) {
+			const delRelRes = await tauriFetch(
+				`https://api.github.com/repos/${repo}/releases/${relData.id}`,
+				{ method: 'DELETE', headers },
+			)
+			if (!delRelRes.ok && delRelRes.status !== 404) {
+				const errData = await delRelRes.json().catch(() => ({}))
+				throw new Error(errData.message || `No se pudo borrar release ${tag} (HTTP ${delRelRes.status})`)
+			}
+		}
+	} else if (relRes.status !== 404) {
+		const errData = await relRes.json().catch(() => ({}))
+		throw new Error(errData.message || `No se pudo consultar release ${tag} (HTTP ${relRes.status})`)
+	}
+
+	const delTagRes = await tauriFetch(
+		`https://api.github.com/repos/${repo}/git/refs/tags/${encodedTag}`,
+		{ method: 'DELETE', headers },
+	)
+	if (!delTagRes.ok && delTagRes.status !== 404 && delTagRes.status !== 422) {
+		const errData = await delTagRes.json().catch(() => ({}))
+		throw new Error(errData.message || `No se pudo borrar tag ${tag} (HTTP ${delTagRes.status})`)
+	}
+}
+
 function removeVersionItem(version: Dr3shVersion) {
+	const queued = queueReleaseDeletionForVersion(version)
 	catalog.value.versions = catalog.value.versions.filter((v) => v.id !== version.id)
-	status.value = `Versión "${version.title}" eliminada del borrador.`
+	status.value = queued
+		? `Versión "${version.title}" eliminada del borrador (su release en GitHub se borrará al publicar).`
+		: `Versión "${version.title}" eliminada del borrador.`
 }
 
 // Raw JSON modal
@@ -955,16 +1293,35 @@ async function publishCatalogToGithub(triggerGlobalRefresh = false) {
 		}
 
 		catalog.value = publishedCatalog
-		setSpecialModes({
-			maintenance_mode: Boolean(publishedCatalog.maintenance_mode),
-			maintenance_message: String(publishedCatalog.maintenance_message || ''),
-			testing_mode: Boolean(publishedCatalog.testing_mode),
-			testing_hours: Number(publishedCatalog.testing_hours || 1),
-		})
-		applyCatalogData(publishedCatalog, true)
-		status.value = triggerGlobalRefresh
-			? '✅ Señal global publicada. Los launchers recibirán el cambio en hasta 15 segundos.'
-			: '✅ Catálogo publicado en GitHub con éxito.'
+		clearSpecialModesOverride()
+		applyCatalogData(publishedCatalog, true, true)
+
+		const toDelete = [...pendingReleaseDeletions.value]
+		const failedDeletions: Array<{ repo: string; tag: string; label: string }> = []
+		let deletedCount = 0
+		for (const item of toDelete) {
+			try {
+				status.value = `Eliminando release ${item.tag} en GitHub...`
+				await deleteGithubReleaseAndTag(item.repo, item.tag, githubToken.value.trim())
+				deletedCount++
+			} catch (delErr) {
+				console.warn('Error eliminando release de GitHub:', delErr)
+				failedDeletions.push(item)
+			}
+		}
+		pendingReleaseDeletions.value = failedDeletions
+
+		if (failedDeletions.length > 0) {
+			status.value = `⚠️ Catálogo publicado, pero fallaron ${failedDeletions.length} release(s) al borrar en GitHub.`
+		} else if (deletedCount > 0) {
+			status.value = triggerGlobalRefresh
+				? `✅ Señal global publicada y ${deletedCount} release(s) eliminada(s) de GitHub.`
+				: `✅ Catálogo publicado y ${deletedCount} release(s) eliminada(s) de GitHub.`
+		} else {
+			status.value = triggerGlobalRefresh
+				? '✅ Señal global publicada. Los launchers recibirán el cambio en hasta 15 segundos.'
+				: '✅ Catálogo publicado en GitHub con éxito.'
+		}
 	} catch (e) {
 		status.value = `No se pudo publicar: ${sanitizeError(e)}`
 	} finally {
@@ -980,6 +1337,7 @@ watch(
 		catalog.value.testing_hours,
 	],
 	([mMode, mMsg, tMode, tHours]) => {
+		if (isHydratingCatalog) return
 		setSpecialModes({
 			maintenance_mode: Boolean(mMode),
 			maintenance_message: String(mMsg || ''),
@@ -1112,10 +1470,10 @@ function close() {
 				<div v-if="authMethodTab === 'direct'" class="developer-auth-card">
 					<div class="developer-auth-card-head">
 						<div>
-							<h3>Conexión directa con tu cuenta de Desarrollador</h3>
+							<h3>Conexión automática con tu cuenta de GitHub</h3>
 							<p>
-								Conéctate en un solo clic sin necesidad de copiar tokens manualmente. La sesión quedará
-								guardada automáticamente en tu PC.
+								Detecta en un clic tu sesión activa de GitHub en Windows (Git Credential Manager o GitHub CLI)
+								y la guarda permanentemente en tu PC para no volver a pedirla al abrir el launcher.
 							</p>
 						</div>
 					</div>
@@ -1466,11 +1824,6 @@ function close() {
 											"
 										/>
 									</label>
-									<label>
-										Tamaño estimado (MB)
-										<input v-model.number="newVersionSizeMb" type="number" min="1" step="0.1" />
-									</label>
-
 									<!-- Modpack ZIP Dropzone & Picker -->
 									<div class="wide-field developer-archive-field">
 										<span>Paquete ZIP del modpack (arrastra directamente el archivo o examina tu PC)</span>
@@ -1489,13 +1842,19 @@ function close() {
 												</div>
 												<div class="archive-info">
 													<strong>{{ getFileName(newVersionArchivePath) }}</strong>
-													<small v-if="newVersionSizeMb">{{ newVersionSizeMb }} MB • Listo para subir o añadir</small>
+													<small v-if="newVersionSizeMb">
+														{{ newVersionSizeMb }} MB (calculado del archivo) • Listo para subir
+													</small>
 												</div>
 												<button
 													type="button"
 													class="developer-pill-btn danger"
 													title="Quitar ZIP seleccionado"
-													@click.stop="newVersionArchivePath = ''; newVersionZipFile = null"
+													@click.stop="
+														newVersionArchivePath = '';
+														newVersionZipFile = null;
+														newVersionSizeMb = undefined
+													"
 												>
 													Quitar
 												</button>
@@ -1517,38 +1876,6 @@ function close() {
 										</div>
 									</div>
 
-									<details class="wide-field developer-advanced-details">
-										<summary class="developer-advanced-summary">
-											<span>Configuración avanzada de enlaces (opcional)</span>
-										</summary>
-										<div class="developer-advanced-content">
-											<label class="wide-field">
-												<span>Link directo de descarga</span>
-												<div class="developer-link-input-row">
-													<input
-														v-model="newVersionLink"
-														type="url"
-														placeholder="https://github.com/Dr3sh/modpack-versions/releases/download/..."
-													/>
-													<button
-														type="button"
-														class="developer-secondary"
-														title="Generar link automáticamente"
-														@click="autoGenerateLinks"
-													>
-														Generar link
-													</button>
-												</div>
-											</label>
-											<label class="wide-field">
-												Manifiesto diferencial JSON (opcional)
-												<input
-													v-model="newVersionManifest"
-													placeholder="https://github.com/.../manifest.json"
-												/>
-											</label>
-										</div>
-									</details>
 									<label class="wide-field">
 										Notas del parche / Changelog
 										<textarea
@@ -1557,13 +1884,47 @@ function close() {
 											placeholder="Describe los cambios de esta versión..."
 										/>
 									</label>
+									<div v-if="uploadProgress.active" class="wide-field developer-upload-progress" role="status">
+										<div class="developer-upload-progress-head">
+											<span class="developer-upload-progress-msg">{{ uploadProgress.message }}</span>
+											<div class="developer-upload-progress-right">
+												<span class="developer-upload-progress-stats">
+													<template v-if="uploadProgress.totalMb">
+														{{ uploadProgress.uploadedMb?.toFixed(1) ?? '0.0' }} /
+														{{ uploadProgress.totalMb.toFixed(1) }} MB ·
+													</template>
+													<template v-if="uploadProgress.speedMbps">
+														{{ uploadProgress.speedMbps.toFixed(1) }} MB/s ·
+													</template>
+													<template v-if="uploadProgress.etaText">
+														{{ uploadProgress.etaText }} ·
+													</template>
+													<strong>{{ uploadProgress.percent }}%</strong>
+												</span>
+												<button
+													v-if="uploadProgress.percent < 96"
+													type="button"
+													class="developer-upload-cancel-btn"
+													@click="cancelUpload"
+												>
+													Cancelar subida
+												</button>
+											</div>
+										</div>
+										<div class="developer-upload-progress-track">
+											<div
+												class="developer-upload-progress-fill"
+												:style="{ width: `${Math.max(2, Math.min(100, uploadProgress.percent))}%` }"
+											/>
+										</div>
+									</div>
 									<div class="wide-field developer-form-submit">
 										<button type="submit" class="developer-primary" :disabled="busy">
 											{{
 												busy
 													? 'Procesando...'
-													: newVersionZipFile && githubToken
-														? 'Subir ZIP y publicar release en GitHub'
+													: (newVersionArchivePath || newVersionZipFile) && githubToken
+														? 'Subir ZIP como Release y publicar en versions.json'
 														: 'Añadir versión al catálogo'
 											}}
 										</button>
@@ -1636,12 +1997,12 @@ function close() {
 												/>
 											</label>
 											<label>
-												Tamaño MB
+												Tamaño (automático)
 												<input
-													type="number"
-													step="0.1"
-													:value="ver.size_mb ?? ''"
-													@input="updateVersionField(ver.id, { size_mb: Number(($event.target as HTMLInputElement).value) || undefined })"
+													readonly
+													disabled
+													:value="ver.size_mb ? `${ver.size_mb} MB` : 'Sin calcular'"
+													title="El peso se calcula directamente desde el archivo ZIP"
 												/>
 											</label>
 											<label class="wide-field">
@@ -2080,33 +2441,73 @@ function close() {
 </template>
 
 <style scoped>
-.developer-advanced-details {
-	margin-top: 0.25rem;
-	padding: 0.6rem 0.85rem;
-	background: rgba(255, 255, 255, 0.03);
-	border: 1px dashed rgba(255, 255, 255, 0.15);
-	border-radius: 8px;
-	box-sizing: border-box;
-}
-
-.developer-advanced-summary {
-	cursor: pointer;
-	font-size: 0.82rem;
-	font-weight: 500;
-	color: var(--color-text-secondary, #9ca3af);
-	user-select: none;
-	outline: none;
-	display: list-item;
-}
-
-.developer-advanced-summary:hover {
-	color: var(--color-text-primary, #ffffff);
-}
-
-.developer-advanced-content {
-	margin-top: 0.75rem;
+.developer-upload-progress {
 	display: flex;
 	flex-direction: column;
+	gap: 0.45rem;
+	padding: 0.75rem 0.9rem;
+	background: rgba(16, 185, 129, 0.08);
+	border: 1px solid rgba(16, 185, 129, 0.28);
+	border-radius: 10px;
+}
+
+.developer-upload-progress-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
 	gap: 0.75rem;
+	font-size: 0.82rem;
+	color: var(--color-text-primary, #f3f4f6);
+}
+
+.developer-upload-progress-msg {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.developer-upload-progress-right {
+	display: flex;
+	align-items: center;
+	gap: 0.65rem;
+	flex-shrink: 0;
+}
+
+.developer-upload-progress-stats {
+	color: #34d399;
+	font-variant-numeric: tabular-nums;
+}
+
+.developer-upload-cancel-btn {
+	appearance: none;
+	border: 1px solid rgba(248, 113, 113, 0.45);
+	background: rgba(239, 68, 68, 0.14);
+	color: #fca5a5;
+	font-size: 0.75rem;
+	font-weight: 600;
+	padding: 0.22rem 0.55rem;
+	border-radius: 6px;
+	cursor: pointer;
+	transition: background 150ms ease, border-color 150ms ease;
+}
+
+.developer-upload-cancel-btn:hover {
+	background: rgba(239, 68, 68, 0.28);
+	border-color: rgba(248, 113, 113, 0.75);
+}
+
+.developer-upload-progress-track {
+	width: 100%;
+	height: 8px;
+	background: rgba(255, 255, 255, 0.08);
+	border-radius: 999px;
+	overflow: hidden;
+}
+
+.developer-upload-progress-fill {
+	height: 100%;
+	border-radius: 999px;
+	background: linear-gradient(90deg, #10b981, #34d399);
+	transition: width 180ms ease-out;
 }
 </style>

@@ -33,6 +33,31 @@ const DEFAULT_RULES = [
 
 const VALID_POLICIES = new Set(['managed', 'update_on_change', 'seed', 'ignore'])
 const OS_JUNK_NAMES = new Set(['thumbs.db', 'desktop.ini', '.ds_store'])
+const PRECOMPRESSED_EXTS = new Set([
+	'.jar',
+	'.zip',
+	'.mrpack',
+	'.png',
+	'.jpg',
+	'.jpeg',
+	'.webp',
+	'.gif',
+	'.ogg',
+	'.mp3',
+	'.wav',
+	'.flac',
+	'.mp4',
+	'.mkv',
+	'.webm',
+	'.gz',
+	'.bz2',
+	'.xz',
+	'.zst',
+	'.7z',
+	'.rar',
+	'.mca',
+	'.nbt',
+])
 
 const CRC32_TABLE = (() => {
 	const table = new Uint32Array(256)
@@ -47,6 +72,9 @@ const CRC32_TABLE = (() => {
 })()
 
 function crc32(buf) {
+	if (typeof zlib.crc32 === 'function') {
+		return zlib.crc32(buf) >>> 0
+	}
 	let crc = 0xffffffff
 	for (let i = 0; i < buf.length; i++) {
 		crc = CRC32_TABLE[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8)
@@ -61,7 +89,7 @@ function sha256Hex(buf) {
 function sha256File(filePath) {
 	return new Promise((resolve, reject) => {
 		const hash = crypto.createHash('sha256')
-		const stream = fs.createReadStream(filePath)
+		const stream = fs.createReadStream(filePath, { highWaterMark: 4 * 1024 * 1024 })
 		stream.on('data', (chunk) => hash.update(chunk))
 		stream.on('end', () => resolve(hash.digest('hex')))
 		stream.on('error', reject)
@@ -239,24 +267,34 @@ function walkSourceDirectory(rootDir, rules) {
 	return collected
 }
 
-function writeZipDeterministic(entries, outputZipPath) {
+function createZipWriter(outputZipPath) {
 	const fd = fs.openSync(outputZipPath, 'w')
+	const zipHasher = crypto.createHash('sha256')
 	let offset = 0
 	const centralDirectory = []
+	let closed = false
 
-	try {
-		for (const item of entries) {
-			const nameBuf = Buffer.from(item.path, 'utf8')
-			const rawData = fs.readFileSync(item.fullPath)
-			const uncompressedSize = rawData.length
-			const fileCrc = crc32(rawData)
-			const deflated = zlib.deflateRawSync(rawData, { level: 6 })
+	const writeAndHash = (buf) => {
+		if (buf.length === 0) return
+		fs.writeSync(fd, buf)
+		zipHasher.update(buf)
+		offset += buf.length
+	}
 
-			const useDeflate = deflated.length < uncompressedSize
-			const method = useDeflate ? 8 : 0
-			const payload = useDeflate ? deflated : rawData
+	return {
+		writeEntry({ path: relPath, method, crc32: fileCrc, uncompressedSize, payload }) {
+			if (centralDirectory.length >= 0xffff) {
+				throw new Error('ZIP entry limit exceeded (65,535 entries)')
+			}
 			const compressedSize = payload.length
-
+			if (
+				offset > 0xffffffff ||
+				compressedSize > 0xffffffff ||
+				uncompressedSize > 0xffffffff
+			) {
+				throw new Error(`ZIP 32-bit size/offset limit exceeded writing ${relPath}`)
+			}
+			const nameBuf = Buffer.from(relPath, 'utf8')
 			const localHeader = Buffer.alloc(30 + nameBuf.length)
 			localHeader.writeUInt32LE(0x04034b50, 0)
 			localHeader.writeUInt16LE(20, 4)
@@ -264,7 +302,7 @@ function writeZipDeterministic(entries, outputZipPath) {
 			localHeader.writeUInt16LE(method, 8)
 			localHeader.writeUInt16LE(0, 10)
 			localHeader.writeUInt16LE(0x5421, 12)
-			localHeader.writeUInt32LE(fileCrc, 14)
+			localHeader.writeUInt32LE(fileCrc >>> 0, 14)
 			localHeader.writeUInt32LE(compressedSize, 18)
 			localHeader.writeUInt32LE(uncompressedSize, 22)
 			localHeader.writeUInt16LE(nameBuf.length, 26)
@@ -272,11 +310,8 @@ function writeZipDeterministic(entries, outputZipPath) {
 			nameBuf.copy(localHeader, 30)
 
 			const localHeaderOffset = offset
-			fs.writeSync(fd, localHeader)
-			offset += localHeader.length
-
-			fs.writeSync(fd, payload)
-			offset += payload.length
+			writeAndHash(localHeader)
+			writeAndHash(payload)
 
 			const centralHeader = Buffer.alloc(46 + nameBuf.length)
 			centralHeader.writeUInt32LE(0x02014b50, 0)
@@ -286,7 +321,7 @@ function writeZipDeterministic(entries, outputZipPath) {
 			centralHeader.writeUInt16LE(method, 10)
 			centralHeader.writeUInt16LE(0, 12)
 			centralHeader.writeUInt16LE(0x5421, 14)
-			centralHeader.writeUInt32LE(fileCrc, 16)
+			centralHeader.writeUInt32LE(fileCrc >>> 0, 16)
 			centralHeader.writeUInt32LE(compressedSize, 20)
 			centralHeader.writeUInt32LE(uncompressedSize, 24)
 			centralHeader.writeUInt16LE(nameBuf.length, 28)
@@ -297,148 +332,538 @@ function writeZipDeterministic(entries, outputZipPath) {
 			centralHeader.writeUInt32LE(0, 38)
 			centralHeader.writeUInt32LE(localHeaderOffset, 42)
 			nameBuf.copy(centralHeader, 46)
-
 			centralDirectory.push(centralHeader)
-		}
-
-		const cdStart = offset
-		for (const cd of centralDirectory) {
-			fs.writeSync(fd, cd)
-			offset += cd.length
-		}
-		const cdSize = offset - cdStart
-
-		const eocd = Buffer.alloc(22)
-		eocd.writeUInt32LE(0x06054b50, 0)
-		eocd.writeUInt16LE(0, 4)
-		eocd.writeUInt16LE(0, 6)
-		eocd.writeUInt16LE(entries.length, 8)
-		eocd.writeUInt16LE(entries.length, 10)
-		eocd.writeUInt32LE(cdSize, 12)
-		eocd.writeUInt32LE(cdStart, 16)
-		eocd.writeUInt16LE(0, 20)
-		fs.writeSync(fd, eocd)
-	} finally {
-		fs.closeSync(fd)
+		},
+		finalize() {
+			if (closed) {
+				throw new Error('ZIP writer already finalized')
+			}
+			try {
+				const cdStart = offset
+				if (cdStart > 0xffffffff) {
+					throw new Error('ZIP central directory offset exceeds 4GB limit')
+				}
+				for (const cd of centralDirectory) {
+					writeAndHash(cd)
+				}
+				const cdSize = offset - cdStart
+				if (cdSize > 0xffffffff) {
+					throw new Error('ZIP central directory size exceeds 4GB limit')
+				}
+				const eocd = Buffer.alloc(22)
+				eocd.writeUInt32LE(0x06054b50, 0)
+				eocd.writeUInt16LE(0, 4)
+				eocd.writeUInt16LE(0, 6)
+				eocd.writeUInt16LE(centralDirectory.length, 8)
+				eocd.writeUInt16LE(centralDirectory.length, 10)
+				eocd.writeUInt32LE(cdSize, 12)
+				eocd.writeUInt32LE(cdStart, 16)
+				eocd.writeUInt16LE(0, 20)
+				writeAndHash(eocd)
+				return {
+					size: offset,
+					sha256: zipHasher.digest('hex'),
+				}
+			} finally {
+				closed = true
+				try {
+					fs.closeSync(fd)
+				} catch {}
+			}
+		},
+		abort() {
+			if (!closed) {
+				closed = true
+				try {
+					fs.closeSync(fd)
+				} catch {}
+			}
+		},
 	}
 }
 
-function readZipEntriesMap(zipPath) {
-	const buf = fs.readFileSync(zipPath)
-	let eocdOffset = -1
-	for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
-		if (buf.readUInt32LE(i) === 0x06054b50) {
-			eocdOffset = i
+function writeZipDeterministic(entries, outputZipPath) {
+	const writer = createZipWriter(outputZipPath)
+	try {
+		for (const item of entries) {
+			const rawData = fs.readFileSync(item.fullPath)
+			const uncompressedSize = rawData.length
+			const fileCrc = crc32(rawData)
+			const ext = path.posix.extname(item.path).toLowerCase()
+			if (uncompressedSize === 0 || PRECOMPRESSED_EXTS.has(ext)) {
+				writer.writeEntry({
+					path: item.path,
+					method: 0,
+					crc32: fileCrc,
+					uncompressedSize,
+					payload: rawData,
+				})
+				continue
+			}
+
+			const deflated = zlib.deflateRawSync(rawData, { level: 6 })
+			const useDeflate = deflated.length < uncompressedSize
+			writer.writeEntry({
+				path: item.path,
+				method: useDeflate ? 8 : 0,
+				crc32: fileCrc,
+				uncompressedSize,
+				payload: useDeflate ? deflated : rawData,
+			})
+		}
+		return writer.finalize()
+	} catch (err) {
+		writer.abort()
+		throw err
+	}
+}
+
+function readFully(fd, buffer, offset, length, position) {
+	let totalRead = 0
+	while (totalRead < length) {
+		const bytesRead = fs.readSync(fd, buffer, offset + totalRead, length - totalRead, position + totalRead)
+		if (bytesRead <= 0) {
+			throw new Error('Unexpected end of file while reading ZIP archive')
+		}
+		totalRead += bytesRead
+	}
+}
+
+function parseZip64Extra(extraBuf, needUncomp, needComp, needLocalOff) {
+	let ptr = 0
+	let uncomp = null
+	let comp = null
+	let localOff = null
+	while (ptr + 4 <= extraBuf.length) {
+		const headerId = extraBuf.readUInt16LE(ptr)
+		const dataSize = extraBuf.readUInt16LE(ptr + 2)
+		ptr += 4
+		if (headerId === 0x0001) {
+			let cur = ptr
+			if (needUncomp && cur + 8 <= ptr + dataSize) {
+				uncomp = Number(extraBuf.readBigUInt64LE(cur))
+				cur += 8
+			}
+			if (needComp && cur + 8 <= ptr + dataSize) {
+				comp = Number(extraBuf.readBigUInt64LE(cur))
+				cur += 8
+			}
+			if (needLocalOff && cur + 8 <= ptr + dataSize) {
+				localOff = Number(extraBuf.readBigUInt64LE(cur))
+			}
 			break
 		}
+		ptr += dataSize
 	}
-	if (eocdOffset === -1) {
-		throw new Error(`Invalid ZIP archive (EOCD not found): ${zipPath}`)
-	}
-
-	const totalEntries = buf.readUInt16LE(eocdOffset + 10)
-	const cdOffset = buf.readUInt32LE(eocdOffset + 16)
-	const entries = new Map()
-
-	let ptr = cdOffset
-	for (let i = 0; i < totalEntries; i++) {
-		if (buf.readUInt32LE(ptr) !== 0x02014b50) {
-			throw new Error(`Invalid Central Directory header at offset ${ptr}`)
-		}
-		const method = buf.readUInt16LE(ptr + 10)
-		const compressedSize = buf.readUInt32LE(ptr + 20)
-		const uncompressedSize = buf.readUInt32LE(ptr + 24)
-		const nameLen = buf.readUInt16LE(ptr + 28)
-		const extraLen = buf.readUInt16LE(ptr + 30)
-		const commentLen = buf.readUInt16LE(ptr + 32)
-		const localHeaderOffset = buf.readUInt32LE(ptr + 42)
-		const name = buf.subarray(ptr + 46, ptr + 46 + nameLen).toString('utf8')
-
-		ptr += 46 + nameLen + extraLen + commentLen
-
-		if (name.endsWith('/')) continue
-
-		const localNameLen = buf.readUInt16LE(localHeaderOffset + 26)
-		const localExtraLen = buf.readUInt16LE(localHeaderOffset + 28)
-		const dataStart = localHeaderOffset + 30 + localNameLen + localExtraLen
-		const compSlice = buf.subarray(dataStart, dataStart + compressedSize)
-
-		let rawData
-		if (method === 0) {
-			rawData = compSlice
-		} else if (method === 8) {
-			rawData = zlib.inflateRawSync(compSlice)
-		} else {
-			throw new Error(`Unsupported ZIP compression method ${method} for entry ${name}`)
-		}
-
-		if (rawData.length !== uncompressedSize) {
-			throw new Error(`Uncompressed size mismatch for ${name}`)
-		}
-		entries.set(name, {
-			size: rawData.length,
-			sha256: sha256Hex(rawData),
-			data: rawData,
-		})
-	}
-
-	return entries
+	return { uncomp, comp, localOff }
 }
 
-function extractInputZipToTempDir(zipPath) {
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dr3sh-src-zip-'))
-	const entries = readZipEntriesMap(zipPath)
-	const rawNames = Array.from(entries.keys()).map((n) => n.replace(/\\/g, '/').replace(/^\/+/, ''))
+const STANDARD_MODPACK_TOP_DIRS = new Set([
+	'mods',
+	'config',
+	'defaultconfigs',
+	'resourcepacks',
+	'shaderpacks',
+	'datapacks',
+	'scripts',
+	'kubejs',
+	'saves',
+])
 
+function detectWrapperPrefix(rawNames) {
 	let commonPrefix = null
 	for (const name of rawNames) {
 		const slashIdx = name.indexOf('/')
 		if (slashIdx === -1) {
-			commonPrefix = null
-			break
+			return null
 		}
 		const candidate = name.slice(0, slashIdx + 1)
 		if (commonPrefix === null) {
 			commonPrefix = candidate
 		} else if (commonPrefix !== candidate) {
-			commonPrefix = null
-			break
+			return null
 		}
 	}
+	if (!commonPrefix) return null
+	const topFolder = commonPrefix.slice(0, -1).toLowerCase()
+	return STANDARD_MODPACK_TOP_DIRS.has(topFolder) ? null : commonPrefix
+}
 
-	if (commonPrefix) {
-		const topFolder = commonPrefix.slice(0, -1).toLowerCase()
-		const standardDirs = new Set([
-			'mods',
-			'config',
-			'resourcepacks',
-			'shaderpacks',
-			'kubejs',
-			'defaultconfigs',
-			'saves',
-			'datapacks',
-		])
-		if (standardDirs.has(topFolder)) {
-			commonPrefix = null
-		}
+function readZipDirectoryRecords(fd, fileSize, zipPath) {
+	if (fileSize < 22) {
+		throw new Error(`El archivo ZIP está vacío o dañado: ${zipPath}`)
 	}
 
-	for (const [rawName, info] of entries.entries()) {
-		let rel = rawName.replace(/\\/g, '/').replace(/^\/+/, '')
-		if (commonPrefix && rel.startsWith(commonPrefix)) {
-			rel = rel.slice(commonPrefix.length).replace(/^\/+/, '')
-		}
-		if (!rel) continue
-		const dest = path.join(tempDir, rel)
-		fs.mkdirSync(path.dirname(dest), { recursive: true })
-		fs.writeFileSync(dest, info.data)
+	const magicBuf = Buffer.allocUnsafe(4)
+	readFully(fd, magicBuf, 0, 4, 0)
+	const firstSig = magicBuf.readUInt32LE(0)
+	if (firstSig !== 0x04034b50 && firstSig !== 0x06054b50) {
+		throw new Error('El archivo seleccionado no es un ZIP válido (posiblemente corrupto o renombrado).')
 	}
 
-	return tempDir
+	const tailLen = Math.min(fileSize, 65557)
+	const tailStart = fileSize - tailLen
+	const tailBuf = Buffer.allocUnsafe(tailLen)
+	readFully(fd, tailBuf, 0, tailLen, tailStart)
+
+	let eocdRel = -1
+	let fallbackRel = -1
+	for (let i = tailLen - 22; i >= 0; i--) {
+		if (tailBuf.readUInt32LE(i) === 0x06054b50) {
+			if (fallbackRel === -1) fallbackRel = i
+			const commentLen = tailBuf.readUInt16LE(i + 20)
+			if (i + 22 + commentLen === tailLen) {
+				eocdRel = i
+				break
+			}
+		}
+	}
+	if (eocdRel === -1) eocdRel = fallbackRel
+	if (eocdRel === -1) {
+		throw new Error(`Invalid ZIP archive (EOCD not found): ${zipPath}`)
+	}
+
+	let totalEntries = tailBuf.readUInt16LE(eocdRel + 10)
+	let cdSize = tailBuf.readUInt32LE(eocdRel + 12)
+	let cdOffset = tailBuf.readUInt32LE(eocdRel + 16)
+
+	if (totalEntries === 0xffff || cdSize === 0xffffffff || cdOffset === 0xffffffff) {
+		const eocdAbs = tailStart + eocdRel
+		if (eocdAbs < 20) {
+			throw new Error(`Invalid ZIP64 locator offset in archive: ${zipPath}`)
+		}
+		const locBuf = Buffer.allocUnsafe(20)
+		readFully(fd, locBuf, 0, 20, eocdAbs - 20)
+		if (locBuf.readUInt32LE(0) !== 0x07064b50) {
+			throw new Error(`ZIP64 archive missing locator record: ${zipPath}`)
+		}
+		const zip64EocdOffset = Number(locBuf.readBigUInt64LE(8))
+		const z64Buf = Buffer.allocUnsafe(56)
+		readFully(fd, z64Buf, 0, 56, zip64EocdOffset)
+		if (z64Buf.readUInt32LE(0) !== 0x06064b50) {
+			throw new Error(`Invalid ZIP64 EOCD signature: ${zipPath}`)
+		}
+		totalEntries = Number(z64Buf.readBigUInt64LE(32))
+		cdSize = Number(z64Buf.readBigUInt64LE(40))
+		cdOffset = Number(z64Buf.readBigUInt64LE(48))
+	}
+
+	if (cdOffset + cdSize > fileSize) {
+		throw new Error(`Invalid Central Directory bounds in ZIP archive: ${zipPath}`)
+	}
+
+	const cdBuf = Buffer.allocUnsafe(cdSize)
+	readFully(fd, cdBuf, 0, cdSize, cdOffset)
+
+	const records = []
+	let ptr = 0
+	for (let i = 0; i < totalEntries; i++) {
+		if (ptr + 46 > cdBuf.length || cdBuf.readUInt32LE(ptr) !== 0x02014b50) {
+			throw new Error(`Invalid Central Directory header at offset ${ptr}`)
+		}
+		const flags = cdBuf.readUInt16LE(ptr + 8)
+		if (flags & 0x0001) {
+			throw new Error('El archivo ZIP contiene entradas cifradas con contraseña; descífralo antes de subirlo.')
+		}
+		const method = cdBuf.readUInt16LE(ptr + 10)
+		const entryCrc = cdBuf.readUInt32LE(ptr + 16)
+		let compressedSize = cdBuf.readUInt32LE(ptr + 20)
+		let uncompressedSize = cdBuf.readUInt32LE(ptr + 24)
+		const nameLen = cdBuf.readUInt16LE(ptr + 28)
+		const extraLen = cdBuf.readUInt16LE(ptr + 30)
+		const commentLen = cdBuf.readUInt16LE(ptr + 32)
+		let localHeaderOffset = cdBuf.readUInt32LE(ptr + 42)
+		const rawName = cdBuf.subarray(ptr + 46, ptr + 46 + nameLen).toString('utf8')
+
+		if (
+			compressedSize === 0xffffffff ||
+			uncompressedSize === 0xffffffff ||
+			localHeaderOffset === 0xffffffff
+		) {
+			const extraBuf = cdBuf.subarray(ptr + 46 + nameLen, ptr + 46 + nameLen + extraLen)
+			const z64 = parseZip64Extra(
+				extraBuf,
+				uncompressedSize === 0xffffffff,
+				compressedSize === 0xffffffff,
+				localHeaderOffset === 0xffffffff,
+			)
+			if (z64.uncomp !== null) uncompressedSize = z64.uncomp
+			if (z64.comp !== null) compressedSize = z64.comp
+			if (z64.localOff !== null) localHeaderOffset = z64.localOff
+		}
+
+		ptr += 46 + nameLen + extraLen + commentLen
+		records.push({
+			rawName,
+			method,
+			flags,
+			crc32: entryCrc,
+			compressedSize,
+			uncompressedSize,
+			localHeaderOffset,
+		})
+	}
+	return records
+}
+
+function readZipEntrySlice(fd, fileSize, rec, localHdrBuf) {
+	readFully(fd, localHdrBuf, 0, 30, rec.localHeaderOffset)
+	if (localHdrBuf.readUInt32LE(0) !== 0x04034b50) {
+		throw new Error(`Invalid Local File Header for ZIP entry ${rec.rawName}`)
+	}
+	const localNameLen = localHdrBuf.readUInt16LE(26)
+	const localExtraLen = localHdrBuf.readUInt16LE(28)
+	const dataStart = rec.localHeaderOffset + 30 + localNameLen + localExtraLen
+	if (dataStart + rec.compressedSize > fileSize) {
+		throw new Error(`Truncated data for ZIP entry ${rec.rawName}`)
+	}
+
+	const compSlice = Buffer.allocUnsafe(rec.compressedSize)
+	if (rec.compressedSize > 0) {
+		readFully(fd, compSlice, 0, rec.compressedSize, dataStart)
+	}
+	return compSlice
+}
+
+function decompressAndVerifyEntry(rec, compSlice) {
+	let rawData
+	if (rec.method === 0) {
+		rawData = compSlice
+	} else if (rec.method === 8) {
+		rawData = zlib.inflateRawSync(compSlice)
+	} else {
+		throw new Error(`Unsupported ZIP compression method ${rec.method} for entry ${rec.rawName}`)
+	}
+
+	if (rawData.length !== rec.uncompressedSize) {
+		throw new Error(`Uncompressed size mismatch for ${rec.rawName}`)
+	}
+	const actualCrc = crc32(rawData)
+	if (rec.crc32 && actualCrc !== rec.crc32) {
+		throw new Error(`CRC-32 mismatch for ${rec.rawName}`)
+	}
+	return { rawData, crc32: actualCrc }
+}
+
+function readZipEntriesMap(zipPath, options = {}) {
+	const includeData = options.includeData !== false
+	const fd = fs.openSync(zipPath, 'r')
+	try {
+		const fileSize = fs.fstatSync(fd).size
+		const records = readZipDirectoryRecords(fd, fileSize, zipPath)
+		const localHdrBuf = Buffer.allocUnsafe(30)
+		const entries = new Map()
+
+		for (const rec of records) {
+			if (rec.rawName.endsWith('/') || rec.rawName.endsWith('\\')) continue
+			const compSlice = readZipEntrySlice(fd, fileSize, rec, localHdrBuf)
+			const { rawData } = decompressAndVerifyEntry(rec, compSlice)
+			const entryObj = {
+				size: rawData.length,
+				sha256: sha256Hex(rawData),
+			}
+			if (includeData) {
+				entryObj.data = rawData
+			}
+			entries.set(rec.rawName, entryObj)
+		}
+
+		return entries
+	} finally {
+		fs.closeSync(fd)
+	}
+}
+
+async function prepareInputZip(srcZipPath, outputZipPath, rules, emitProgress) {
+	const fd = fs.openSync(srcZipPath, 'r')
+	let writer = null
+	try {
+		const fileSize = fs.fstatSync(fd).size
+		const allRecords = readZipDirectoryRecords(fd, fileSize, srcZipPath)
+		const fileRecords = allRecords.filter(
+			(r) => r.rawName && !r.rawName.endsWith('/') && !r.rawName.endsWith('\\'),
+		)
+		const normalizedRawNames = fileRecords.map((r) =>
+			r.rawName.replace(/\\/g, '/').replace(/^\/+/, ''),
+		)
+		const commonPrefix = detectWrapperPrefix(normalizedRawNames)
+		const hasWrapperFolder = Boolean(commonPrefix)
+
+		const planned = []
+		const seenLower = new Set()
+		let needsRepack = false
+
+		for (let i = 0; i < fileRecords.length; i++) {
+			const rec = fileRecords[i]
+			let rel = normalizedRawNames[i]
+			if (!rel) {
+				needsRepack = true
+				continue
+			}
+			if (rec.rawName !== rel) {
+				needsRepack = true
+			}
+			if (commonPrefix && rel.startsWith(commonPrefix)) {
+				rel = rel.slice(commonPrefix.length).replace(/^\/+/, '')
+				needsRepack = true
+			}
+			if (!rel) {
+				needsRepack = true
+				continue
+			}
+			if (OS_JUNK_NAMES.has(path.posix.basename(rel).toLowerCase())) {
+				needsRepack = true
+				continue
+			}
+			validateSafeRelativePath(rel)
+			const lowerKey = rel.toLowerCase()
+			if (seenLower.has(lowerKey)) {
+				throw new Error(`Case-insensitive duplicate path detected: ${rel}`)
+			}
+			seenLower.add(lowerKey)
+			const policy = resolvePolicy(rules, rel)
+			if (policy === 'ignore') {
+				needsRepack = true
+				continue
+			}
+			planned.push({ rec, rel, policy })
+		}
+
+		if (planned.length === 0) {
+			throw new Error('El archivo ZIP no contiene archivos válidos después de aplicar las reglas de exclusión.')
+		}
+
+		const usedDirectZip =
+			srcZipPath.toLowerCase().endsWith('.zip') && !hasWrapperFolder && !needsRepack
+
+		const localHdrBuf = Buffer.allocUnsafe(30)
+		const totalItems = planned.length
+		const collectedFiles = []
+		const entryCrcs = new Map()
+		let lastEmitTime = 0
+
+		if (usedDirectZip) {
+			emitProgress('pack', 10, 'Verificando integridad y huellas SHA-256 del ZIP...')
+			for (let i = 0; i < totalItems; i++) {
+				const { rec, rel, policy } = planned[i]
+				const compSlice = readZipEntrySlice(fd, fileSize, rec, localHdrBuf)
+				const { rawData } = decompressAndVerifyEntry(rec, compSlice)
+				collectedFiles.push({
+					path: rel,
+					sha256: sha256Hex(rawData),
+					size: rawData.length,
+					policy,
+				})
+				const now = Date.now()
+				if (now - lastEmitTime >= 250) {
+					lastEmitTime = now
+					const pct = 10 + Math.round(((i + 1) / totalItems) * 8)
+					emitProgress('pack', pct, `Verificando archivos del ZIP (${i + 1}/${totalItems})...`)
+				}
+			}
+			collectedFiles.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+		} else {
+			emitProgress('pack', 12, 'Limpiando estructura y reempaquetando .zip sin recomprimir...')
+			planned.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0))
+			writer = createZipWriter(outputZipPath)
+			for (let i = 0; i < totalItems; i++) {
+				const { rec, rel, policy } = planned[i]
+				const compSlice = readZipEntrySlice(fd, fileSize, rec, localHdrBuf)
+				const { rawData, crc32: actualCrc } = decompressAndVerifyEntry(rec, compSlice)
+				const entrySha = sha256Hex(rawData)
+				writer.writeEntry({
+					path: rel,
+					method: rec.method,
+					crc32: actualCrc,
+					uncompressedSize: rec.uncompressedSize,
+					payload: compSlice,
+				})
+				entryCrcs.set(rel, actualCrc)
+				collectedFiles.push({
+					path: rel,
+					sha256: entrySha,
+					size: rec.uncompressedSize,
+					policy,
+				})
+				const now = Date.now()
+				if (now - lastEmitTime >= 250) {
+					lastEmitTime = now
+					const pct = 12 + Math.round(((i + 1) / totalItems) * 10)
+					emitProgress('pack', pct, `Empaquetando archivos (${i + 1}/${totalItems})...`)
+				}
+			}
+		}
+
+		if (usedDirectZip) {
+			fs.closeSync(fd)
+			emitProgress('pack', 19, 'Calculando SHA-256 final del ZIP...')
+			const zipSha256 = await sha256File(srcZipPath)
+			return {
+				usedDirectZip: true,
+				outputZipPath: srcZipPath,
+				zipSize: fileSize,
+				zipSha256,
+				collectedFiles,
+				entryCrcs,
+			}
+		}
+
+		const finalized = writer.finalize()
+		writer = null
+		return {
+			usedDirectZip: false,
+			outputZipPath,
+			zipSize: finalized.size,
+			zipSha256: finalized.sha256,
+			collectedFiles,
+			entryCrcs,
+		}
+	} finally {
+		if (writer) {
+			writer.abort()
+		}
+		try {
+			fs.closeSync(fd)
+		} catch {}
+	}
+}
+
+function selfCheckZipHeadersAgainstManifest(zipPath, manifest, expectedCrcs) {
+	const fd = fs.openSync(zipPath, 'r')
+	try {
+		const fileSize = fs.fstatSync(fd).size
+		const records = readZipDirectoryRecords(fd, fileSize, zipPath)
+		const byName = new Map()
+		const localHdrBuf = Buffer.allocUnsafe(30)
+		for (const rec of records) {
+			if (rec.rawName.endsWith('/') || rec.rawName.endsWith('\\')) continue
+			readZipEntrySlice(fd, fileSize, rec, localHdrBuf)
+			byName.set(rec.rawName, rec)
+		}
+		for (const fileEntry of manifest.files) {
+			const rec = byName.get(fileEntry.path)
+			if (!rec) {
+				throw new Error(`Self-check failed: manifest entry missing from ZIP: ${fileEntry.path}`)
+			}
+			if (rec.uncompressedSize !== fileEntry.size) {
+				throw new Error(
+					`Self-check failed: size mismatch for ${fileEntry.path} (manifest=${fileEntry.size}, zip=${rec.uncompressedSize})`,
+				)
+			}
+			const expCrc = expectedCrcs.get(fileEntry.path)
+			if (expCrc !== undefined && rec.crc32 !== expCrc) {
+				throw new Error(
+					`Self-check failed: CRC mismatch for ${fileEntry.path} (expected=${expCrc}, zip=${rec.crc32})`,
+				)
+			}
+		}
+	} finally {
+		fs.closeSync(fd)
+	}
 }
 
 function selfCheckZipAgainstManifest(zipPath, manifest) {
-	const zipEntries = readZipEntriesMap(zipPath)
+	const zipEntries = readZipEntriesMap(zipPath, { includeData: false })
 	for (const fileEntry of manifest.files) {
 		const found = zipEntries.get(fileEntry.path)
 		if (!found) {
@@ -477,13 +902,15 @@ function resolveGithubToken(explicitToken) {
 	return ''
 }
 
+const UPLOAD_HIGH_WATER_MARK = 4 * 1024 * 1024
+
 function githubApiRequest(endpoint, token, options = {}) {
 	return new Promise((resolve, reject) => {
 		const url = endpoint.startsWith('http')
 			? new URL(endpoint)
 			: new URL(`https://api.github.com${endpoint}`)
 		const headers = {
-			'User-Agent': 'Dr3shLauncher/1.0.0 (+https://github.com/Dr3sh/dr3shapp)',
+			'User-Agent': 'Dr3shLauncher/1.1.0 (+https://github.com/Dr3sh/dr3shapp)',
 			Authorization: `Bearer ${token}`,
 			Accept: 'application/vnd.github+json',
 			...(options.headers || {}),
@@ -497,41 +924,174 @@ function githubApiRequest(endpoint, token, options = {}) {
 			headers['Content-Length'] = Buffer.byteLength(options.body, 'utf8')
 		}
 
+		let progressTimer = null
+		const cleanupTimers = () => {
+			if (progressTimer) {
+				clearInterval(progressTimer)
+				progressTimer = null
+			}
+		}
+		const cleanupBody = () => {
+			cleanupTimers()
+			if (options.body && typeof options.body.destroy === 'function') {
+				try {
+					options.body.destroy()
+				} catch {}
+			}
+		}
+
+		let reqSocket = null
+		let bodyStartSocketBytes = null
+		let streamEnded = false
+		let settled = false
+
 		const req = https.request(
 			{
 				hostname: url.hostname,
 				path: url.pathname + url.search,
 				method: options.method || 'GET',
 				headers,
+				...(options.highWaterMark ? { highWaterMark: options.highWaterMark } : {}),
+				...(options.agent !== undefined ? { agent: options.agent } : {}),
 			},
 			(res) => {
-				let data = Buffer.alloc(0)
+				cleanupTimers()
+				const chunks = []
 				res.on('data', (chunk) => {
-					data = Buffer.concat([data, chunk])
+					chunks.push(chunk)
+				})
+				res.on('error', () => {
+					cleanupTimers()
+				})
+				res.on('close', () => {
+					cleanupTimers()
 				})
 				res.on('end', () => {
-					const text = data.toString('utf8')
+					settled = true
+					const text = Buffer.concat(chunks).toString('utf8')
 					try {
 						const json = JSON.parse(text)
 						if (res.statusCode >= 200 && res.statusCode < 300) {
 							resolve(json)
 						} else {
-							reject(new Error(`GitHub API Error ${res.statusCode}: ${json.message || text}`))
+							const err = new Error(`GitHub API Error ${res.statusCode}: ${json.message || text}`)
+							err.statusCode = res.statusCode
+							reject(err)
 						}
 					} catch {
 						if (res.statusCode >= 200 && res.statusCode < 300) {
 							resolve(text)
 						} else {
-							reject(new Error(`GitHub HTTP ${res.statusCode}: ${text}`))
+							const err = new Error(`GitHub HTTP ${res.statusCode}: ${text}`)
+							err.statusCode = res.statusCode
+							reject(err)
 						}
 					}
 				})
 			},
 		)
 
-		req.on('error', reject)
+		req.setTimeout(120000, () => {
+			settled = true
+			cleanupBody()
+			req.destroy(new Error('Tiempo de espera agotado conectando con GitHub (120s sin respuesta).'))
+		})
+		req.on('socket', (sock) => {
+			reqSocket = sock
+			if (typeof sock.setNoDelay === 'function') {
+				sock.setNoDelay(true)
+			}
+			sock.once('secureConnect', () => {
+				if (bodyStartSocketBytes === null) {
+					bodyStartSocketBytes = sock.bytesWritten || 0
+				}
+			})
+		})
+		req.on('error', (err) => {
+			settled = true
+			cleanupBody()
+			reject(err)
+		})
 		if (options.body) {
 			if (typeof options.body.pipe === 'function') {
+				options.body.on('data', () => {
+					if (bodyStartSocketBytes === null && reqSocket) {
+						bodyStartSocketBytes = reqSocket.bytesWritten || 0
+					}
+				})
+				options.body.on('end', () => {
+					streamEnded = true
+				})
+				options.body.on('error', (err) => {
+					settled = true
+					cleanupTimers()
+					req.destroy(err)
+				})
+
+				if (typeof options.onUploadProgress === 'function' && options.totalBytes > 0) {
+					const totalBytes = options.totalBytes
+					const startTime = Date.now()
+					let lastEmitBytes = -1
+					let lastEmitWaiting = false
+					let lastSpeedTime = startTime
+					let lastSpeedBytes = 0
+					let emaSpeedBps = 0
+
+					options.onUploadProgress({
+						uploadedBytes: 0,
+						totalBytes,
+						speedBps: 0,
+						etaSeconds: null,
+						waitingAck: false,
+					})
+
+					progressTimer = setInterval(() => {
+						if (settled) {
+							cleanupTimers()
+							return
+						}
+						const now = Date.now()
+						let rawSent = 0
+						let writableLen = 0
+						if (reqSocket && bodyStartSocketBytes !== null) {
+							writableLen = reqSocket.writableLength || 0
+							rawSent = Math.max(0, (reqSocket.bytesWritten || 0) - bodyStartSocketBytes - writableLen)
+						}
+						const waitingAck = Boolean(streamEnded && writableLen === 0)
+						const sentBytes = waitingAck
+							? totalBytes
+							: Math.min(Math.max(0, totalBytes - 1), rawSent)
+
+						const dt = (now - lastSpeedTime) / 1000
+						if (dt >= 0.4 && sentBytes >= lastSpeedBytes) {
+							const instant = (sentBytes - lastSpeedBytes) / dt
+							emaSpeedBps = emaSpeedBps > 0 ? emaSpeedBps * 0.65 + instant * 0.35 : instant
+							lastSpeedTime = now
+							lastSpeedBytes = sentBytes
+						} else if (emaSpeedBps === 0 && sentBytes > 0) {
+							const elapsed = Math.max(0.25, (now - startTime) / 1000)
+							emaSpeedBps = sentBytes / elapsed
+						}
+
+						const etaSeconds =
+							!waitingAck && emaSpeedBps > 1024
+								? Math.max(1, Math.round((totalBytes - sentBytes) / emaSpeedBps))
+								: null
+
+						if (sentBytes !== lastEmitBytes || waitingAck !== lastEmitWaiting) {
+							lastEmitBytes = sentBytes
+							lastEmitWaiting = waitingAck
+							options.onUploadProgress({
+								uploadedBytes: sentBytes,
+								totalBytes,
+								speedBps: Math.round(emaSpeedBps),
+								etaSeconds,
+								waitingAck,
+							})
+						}
+					}, 200)
+				}
+
 				options.body.pipe(req)
 			} else {
 				req.write(options.body)
@@ -543,15 +1103,19 @@ function githubApiRequest(endpoint, token, options = {}) {
 	})
 }
 
-async function uploadReleaseAsset(uploadUrlTemplate, token, filePath, fileName) {
+async function uploadReleaseAsset(uploadUrlTemplate, token, filePath, fileName, onByteProgress) {
 	const uploadUrl = uploadUrlTemplate.replace(
 		/\{(\?.*)?\}$/,
 		`?name=${encodeURIComponent(fileName)}`,
 	)
 	const fileSize = fs.statSync(filePath).size
-	const fileStream = fs.createReadStream(filePath)
+	const fileStream = fs.createReadStream(filePath, { highWaterMark: UPLOAD_HIGH_WATER_MARK })
 	return await githubApiRequest(uploadUrl, token, {
 		method: 'POST',
+		highWaterMark: UPLOAD_HIGH_WATER_MARK,
+		agent: false,
+		totalBytes: fileSize,
+		onUploadProgress: typeof onByteProgress === 'function' ? onByteProgress : undefined,
 		headers: {
 			'Content-Type': fileName.endsWith('.zip') ? 'application/zip' : 'application/json',
 			'Content-Length': fileSize,
@@ -576,7 +1140,14 @@ async function publishModpack(options) {
 		versionsFile = null,
 		token: explicitToken = null,
 		outDir = null,
+		onProgress = null,
 	} = options
+
+	const emitProgress = (stage, percent, message, extra = {}) => {
+		if (typeof onProgress === 'function') {
+			onProgress({ stage, percent, message, ...extra })
+		}
+	}
 
 	if (!packId) throw new Error('--pack <pack_id> is required')
 	if (!version) throw new Error('--version <semver> is required')
@@ -593,27 +1164,52 @@ async function publishModpack(options) {
 
 	const rules = loadAndValidateRules(cleanPackId, rulesPath)
 
-	let tempExtractedDir = null
-	let effectiveSrcDir = path.resolve(srcPath)
-	if (fs.statSync(effectiveSrcDir).isFile() && effectiveSrcDir.toLowerCase().endsWith('.zip')) {
-		tempExtractedDir = extractInputZipToTempDir(effectiveSrcDir)
-		effectiveSrcDir = tempExtractedDir
-	}
+	emitProgress('extract', 5, 'Preparando y analizando archivos del modpack...')
 
+	let effectiveSrcDir = path.resolve(srcPath)
+	const srcStat = fs.statSync(effectiveSrcDir)
+	if (!srcStat.isDirectory() && !srcStat.isFile()) {
+		throw new Error(`El origen seleccionado no es una carpeta ni archivo válido: ${effectiveSrcDir}`)
+	}
+	if (srcStat.isFile() && !/\.(zip|mrpack)$/i.test(effectiveSrcDir)) {
+		throw new Error('El archivo del modpack debe tener extensión .zip o .mrpack.')
+	}
+	const isInputZip = srcStat.isFile()
+
+	const createdWorkDirTemp = !outDir
 	const workDir = outDir
 		? path.resolve(outDir)
 		: fs.mkdtempSync(path.join(os.tmpdir(), `dr3sh-pack-${cleanPackId}-`))
 	fs.mkdirSync(workDir, { recursive: true })
 
-	const outputZipPath = path.join(workDir, zipFileName)
+	let outputZipPath = path.join(workDir, zipFileName)
 	const outputManifestPath = path.join(workDir, 'manifest.json')
 
 	try {
-		const collectedFiles = walkSourceDirectory(effectiveSrcDir, rules)
-		writeZipDeterministic(collectedFiles, outputZipPath)
+		let collectedFiles = null
+		let zipSize = 0
+		let zipSha256 = ''
+		let zipRepackedFromZip = false
+		let repackedEntryCrcs = null
+		let usedDirectZip = false
 
-		const zipStat = fs.statSync(outputZipPath)
-		const zipSha256 = await sha256File(outputZipPath)
+		if (isInputZip) {
+			const prepared = await prepareInputZip(effectiveSrcDir, outputZipPath, rules, emitProgress)
+			usedDirectZip = prepared.usedDirectZip
+			outputZipPath = prepared.outputZipPath
+			zipSize = prepared.zipSize
+			zipSha256 = prepared.zipSha256
+			collectedFiles = prepared.collectedFiles
+			repackedEntryCrcs = prepared.entryCrcs
+			zipRepackedFromZip = !usedDirectZip
+			emitProgress('pack', 23, 'Generando manifest.json...')
+		} else {
+			emitProgress('pack', 15, 'Empaquetando carpeta del modpack...')
+			collectedFiles = walkSourceDirectory(effectiveSrcDir, rules)
+			const packed = writeZipDeterministic(collectedFiles, outputZipPath)
+			zipSize = packed.size
+			zipSha256 = packed.sha256
+		}
 
 		const manifest = {
 			schema: 1,
@@ -624,7 +1220,7 @@ async function publishModpack(options) {
 			...(loaderVersion ? { loader_version: loaderVersion } : {}),
 			zip: {
 				url: zipDownloadUrl,
-				size: zipStat.size,
+				size: zipSize,
 				sha256: zipSha256,
 			},
 			rules,
@@ -638,10 +1234,18 @@ async function publishModpack(options) {
 
 		fs.writeFileSync(outputManifestPath, `${JSON.stringify(manifest, null, '\t')}\n`, 'utf8')
 
-		// Step 6: Re-open the produced ZIP and verify every manifest entry exists with matching SHA-256
-		selfCheckZipAgainstManifest(outputZipPath, manifest)
+		if (!usedDirectZip) {
+			if (zipRepackedFromZip && repackedEntryCrcs) {
+				selfCheckZipHeadersAgainstManifest(outputZipPath, manifest, repackedEntryCrcs)
+			} else {
+				selfCheckZipAgainstManifest(outputZipPath, manifest)
+			}
+		}
 
-		const sizeMb = Math.round((zipStat.size / (1024 * 1024)) * 10) / 10
+		const sizeMb =
+			zipSize > 0
+				? Math.max(0.1, Math.round((zipSize / (1024 * 1024)) * 10) / 10)
+				: 0
 		const versionFragment = {
 			id: `v${cleanVersion}`,
 			name: title || `${cleanPackId} v${cleanVersion}`,
@@ -650,7 +1254,7 @@ async function publishModpack(options) {
 			...(loaderVersion ? { loader_version: loaderVersion } : {}),
 			modpack: zipDownloadUrl,
 			manifest: manifestDownloadUrl,
-			size: zipStat.size,
+			size: zipSize,
 			size_mb: sizeMb,
 			sha256: zipSha256,
 			date: new Date().toISOString().slice(0, 10),
@@ -676,41 +1280,122 @@ async function publishModpack(options) {
 				)
 			}
 
+			emitProgress('release', 25, `Creando/actualizando release ${tagName} en GitHub...`)
+
 			let release
 			try {
 				release = await githubApiRequest(
 					`/repos/${repo}/releases/tags/${encodeURIComponent(tagName)}`,
 					token,
 				)
-			} catch {
-				release = await githubApiRequest(`/repos/${repo}/releases`, token, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						tag_name: tagName,
-						name: title || `${cleanPackId} v${cleanVersion}`,
-						body: description || `Modpack release ${tagName}`,
-						draft: false,
-						prerelease: false,
-					}),
-				})
-			}
-
-			releaseUrl = release.html_url || releaseUrl
-			const existingAssets = release.assets || []
-			for (const assetName of [zipFileName, 'manifest.json']) {
-				const match = existingAssets.find((a) => a.name === assetName)
-				if (match) {
-					try {
-						await githubApiRequest(`/repos/${repo}/releases/assets/${match.id}`, token, {
-							method: 'DELETE',
-						})
-					} catch {}
+			} catch (err) {
+				if (err && err.statusCode && err.statusCode !== 404) {
+					throw err
+				}
+				try {
+					release = await githubApiRequest(`/repos/${repo}/releases`, token, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							tag_name: tagName,
+							name: title || `${cleanPackId} v${cleanVersion}`,
+							body: description || `Modpack release ${tagName}`,
+							draft: false,
+							prerelease: false,
+						}),
+					})
+				} catch (createErr) {
+					if (createErr && createErr.statusCode === 422) {
+						const releases = await githubApiRequest(`/repos/${repo}/releases?per_page=30`, token)
+						const existingDraft = Array.isArray(releases)
+							? releases.find((r) => r && r.tag_name === tagName)
+							: null
+						if (!existingDraft) throw createErr
+						if (existingDraft.draft) {
+							release = await githubApiRequest(
+								`/repos/${repo}/releases/${existingDraft.id}`,
+								token,
+								{
+									method: 'PATCH',
+									headers: { 'Content-Type': 'application/json' },
+									body: JSON.stringify({ draft: false }),
+								},
+							)
+						} else {
+							release = existingDraft
+						}
+					} else {
+						throw createErr
+					}
 				}
 			}
 
-			await uploadReleaseAsset(release.upload_url, token, outputZipPath, zipFileName)
-			await uploadReleaseAsset(release.upload_url, token, outputManifestPath, 'manifest.json')
+			releaseUrl = release.html_url || releaseUrl
+
+			const deleteExistingAssetsByName = async (assetNames) => {
+				try {
+					const fresh = await githubApiRequest(`/repos/${repo}/releases/${release.id}`, token)
+					const existingAssets = fresh.assets || []
+					for (const assetName of assetNames) {
+						const matches = existingAssets.filter((a) => a.name === assetName)
+						for (const match of matches) {
+							try {
+								await githubApiRequest(`/repos/${repo}/releases/assets/${match.id}`, token, {
+									method: 'DELETE',
+								})
+							} catch {}
+						}
+					}
+				} catch {}
+			}
+
+			await deleteExistingAssetsByName([zipFileName, 'manifest.json'])
+
+			const uploadWithRetry = async (filePath, fileName, onByteProgress) => {
+				const maxAttempts = 3
+				for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+					try {
+						return await uploadReleaseAsset(
+							release.upload_url,
+							token,
+							filePath,
+							fileName,
+							onByteProgress,
+						)
+					} catch (upErr) {
+						const status = upErr && upErr.statusCode
+						const nonRetryable = status && status >= 400 && status < 500 && status !== 422 && status !== 429
+						if (attempt >= maxAttempts || nonRetryable) {
+							throw upErr
+						}
+						await deleteExistingAssetsByName([fileName])
+						emitProgress(
+							'upload_zip',
+							28,
+							`Reintentando subida de ${fileName} (intento ${attempt + 1}/${maxAttempts})...`,
+						)
+						await new Promise((r) => setTimeout(r, 1500 * attempt))
+					}
+				}
+			}
+
+			await uploadWithRetry(outputZipPath, zipFileName, (progress) => {
+				const { uploadedBytes, totalBytes, speedBps, etaSeconds, waitingAck } = progress
+				const ratio = totalBytes > 0 ? uploadedBytes / totalBytes : 0
+				const percent = waitingAck ? 90 : Math.min(89, 28 + Math.round(ratio * 61))
+				const msg = waitingAck
+					? `Subiendo ${zipFileName} (esperando confirmación de GitHub...)`
+					: `Subiendo ${zipFileName} a GitHub Releases...`
+				emitProgress('upload_zip', percent, msg, {
+					uploadedBytes,
+					totalBytes,
+					speedBps,
+					etaSeconds,
+				})
+			})
+			emitProgress('upload_manifest', 92, 'Subiendo manifest.json a GitHub Releases...')
+			await uploadWithRetry(outputManifestPath, 'manifest.json')
+			emitProgress('done', 95, 'Release subida a GitHub. Publicando versions.json...')
 		}
 
 		return {
@@ -719,7 +1404,7 @@ async function publishModpack(options) {
 			release_url: releaseUrl,
 			archive_url: zipDownloadUrl,
 			manifest_url: manifestDownloadUrl,
-			size: zipStat.size,
+			size: zipSize,
 			size_mb: sizeMb,
 			sha256: zipSha256,
 			files_count: collectedFiles.length,
@@ -728,9 +1413,9 @@ async function publishModpack(options) {
 			version_fragment: versionFragment,
 		}
 	} finally {
-		if (tempExtractedDir) {
+		if (createdWorkDirTemp && !dryRun) {
 			try {
-				fs.rmSync(tempExtractedDir, { recursive: true, force: true })
+				fs.rmSync(workDir, { recursive: true, force: true })
 			} catch {}
 		}
 	}

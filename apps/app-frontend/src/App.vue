@@ -68,7 +68,7 @@ import AppTitleBar from '@/app/shell/title-bar/index.vue'
 import Dr3shRail from '@/components/ui/Dr3shRail.vue'
 import Dr3shTopBar from '@/components/ui/Dr3shTopBar.vue'
 import DeveloperMenu from '@/components/ui/DeveloperMenu.vue'
-import { isDeveloper } from '@/composables/use-dr3sh-launcher'
+import { isDeveloper, maintenanceMode, maintenanceMessage } from '@/composables/use-dr3sh-launcher'
 import { trackExternalFileDownload } from '@/components/ui/download-manager/external-file-downloads'
 import ErrorModal from '@/components/ui/ErrorModal.vue'
 import HostingUpdateRequired from '@/components/ui/HostingUpdateRequired.vue'
@@ -2004,53 +2004,88 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 			</div>
 		</Transition>
 
-		<!-- Left Sidebar (Full 100vh) -->
-		<Dr3shRail @open-settings="settingsActions.openSettings" />
-
-		<!-- Main Area: Top Bar + Content -->
-		<section class="main-area">
-			<Dr3shTopBar />
-			<div class="content-scroll">
-				<SurveyPopup />
-				<div
-					class="loading-indicator-container h-8 fixed z-50 pointer-events-none"
-					:style="{
-						top: '54px',
-						left: '268px',
-						width: 'calc(100% - 268px)',
-					}"
-				>
-					<LoadingBar position="absolute" />
+		<div v-if="maintenanceMode && !isDeveloper" class="maintenance-lock-view">
+			<header data-tauri-drag-region class="maintenance-lock-topbar">
+				<div class="brand-lockup-simple" data-tauri-drag-region>
+					<img src="/logo.png" alt="Dr3sh Launcher" class="w-6 h-6 rounded-md" />
+					<span class="font-bold text-sm text-white/90">Dr3sh Launcher</span>
 				</div>
-				<Admonition
-					v-if="criticalErrorMessage"
-					type="critical"
-					:header="criticalErrorMessage.header"
-					class="m-6 mb-0"
-				>
-					<div
-						class="markdown-body text-primary"
-						v-html="renderString(criticalErrorMessage.body ?? '')"
-					></div>
-				</Admonition>
-				<Admonition
-					v-if="authUnreachable"
-					type="warning"
-					:header="formatMessage(messages.authUnreachableHeader)"
-					class="m-6 mb-0"
-				>
-					{{ formatMessage(messages.authUnreachableBody) }}
-				</Admonition>
-				<HostingUpdateRequired v-if="hostingUpdateRequired" />
-				<RouterView v-else v-slot="{ Component }">
-					<template v-if="Component">
-						<Suspense @pending="onSuspensePending" @resolve="onSuspenseResolve">
-							<component :is="Component"></component>
-						</Suspense>
-					</template>
-				</RouterView>
+				<div class="window-controls" aria-label="Controles de ventana" data-tauri-drag-region-exclude>
+					<button class="window-control" title="Minimizar" aria-label="Minimizar" @click="getCurrentWindow().minimize()">
+						<span class="minimize-glyph" />
+					</button>
+					<button class="window-control close" title="Cerrar" aria-label="Cerrar" @click="handleClose">
+						<span class="close-glyph" />
+					</button>
+				</div>
+			</header>
+			<div class="maintenance-lock-card">
+				<div class="maintenance-icon-bubble">
+					<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+					</svg>
+				</div>
+				<span class="maintenance-pill">Modo Mantenimiento</span>
+				<h2>Launcher en Mantenimiento</h2>
+				<p class="maintenance-msg">
+					{{ maintenanceMessage || 'Estamos realizando mejoras y mantenimiento en nuestros servidores. El acceso se restablecerá automáticamente cuando finalice.' }}
+				</p>
+				<div class="maintenance-pulse-indicator">
+					<span class="maintenance-pulse-dot" />
+					<span>Verificando estado automáticamente...</span>
+				</div>
 			</div>
-		</section>
+		</div>
+
+		<template v-else>
+			<!-- Left Sidebar (Full 100vh) -->
+			<Dr3shRail @open-settings="settingsActions.openSettings" />
+
+			<!-- Main Area: Top Bar + Content -->
+			<section class="main-area">
+				<Dr3shTopBar />
+				<div class="content-scroll">
+					<SurveyPopup />
+					<div
+						class="loading-indicator-container h-8 fixed z-50 pointer-events-none"
+						:style="{
+							top: '54px',
+							left: '268px',
+							width: 'calc(100% - 268px)',
+						}"
+					>
+						<LoadingBar position="absolute" />
+					</div>
+					<Admonition
+						v-if="criticalErrorMessage"
+						type="critical"
+						:header="criticalErrorMessage.header"
+						class="m-6 mb-0"
+					>
+						<div
+							class="markdown-body text-primary"
+							v-html="renderString(criticalErrorMessage.body ?? '')"
+						></div>
+					</Admonition>
+					<Admonition
+						v-if="authUnreachable"
+						type="warning"
+						:header="formatMessage(messages.authUnreachableHeader)"
+						class="m-6 mb-0"
+					>
+						{{ formatMessage(messages.authUnreachableBody) }}
+					</Admonition>
+					<HostingUpdateRequired v-if="hostingUpdateRequired" />
+					<RouterView v-else v-slot="{ Component }">
+						<template v-if="Component">
+							<Suspense @pending="onSuspensePending" @resolve="onSuspenseResolve">
+								<component :is="Component"></component>
+							</Suspense>
+						</template>
+					</RouterView>
+				</div>
+			</section>
+		</template>
 	</div>
 	<AppSettingsModal ref="appSettingsModal" />
 	<NewUpdateModal ref="newUpdateModal" />
