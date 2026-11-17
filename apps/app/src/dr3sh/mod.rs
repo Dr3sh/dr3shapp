@@ -17,6 +17,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 use tauri_plugin_fs::FsExt;
+use tauri_plugin_http::reqwest;
 use tauri_plugin_opener::OpenerExt;
 use theseus::data::{AppliedContentSetPatch, ModLoader};
 use theseus::install::InstallJobStatus;
@@ -51,6 +52,14 @@ use crate::dr3sh::transaction::{
 
 const REMOTE_VERSIONS_URL: &str =
     "https://raw.githubusercontent.com/Dr3sh/Dr3sh.github.io/main/versions.json";
+const GITHUB_LAUNCHER_LATEST_API_URL: &str =
+    "https://api.github.com/repos/Dr3sh/dr3shapp/releases/latest";
+const GITHUB_LAUNCHER_LATEST_JSON_URL: &str =
+    "https://github.com/Dr3sh/dr3shapp/releases/latest/download/latest.json";
+const GITHUB_LAUNCHER_RELEASES_LATEST_URL: &str =
+    "https://github.com/Dr3sh/dr3shapp/releases/latest";
+const GITHUB_LAUNCHER_RELEASES_BASE_URL: &str =
+    "https://github.com/Dr3sh/dr3shapp/releases";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -178,6 +187,437 @@ pub async fn can_install_updater_safely() -> bool {
         }
     }
     true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LauncherUpdateCheckResult {
+    pub current_version: String,
+    pub latest_version: String,
+    pub tag_name: String,
+    pub update_available: bool,
+    pub release_name: String,
+    pub release_notes: String,
+    pub download_url: String,
+    pub release_page_url: String,
+    pub source: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubReleaseAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubLatestReleaseResponse {
+    tag_name: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    assets: Vec<GithubReleaseAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TauriLatestJsonPlatform {
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TauriLatestJsonResponse {
+    version: String,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    platforms: HashMap<String, TauriLatestJsonPlatform>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedSemver {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    pre: Option<String>,
+}
+
+fn parse_semver_str(raw: &str) -> Option<ParsedSemver> {
+    let trimmed = raw.trim().trim_start_matches(['v', 'V']);
+    if trimmed.is_empty() {
+        return None;
+    }
+    let without_build = trimmed.split('+').next().unwrap_or(trimmed);
+    let mut pre_split = without_build.splitn(2, '-');
+    let core = pre_split.next().unwrap_or("");
+    let pre = pre_split
+        .next()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let parts: Vec<&str> = core.split('.').collect();
+    if parts.is_empty() || parts.len() > 3 {
+        return None;
+    }
+    let major = parts[0].parse::<u64>().ok()?;
+    let minor = parts.get(1).copied().unwrap_or("0").parse::<u64>().ok()?;
+    let patch = parts.get(2).copied().unwrap_or("0").parse::<u64>().ok()?;
+    Some(ParsedSemver {
+        major,
+        minor,
+        patch,
+        pre,
+    })
+}
+
+fn compare_prerelease(a: &str, b: &str) -> std::cmp::Ordering {
+    let a_parts: Vec<&str> = a.split('.').collect();
+    let b_parts: Vec<&str> = b.split('.').collect();
+    let max_len = a_parts.len().max(b_parts.len());
+    for i in 0..max_len {
+        match (a_parts.get(i), b_parts.get(i)) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(x), Some(y)) => {
+                let ord = match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(nx), Ok(ny)) => nx.cmp(&ny),
+                    (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+                    (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+                    (Err(_), Err(_)) => x.cmp(y),
+                };
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+pub fn is_semver_newer(current: &str, candidate: &str) -> bool {
+    let Some(cur) = parse_semver_str(current) else {
+        return false;
+    };
+    let Some(cand) = parse_semver_str(candidate) else {
+        return false;
+    };
+
+    let core_ord = (cand.major, cand.minor, cand.patch)
+        .cmp(&(cur.major, cur.minor, cur.patch));
+    if core_ord != std::cmp::Ordering::Equal {
+        return core_ord == std::cmp::Ordering::Greater;
+    }
+
+    match (cur.pre.as_deref(), cand.pre.as_deref()) {
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => false,
+        (Some(c_pre), Some(n_pre)) => {
+            compare_prerelease(n_pre, c_pre) == std::cmp::Ordering::Greater
+        }
+    }
+}
+
+fn pick_windows_setup_asset_url(
+    assets: &[GithubReleaseAsset],
+    latest_version: &str,
+) -> Option<String> {
+    let ver_clean = latest_version.trim().trim_start_matches(['v', 'V']).to_lowercase();
+    let exe_assets: Vec<&GithubReleaseAsset> = assets
+        .iter()
+        .filter(|a| {
+            let lower = a.name.to_lowercase();
+            lower.ends_with(".exe")
+                && !lower.ends_with(".sig")
+                && a.browser_download_url.starts_with("http")
+        })
+        .collect();
+
+    if let Some(a) = exe_assets.iter().find(|a| {
+        let lower = a.name.to_lowercase();
+        lower.contains("setup") && !ver_clean.is_empty() && lower.contains(&ver_clean)
+    }) {
+        return Some(a.browser_download_url.clone());
+    }
+    if let Some(a) = exe_assets.iter().find(|a| {
+        let lower = a.name.to_lowercase();
+        lower.contains("setup") && lower.contains("dr3sh")
+    }) {
+        return Some(a.browser_download_url.clone());
+    }
+    if let Some(a) = exe_assets
+        .iter()
+        .find(|a| a.name.to_lowercase().contains("setup"))
+    {
+        return Some(a.browser_download_url.clone());
+    }
+    exe_assets.first().map(|a| a.browser_download_url.clone())
+}
+
+fn extract_tag_from_redirect_location(location: &str) -> Option<(String, String)> {
+    let clean_loc = location.split(['?', '#']).next()?.trim_end_matches('/');
+    let marker = "/releases/tag/";
+    let idx = clean_loc.find(marker)?;
+    let tag = clean_loc[idx + marker.len()..].trim();
+    if tag.is_empty() || tag.contains('/') {
+        return None;
+    }
+    let parsed = parse_semver_str(tag)?;
+    let clean_ver = format!("{}.{}.{}", parsed.major, parsed.minor, parsed.patch);
+    let clean_ver = if let Some(pre) = parsed.pre {
+        format!("{clean_ver}-{pre}")
+    } else {
+        clean_ver
+    };
+    Some((tag.to_string(), clean_ver))
+}
+
+fn format_clean_version(raw: &str) -> Option<String> {
+    let parsed = parse_semver_str(raw)?;
+    let base = format!("{}.{}.{}", parsed.major, parsed.minor, parsed.patch);
+    Some(match parsed.pre {
+        Some(pre) => format!("{base}-{pre}"),
+        None => base,
+    })
+}
+
+pub async fn check_launcher_update_with_endpoints(
+    client: &reqwest::Client,
+    no_redirect_client: &reqwest::Client,
+    current_version: &str,
+    api_url: &str,
+    latest_json_url: &str,
+    releases_latest_url: &str,
+    releases_base_url: &str,
+) -> Result<LauncherUpdateCheckResult, String> {
+    let cur_clean = format_clean_version(current_version)
+        .unwrap_or_else(|| current_version.trim().trim_start_matches(['v', 'V']).to_string());
+    let default_releases_page = releases_base_url.trim_end_matches('/').to_string();
+    let mut errors: Vec<String> = Vec::new();
+
+    // Layer 1: GitHub Releases REST API (with 2 attempts for transient 5xx)
+    for attempt in 0..2 {
+        let req = client
+            .get(api_url)
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", format!("Dr3shLauncher/{cur_clean}"))
+            .timeout(Duration::from_secs(8));
+        match req.send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    match resp.text().await {
+                        Ok(body) => {
+                            let trimmed = body.trim();
+                            if trimmed.starts_with('{') {
+                                match serde_json::from_str::<GithubLatestReleaseResponse>(trimmed) {
+                                    Ok(rel) if !rel.draft && !rel.prerelease => {
+                                        if let Some(latest_ver) = format_clean_version(&rel.tag_name) {
+                                            let update_available = is_semver_newer(&cur_clean, &latest_ver);
+                                            let release_page_url = rel
+                                                .html_url
+                                                .filter(|u| u.starts_with("http"))
+                                                .unwrap_or_else(|| {
+                                                    format!("{default_releases_page}/tag/{}", rel.tag_name)
+                                                });
+                                            let download_url = pick_windows_setup_asset_url(&rel.assets, &latest_ver)
+                                                .unwrap_or_else(|| release_page_url.clone());
+                                            return Ok(LauncherUpdateCheckResult {
+                                                current_version: cur_clean,
+                                                latest_version: latest_ver.clone(),
+                                                tag_name: rel.tag_name,
+                                                update_available,
+                                                release_name: rel
+                                                    .name
+                                                    .filter(|s| !s.trim().is_empty())
+                                                    .unwrap_or_else(|| format!("Dr3sh Launcher v{latest_ver}")),
+                                                release_notes: rel.body.unwrap_or_default(),
+                                                download_url,
+                                                release_page_url,
+                                                source: "github-api".to_string(),
+                                            });
+                                        }
+                                        errors.push("github-api invalid tag_name".to_string());
+                                        break;
+                                    }
+                                    Ok(_) => {
+                                        errors.push("github-api returned draft/prerelease".to_string());
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        errors.push(format!("github-api parse error: {e}"));
+                                        break;
+                                    }
+                                }
+                            } else {
+                                errors.push("github-api returned non-JSON body".to_string());
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            errors.push(format!("github-api read error: {e}"));
+                            break;
+                        }
+                    }
+                } else {
+                    let retryable = matches!(status.as_u16(), 502 | 503 | 504);
+                    errors.push(format!("github-api HTTP {}", status.as_u16()));
+                    if !retryable || attempt == 1 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            }
+            Err(e) => {
+                errors.push(format!("github-api network error: {e}"));
+                if attempt == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+    }
+
+    // Layer 2: latest.json asset (no API rate limit)
+    if let Ok(resp) = client
+        .get(latest_json_url)
+        .header("User-Agent", format!("Dr3shLauncher/{cur_clean}"))
+        .timeout(Duration::from_secs(8))
+        .send()
+        .await
+    {
+        if resp.status().is_success() {
+            if let Ok(body) = resp.text().await {
+                let trimmed = body.trim();
+                if trimmed.starts_with('{') {
+                    if let Ok(parsed) = serde_json::from_str::<TauriLatestJsonResponse>(trimmed) {
+                        if let Some(latest_ver) = format_clean_version(&parsed.version) {
+                            let tag_name = if parsed.version.trim().starts_with(['v', 'V']) {
+                                parsed.version.trim().to_string()
+                            } else {
+                                format!("v{latest_ver}")
+                            };
+                            let release_page_url = format!("{default_releases_page}/tag/{tag_name}");
+                            let download_url = parsed
+                                .platforms
+                                .get("windows-x86_64")
+                                .map(|p| p.url.clone())
+                                .filter(|u| u.starts_with("http"))
+                                .unwrap_or_else(|| release_page_url.clone());
+                            let update_available = is_semver_newer(&cur_clean, &latest_ver);
+                            return Ok(LauncherUpdateCheckResult {
+                                current_version: cur_clean,
+                                latest_version: latest_ver.clone(),
+                                tag_name,
+                                update_available,
+                                release_name: format!("Dr3sh Launcher v{latest_ver}"),
+                                release_notes: parsed.notes.unwrap_or_default(),
+                                download_url,
+                                release_page_url,
+                                source: "latest-json".to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+            errors.push("latest-json invalid format".to_string());
+        } else {
+            errors.push(format!("latest-json HTTP {}", resp.status().as_u16()));
+        }
+    } else {
+        errors.push("latest-json unreachable".to_string());
+    }
+
+    // Layer 3: HTML /releases/latest 302 Location redirect (zero API rate limit, works without latest.json)
+    if let Ok(resp) = no_redirect_client
+        .get(releases_latest_url)
+        .header("User-Agent", format!("Dr3shLauncher/{cur_clean}"))
+        .timeout(Duration::from_secs(8))
+        .send()
+        .await
+    {
+        if resp.status().is_redirection() {
+            if let Some(loc) = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+            {
+                if let Some((tag_name, latest_ver)) = extract_tag_from_redirect_location(loc) {
+                    let release_page_url = format!("{default_releases_page}/tag/{tag_name}");
+                    let candidate_exe_url = format!(
+                        "{default_releases_page}/download/{tag_name}/Dr3sh-Launcher-Setup-{latest_ver}.exe"
+                    );
+                    let exe_ok = match client
+                        .head(&candidate_exe_url)
+                        .header("User-Agent", format!("Dr3shLauncher/{cur_clean}"))
+                        .timeout(Duration::from_secs(6))
+                        .send()
+                        .await
+                    {
+                        Ok(head_resp) => {
+                            head_resp.status().is_success() || head_resp.status().is_redirection()
+                        }
+                        Err(_) => false,
+                    };
+                    let download_url = if exe_ok {
+                        candidate_exe_url
+                    } else {
+                        release_page_url.clone()
+                    };
+                    let update_available = is_semver_newer(&cur_clean, &latest_ver);
+                    return Ok(LauncherUpdateCheckResult {
+                        current_version: cur_clean,
+                        latest_version: latest_ver.clone(),
+                        tag_name,
+                        update_available,
+                        release_name: format!("Dr3sh Launcher v{latest_ver}"),
+                        release_notes: String::new(),
+                        download_url,
+                        release_page_url,
+                        source: "redirect-tag".to_string(),
+                    });
+                }
+            }
+        }
+        errors.push(format!("redirect-tag HTTP {}", resp.status().as_u16()));
+    } else {
+        errors.push("redirect-tag unreachable".to_string());
+    }
+
+    Err(format!(
+        "No se pudo consultar actualizaciones en GitHub: {}",
+        errors.join("; ")
+    ))
+}
+
+#[tauri::command]
+pub async fn dr3sh_check_launcher_update(
+    app: tauri::AppHandle,
+) -> Result<LauncherUpdateCheckResult, String> {
+    let client = build_http_client().map_err(|e| e.to_string())?;
+    let no_redirect_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+    let current_version = app.package_info().version.to_string();
+    check_launcher_update_with_endpoints(
+        &client,
+        &no_redirect_client,
+        &current_version,
+        GITHUB_LAUNCHER_LATEST_API_URL,
+        GITHUB_LAUNCHER_LATEST_JSON_URL,
+        GITHUB_LAUNCHER_RELEASES_LATEST_URL,
+        GITHUB_LAUNCHER_RELEASES_BASE_URL,
+    )
+    .await
 }
 
 pub async fn verify_remote_gate(server_id: &str, bypass_gate: bool) -> Result<(), Dr3shError> {
@@ -2028,5 +2468,357 @@ mod tests {
             }
             other => panic!("expected ManifestFetch error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_launcher_update_semver_comparison_cases() {
+        assert!(is_semver_newer("1.1.0", "1.2.0"));
+        assert!(is_semver_newer("1.1.0", "v1.1.1"));
+        assert!(is_semver_newer("1.1.0", "2.0.0"));
+        assert!(is_semver_newer("1.0.5", "1.1.0"));
+        assert!(is_semver_newer("1.2.0-beta.1", "1.2.0"));
+        assert!(is_semver_newer("1.2.0-beta.1", "1.2.0-beta.2"));
+        assert!(!is_semver_newer("1.1.0", "1.1.0"));
+        assert!(!is_semver_newer("1.1.0", "v1.1.0"));
+        assert!(!is_semver_newer("1.2.0", "1.1.9"));
+        assert!(!is_semver_newer("1.2.0", "1.2.0-beta.1"));
+        assert!(!is_semver_newer("1.1.0", "not-a-version"));
+    }
+
+    #[test]
+    fn test_pick_windows_setup_asset_prefers_matching_version_and_skips_sig() {
+        let assets = vec![
+            GithubReleaseAsset {
+                name: "Dr3sh-Launcher-Setup-1.2.0.exe.sig".to_string(),
+                browser_download_url: "https://example.test/1.2.0.exe.sig".to_string(),
+            },
+            GithubReleaseAsset {
+                name: "latest.json".to_string(),
+                browser_download_url: "https://example.test/latest.json".to_string(),
+            },
+            GithubReleaseAsset {
+                name: "Dr3sh-Launcher-Setup-1.0.5.exe".to_string(),
+                browser_download_url: "https://example.test/old.exe".to_string(),
+            },
+            GithubReleaseAsset {
+                name: "Dr3sh.Launcher_1.2.0_x64-setup.exe".to_string(),
+                browser_download_url: "https://example.test/alt-1.2.0.exe".to_string(),
+            },
+            GithubReleaseAsset {
+                name: "Dr3sh-Launcher-Setup-1.2.0.exe".to_string(),
+                browser_download_url: "https://example.test/Dr3sh-Launcher-Setup-1.2.0.exe".to_string(),
+            },
+        ];
+        let picked = pick_windows_setup_asset_url(&assets, "1.2.0");
+        assert!(
+            picked.as_deref() == Some("https://example.test/alt-1.2.0.exe")
+                || picked.as_deref() == Some("https://example.test/Dr3sh-Launcher-Setup-1.2.0.exe"),
+            "picked={picked:?}"
+        );
+        let sig_only = vec![GithubReleaseAsset {
+            name: "Dr3sh-Launcher-Setup-1.2.0.exe.sig".to_string(),
+            browser_download_url: "https://example.test/1.2.0.exe.sig".to_string(),
+        }];
+        assert_eq!(pick_windows_setup_asset_url(&sig_only, "1.2.0"), None);
+    }
+
+    #[tokio::test]
+    async fn test_launcher_update_api_detects_newer_same_and_older_releases() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let _ = socket.read(&mut buf).await;
+                    let body = format!(
+                        r#"{{
+                            "tag_name": "v1.2.0",
+                            "name": "Dr3sh Launcher v1.2.0",
+                            "body": "- Mejora de estabilidad\n- Nuevo instalador",
+                            "html_url": "http://{addr}/releases/tag/v1.2.0",
+                            "draft": false,
+                            "prerelease": false,
+                            "assets": [
+                                {{ "name": "Dr3sh-Launcher-Setup-1.2.0.exe.sig", "browser_download_url": "http://{addr}/releases/download/v1.2.0/setup.exe.sig" }},
+                                {{ "name": "Dr3sh-Launcher-Setup-1.2.0.exe", "browser_download_url": "http://{addr}/releases/download/v1.2.0/Dr3sh-Launcher-Setup-1.2.0.exe" }}
+                            ]
+                        }}"#
+                    );
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        let client = build_http_client().unwrap();
+        let no_redir = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let api_url = format!("http://{addr}/api/releases/latest");
+        let json_url = format!("http://{addr}/latest.json");
+        let latest_url = format!("http://{addr}/releases/latest");
+        let base_url = format!("http://{addr}/releases");
+
+        let newer = check_launcher_update_with_endpoints(
+            &client, &no_redir, "1.1.0", &api_url, &json_url, &latest_url, &base_url,
+        )
+        .await
+        .unwrap();
+        assert!(newer.update_available);
+        assert_eq!(newer.latest_version, "1.2.0");
+        assert_eq!(newer.source, "github-api");
+        assert!(newer.download_url.ends_with("Dr3sh-Launcher-Setup-1.2.0.exe"));
+        assert!(newer.release_notes.contains("Nuevo instalador"));
+
+        let same = check_launcher_update_with_endpoints(
+            &client, &no_redir, "1.2.0", &api_url, &json_url, &latest_url, &base_url,
+        )
+        .await
+        .unwrap();
+        assert!(!same.update_available);
+
+        let older_remote = check_launcher_update_with_endpoints(
+            &client, &no_redir, "1.5.0", &api_url, &json_url, &latest_url, &base_url,
+        )
+        .await
+        .unwrap();
+        assert!(!older_remote.update_available);
+    }
+
+    #[tokio::test]
+    async fn test_launcher_update_api_retries_504_then_succeeds() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_cl = count.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let n = count_cl.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let _ = socket.read(&mut buf).await;
+                    if n == 0 {
+                        let _ = socket
+                            .write_all(b"HTTP/1.1 504 Gateway Time-out\r\nContent-Length: 0\r\n\r\n")
+                            .await;
+                    } else {
+                        let body = format!(
+                            r#"{{"tag_name":"v1.2.1","html_url":"http://{addr}/releases/tag/v1.2.1","assets":[{{"name":"Dr3sh-Launcher-Setup-1.2.1.exe","browser_download_url":"http://{addr}/Dr3sh-Launcher-Setup-1.2.1.exe"}}]}}"#
+                        );
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    }
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        let client = build_http_client().unwrap();
+        let no_redir = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let res = check_launcher_update_with_endpoints(
+            &client,
+            &no_redir,
+            "1.1.0",
+            &format!("http://{addr}/api"),
+            &format!("http://{addr}/latest.json"),
+            &format!("http://{addr}/releases/latest"),
+            &format!("http://{addr}/releases"),
+        )
+        .await
+        .unwrap();
+        assert!(res.update_available);
+        assert_eq!(res.latest_version, "1.2.1");
+        assert_eq!(res.source, "github-api");
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_launcher_update_rate_limit_or_html_falls_back_to_latest_json() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if req.starts_with("GET /api") {
+                        let _ = socket
+                            .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\n\r\nrate limit")
+                            .await;
+                    } else if req.starts_with("GET /api-html") {
+                        let _ = socket
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\n<html>err</html>")
+                            .await;
+                    } else {
+                        let body = format!(
+                            r#"{{"version":"1.2.5","notes":"Parche urgente","platforms":{{"windows-x86_64":{{"url":"http://{addr}/Dr3sh-Launcher-Setup-1.2.5.exe"}}}}}}"#
+                        );
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    }
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        let client = build_http_client().unwrap();
+        let no_redir = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+
+        for api_path in ["/api", "/api-html"] {
+            let res = check_launcher_update_with_endpoints(
+                &client,
+                &no_redir,
+                "1.1.0",
+                &format!("http://{addr}{api_path}"),
+                &format!("http://{addr}/latest.json"),
+                &format!("http://{addr}/releases/latest"),
+                &format!("http://{addr}/releases"),
+            )
+            .await
+            .unwrap();
+            assert!(res.update_available);
+            assert_eq!(res.latest_version, "1.2.5");
+            assert_eq!(res.source, "latest-json");
+            assert_eq!(res.release_notes, "Parche urgente");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_launcher_update_falls_back_to_redirect_tag_and_verifies_exe() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if req.starts_with("GET /releases/latest ") {
+                        let resp = format!(
+                            "HTTP/1.1 302 Found\r\nLocation: http://{addr}/releases/tag/v1.4.0\r\nContent-Length: 0\r\n\r\n"
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    } else if req.starts_with("HEAD /releases/download/v1.4.0/Dr3sh-Launcher-Setup-1.4.0.exe ") {
+                        let _ = socket
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
+                            .await;
+                    } else if req.starts_with("GET /alt/releases/latest ") {
+                        let resp = format!(
+                            "HTTP/1.1 302 Found\r\nLocation: http://{addr}/alt/releases/tag/v1.5.0\r\nContent-Length: 0\r\n\r\n"
+                        );
+                        let _ = socket.write_all(resp.as_bytes()).await;
+                    } else {
+                        let _ = socket
+                            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                            .await;
+                    }
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        let client = build_http_client().unwrap();
+        let no_redir = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+
+        // Case 1: redirect tag + HEAD 200 OK -> direct .exe URL
+        let res1 = check_launcher_update_with_endpoints(
+            &client,
+            &no_redir,
+            "1.1.0",
+            &format!("http://{addr}/api"),
+            &format!("http://{addr}/latest.json"),
+            &format!("http://{addr}/releases/latest"),
+            &format!("http://{addr}/releases"),
+        )
+        .await
+        .unwrap();
+        assert!(res1.update_available);
+        assert_eq!(res1.source, "redirect-tag");
+        assert_eq!(res1.latest_version, "1.4.0");
+        assert_eq!(
+            res1.download_url,
+            format!("http://{addr}/releases/download/v1.4.0/Dr3sh-Launcher-Setup-1.4.0.exe")
+        );
+
+        // Case 2: redirect tag + HEAD 404 -> safe fallback to release page URL (no 404 link!)
+        let res2 = check_launcher_update_with_endpoints(
+            &client,
+            &no_redir,
+            "1.1.0",
+            &format!("http://{addr}/api"),
+            &format!("http://{addr}/latest.json"),
+            &format!("http://{addr}/alt/releases/latest"),
+            &format!("http://{addr}/alt/releases"),
+        )
+        .await
+        .unwrap();
+        assert!(res2.update_available);
+        assert_eq!(res2.source, "redirect-tag");
+        assert_eq!(res2.latest_version, "1.5.0");
+        assert_eq!(res2.download_url, format!("http://{addr}/alt/releases/tag/v1.5.0"));
+    }
+
+    #[tokio::test]
+    async fn test_launcher_update_all_endpoints_unreachable_returns_err_cleanly() {
+        let client = build_http_client().unwrap();
+        let no_redir = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let err = check_launcher_update_with_endpoints(
+            &client,
+            &no_redir,
+            "1.1.0",
+            "http://127.0.0.1:1/api",
+            "http://127.0.0.1:1/latest.json",
+            "http://127.0.0.1:1/releases/latest",
+            "http://127.0.0.1:1/releases",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("No se pudo consultar actualizaciones en GitHub"), "err={err}");
     }
 }

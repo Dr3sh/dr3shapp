@@ -7,7 +7,6 @@ import { useQuery } from '@tanstack/vue-query'
 import { instanceListQueryOptions } from '@/pages/instance/query-options'
 import {
 	useDr3shLauncher,
-	launcherVersion,
 	type Dr3shServer,
 	getServerPreviewImages,
 	getStageImageUrl,
@@ -642,12 +641,6 @@ async function handleMicrosoftLogin() {
 		showToast(`Error de autenticación Microsoft: ${e?.message || e}`)
 	} finally {
 		busy.value = false
-	}
-}
-
-function openDeveloperPanelFromAbout() {
-	if (import.meta.env.DEV || isDeveloper.value) {
-		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true }))
 	}
 }
 
@@ -1781,23 +1774,6 @@ const filteredMarketServers = computed(() => {
 				</span>
 				<span>Almacenamiento</span>
 			</button>
-
-			<button
-				type="button"
-				role="tab"
-				:aria-selected="activeSettingsTab === 'about'"
-				class="settings-nav-tab"
-				:class="{ active: activeSettingsTab === 'about' }"
-				@click="activeSettingsTab = 'about'"
-			>
-				<span class="tab-icon" aria-hidden="true">
-					<svg viewBox="0 0 24 24">
-						<circle cx="12" cy="12" r="10" />
-						<path d="M12 16v-4M12 8h.01" />
-					</svg>
-				</span>
-				<span>Acerca de</span>
-			</button>
 		</div>
 
 		<!-- TAB 1: JAVA Y MEMORIA -->
@@ -1816,10 +1792,6 @@ const filteredMarketServers = computed(() => {
 							{{ (systemTotalRamMb / 1024).toFixed(1) }} GB ({{ systemTotalRamMb }} MB)
 						</span>
 					</div>
-					<small>
-						Límite máximo seguro para Minecraft (80% del sistema):
-						<strong>{{ (maxAllowedRamMb / 1024).toFixed(1) }} GB ({{ maxAllowedRamMb }} MB)</strong>
-					</small>
 				</div>
 			</div>
 
@@ -1827,7 +1799,7 @@ const filteredMarketServers = computed(() => {
 				<div class="settings-title">
 					<div>
 						<b>Memoria RAM de Minecraft</b>
-						<small>Asigna hasta el 80% de tu memoria física para garantizar estabilidad del sistema operativo</small>
+						<small>Selecciona cuánta memoria RAM asignar a tus instancias</small>
 					</div>
 				</div>
 
@@ -2308,54 +2280,6 @@ const filteredMarketServers = computed(() => {
 						</div>
 						<span>Abrir carpeta</span>
 					</button>
-				</div>
-			</section>
-		</div>
-
-		<!-- TAB 5: ACERCA DE -->
-		<div v-else-if="activeSettingsTab === 'about'" class="settings-tab-panel">
-			<section class="settings-section">
-				<div class="settings-title">
-					<div>
-						<b>Acerca de Dr3sh Launcher</b>
-						<small>Información de la versión y canal de actualizaciones</small>
-					</div>
-				</div>
-
-				<div class="about-launcher-card">
-					<div class="about-launcher-row">
-						<span>Versión actual instalada</span>
-						<strong class="about-version-tag">v{{ launcherVersion }}</strong>
-					</div>
-					<div class="about-launcher-row">
-						<span>Actualizaciones automáticas</span>
-						<span class="about-channel-status">GitHub Releases (Activo)</span>
-					</div>
-					<div class="about-launcher-row">
-						<span>Sincronización de catálogo</span>
-						<button
-							type="button"
-							class="settings-chip-btn active"
-							:disabled="busy"
-							@click="fetchVersionsData(); showToast('Catálogo sincronizado con GitHub Releases.')"
-						>
-							Sincronizar catálogo ahora
-						</button>
-					</div>
-					<div class="about-launcher-row">
-						<span>Canal de actualización</span>
-						<span class="about-launcher-val">Actualizaciones oficiales de GitHub</span>
-					</div>
-					<div class="about-launcher-row">
-						<span>Administración de modpacks</span>
-						<button
-							type="button"
-							class="settings-chip-btn"
-							@click="openDeveloperPanelFromAbout"
-						>
-							Estudio de Desarrollador (Shift+F10)
-						</button>
-					</div>
 				</div>
 			</section>
 		</div>

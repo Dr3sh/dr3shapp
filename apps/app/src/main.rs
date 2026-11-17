@@ -19,7 +19,7 @@ use theseus::prelude::*;
 pub mod dr3sh;
 use dr3sh::{
     dr3sh_ack_migration_notice, dr3sh_cancel, dr3sh_cancel_download,
-    dr3sh_cleanup_deleted_instance, dr3sh_download_modpack,
+    dr3sh_check_launcher_update, dr3sh_cleanup_deleted_instance, dr3sh_download_modpack,
     dr3sh_get_diagnostics, dr3sh_get_state, dr3sh_install_or_update,
     dr3sh_link_existing_instance, dr3sh_migrate_local_state,
     dr3sh_open_logs_folder, dr3sh_prepare_launch, dr3sh_repair,
@@ -756,6 +756,7 @@ fn main() {
             show_window,
             restart_app,
             dr3sh_install_or_update,
+            dr3sh_check_launcher_update,
             dr3sh_cancel,
             dr3sh_repair,
             dr3sh_get_state,

@@ -170,7 +170,7 @@ watch(selectedId, (val) => {
 })
 
 export const currentView = ref<'home' | 'market' | 'settings'>('home')
-export const activeSettingsTab = ref<'memory' | 'account' | 'game' | 'storage' | 'about'>('memory')
+export const activeSettingsTab = ref<'memory' | 'account' | 'game' | 'storage'>('memory')
 
 export const activeAccount = ref<Dr3shAccount | null>(null)
 export const allAccounts = ref<Dr3shAccount[]>([])

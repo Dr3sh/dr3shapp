@@ -148,13 +148,8 @@ import { hasActivePride26Midas, hasMidasBadge } from '@/helpers/user-campaigns.t
 import { get_user_preferences } from '@/helpers/user-preferences.ts'
 import { parse_modrinth_user_link } from '@/helpers/users'
 import {
-	areUpdatesEnabled,
-	enqueueUpdateForInstallation,
 	getOS,
-	getUpdateSize,
 	isDev,
-	isNetworkMetered,
-	setRestartAfterPendingUpdate,
 } from '@/helpers/utils.js'
 import { start_join_server, start_join_singleplayer_world } from '@/helpers/worlds.ts'
 import i18n, { setLocale } from '@/i18n.config'
@@ -167,18 +162,12 @@ import { createFileDownload } from '@/platform/adapters/file-download'
 import { createAppClient } from '@/platform/modrinth-client'
 import {
 	appUpdateState,
-	downloadAvailableAppUpdate,
-	getNextAppUpdatePopupTime,
-	installAvailableAppUpdate,
 	markAppUpdateActionable,
-	markAppUpdatePopupShown,
-	openAppUpdateChangelog,
 	setAppUpdateActions,
 } from '@/providers/app-update.ts'
 import { createContentInstall, provideContentInstall } from '@/providers/content-install'
 import {
 	provideAppUpdateDownloadProgress,
-	subscribeToDownloadProgress,
 } from '@/providers/download-progress.ts'
 import { createServerInstall, provideServerInstall } from '@/providers/server-install'
 import { setupProviders } from '@/providers/setup'
@@ -511,6 +500,10 @@ onUnmounted(async () => {
 	document.removeEventListener('fullscreenchange', handleFullscreenChange)
 	unlistenEditMenu?.()
 	clearDelayedUpdatePopup()
+	if (launcherUpdateCheckTimer !== null) {
+		clearTimeout(launcherUpdateCheckTimer)
+		launcherUpdateCheckTimer = null
+	}
 
 	if (fullscreenAdsWindowHold) {
 		fullscreenAdsWindowHold = false
@@ -1579,309 +1572,92 @@ const appUpdateDownload = {
 }
 let unlistenUpdateDownload
 
-const {
-	metered,
-	finishedDownloading,
-	downloading,
-	restarting,
-	availableUpdate,
-	updateSize,
-	updatesEnabled,
-} = appUpdateState
-let delayedUpdatePopupTimeout = null
-
-const updatePopupMessages = defineMessages({
-	updateAvailable: {
-		id: 'app.update-popup.title',
-		defaultMessage: 'Update available',
-	},
-	downloadComplete: {
-		id: 'app.update-popup.download-complete',
-		defaultMessage: 'Download complete',
-	},
-	meteredBody: {
-		id: 'app.update-popup.body.metered',
-		defaultMessage: `Dr3sh App v{version} is available now! Since you're on a metered network, we didn't automatically download it.`,
-	},
-	downloadedBody: {
-		id: 'app.update-popup.body.download-complete',
-		defaultMessage: `Dr3sh App v{version} has finished downloading. Reload to update now, or automatically when you close Dr3sh App.`,
-	},
-	linuxBody: {
-		id: 'app.update-popup.body.linux',
-		defaultMessage:
-			'Dr3sh App v{version} is available. Use your package manager to update for the latest features and fixes!',
-	},
-	reload: {
-		id: 'app.update-popup.reload',
-		defaultMessage: 'Reload to update',
-	},
-	download: {
-		id: 'app.update-popup.download',
-		defaultMessage: 'Download ({size})',
-	},
-	changelog: {
-		id: 'app.update-popup.changelog',
-		defaultMessage: 'Changelog',
-	},
-})
+const { availableUpdate } = appUpdateState
+let launcherUpdateCheckTimer = null
+const launcherUpdateInfo = ref(null)
+const dismissedLauncherUpdateVersion = ref(null)
 
 function clearDelayedUpdatePopup() {
-	if (delayedUpdatePopupTimeout !== null) {
-		clearTimeout(delayedUpdatePopupTimeout)
-		delayedUpdatePopupTimeout = null
+	if (launcherUpdateCheckTimer !== null) {
+		clearTimeout(launcherUpdateCheckTimer)
+		launcherUpdateCheckTimer = null
 	}
 }
 
-function getCurrentUpdatePromptStage() {
-	return finishedDownloading.value ? 'downloaded' : 'available'
+function dismissLauncherUpdateModal() {
+	if (launcherUpdateInfo.value?.latestVersion) {
+		dismissedLauncherUpdateVersion.value = launcherUpdateInfo.value.latestVersion
+	}
+	launcherUpdateInfo.value = null
 }
 
-function scheduleDelayedUpdatePopup() {
-	clearDelayedUpdatePopup()
-
-	const version = availableUpdate.value?.version
-	if (!version) {
-		return
+async function openLauncherUpdateDownload(urlOverride) {
+	const info = launcherUpdateInfo.value
+	const target =
+		urlOverride ||
+		info?.downloadUrl ||
+		info?.releasePageUrl ||
+		'https://github.com/Dr3sh/dr3shapp/releases/latest'
+	try {
+		await openUrl(target)
+	} catch {
+		if (info?.releasePageUrl && target !== info.releasePageUrl) {
+			try {
+				await openUrl(info.releasePageUrl)
+			} catch {}
+		}
 	}
-
-	const nextPopupTime = getNextAppUpdatePopupTime(version, getCurrentUpdatePromptStage())
-	if (nextPopupTime === null) {
-		return
-	}
-
-	const delay = nextPopupTime - Date.now()
-	if (delay <= 0) {
-		showDelayedUpdatePopup()
-		return
-	}
-
-	delayedUpdatePopupTimeout = setTimeout(showDelayedUpdatePopup, Math.min(delay, 2_147_483_647))
-}
-
-function showDelayedUpdatePopup() {
-	const update = availableUpdate.value
-	if (!update) {
-		return
-	}
-
-	const stage = getCurrentUpdatePromptStage()
-	const nextPopupTime = getNextAppUpdatePopupTime(update.version, stage)
-	if (nextPopupTime === null) {
-		return
-	}
-
-	if (Date.now() < nextPopupTime) {
-		scheduleDelayedUpdatePopup()
-		return
-	}
-
-	if (metered.value && !finishedDownloading.value) {
-		addPopupNotification({
-			contentType: 'standard',
-			title: formatMessage(updatePopupMessages.updateAvailable),
-			text: formatMessage(updatePopupMessages.meteredBody, { version: update.version }),
-			type: 'info',
-			autoCloseMs: null,
-			buttons: [
-				{
-					label: formatMessage(updatePopupMessages.download, {
-						size: formatBytes(updateSize.value ?? 0),
-					}),
-					action: () => downloadAvailableAppUpdate(),
-					color: 'brand',
-				},
-				{
-					label: formatMessage(updatePopupMessages.changelog),
-					action: () => openAppUpdateChangelog(),
-					keepOpen: true,
-				},
-			],
-		})
-	} else if (finishedDownloading.value) {
-		addPopupNotification({
-			contentType: 'standard',
-			title: formatMessage(updatePopupMessages.downloadComplete),
-			text: formatMessage(updatePopupMessages.downloadedBody, {
-				version: update.version,
-			}),
-			type: 'success',
-			autoCloseMs: null,
-			buttons: [
-				{
-					label: formatMessage(updatePopupMessages.reload),
-					action: () => installAvailableAppUpdate(),
-					color: 'brand',
-				},
-				{
-					label: formatMessage(updatePopupMessages.changelog),
-					action: () => openAppUpdateChangelog(),
-					keepOpen: true,
-				},
-			],
-		})
-	} else {
-		scheduleDelayedUpdatePopup()
-		return
-	}
-
-	markAppUpdatePopupShown(update.version, stage)
 }
 
 async function checkUpdates() {
-	if (!(await areUpdatesEnabled())) {
-		console.log('Skipping update check as updates are disabled in this build or environment')
-		updatesEnabled.value = false
-
-		if (os.value === 'Linux' && !isDevEnvironment.value) {
-			checkLinuxUpdates()
-			setInterval(checkLinuxUpdates, 5 * 60 * 1000)
-		}
-		return
+	if (launcherUpdateCheckTimer !== null) {
+		clearTimeout(launcherUpdateCheckTimer)
+		launcherUpdateCheckTimer = null
 	}
 
 	async function performCheck() {
 		try {
-			const update = await invoke('plugin:updater|check')
-			if (!update) {
-				console.log('No update available')
+			const res = await invoke('dr3sh_check_launcher_update')
+			if (!res || !res.updateAvailable) {
 				return
 			}
-
-			const isExistingUpdate = update.version === availableUpdate.value?.version
-
-			if (isExistingUpdate) {
-				console.log('Update is already known')
-				scheduleDelayedUpdatePopup()
+			availableUpdate.value = {
+				rid: 0,
+				version: res.latestVersion,
+				currentVersion: res.currentVersion,
+			}
+			markAppUpdateActionable(res.latestVersion, 'available')
+			if (dismissedLauncherUpdateVersion.value === res.latestVersion) {
 				return
 			}
-
-			appUpdateDownload.progress.value = 0
-			finishedDownloading.value = false
-			downloading.value = false
-			updateSize.value = null
-			availableUpdate.value = update
-
-			console.log(`Update ${update.version} is available.`)
-
-			metered.value = await isNetworkMetered()
-			if (!metered.value) {
-				console.log('Starting download of update')
-				downloadUpdate(update)
-			} else {
-				console.log(`Metered connection detected, not auto-downloading update.`)
-				markAppUpdateActionable(update.version)
-				scheduleDelayedUpdatePopup()
-			}
-
-			getUpdateSize(update.rid).then((size) => (updateSize.value = size))
+			launcherUpdateInfo.value = res
 		} catch (e) {
 			console.warn('Update check failed (offline or unreachable):', e)
 		}
 	}
 
 	await performCheck()
-	setTimeout(
+	launcherUpdateCheckTimer = setTimeout(
 		() => {
 			checkUpdates()
 		},
-		5 /* min */ * 60 /* sec */ * 1000 /* ms */,
+		10 /* min */ * 60 /* sec */ * 1000 /* ms */,
 	)
 }
 
-async function checkLinuxUpdates() {
-	try {
-		const [response, currentVersion] = await Promise.all([
-			fetch('https://launcher-files.modrinth.com/updates.json'),
-			getVersion(),
-		])
-		const updates = await response.json()
-		const latestVersion = updates?.version
-
-		if (latestVersion && latestVersion !== currentVersion) {
-			markAppUpdateActionable(latestVersion)
-			const nextPopupTime = getNextAppUpdatePopupTime(latestVersion)
-			if (nextPopupTime !== null && Date.now() >= nextPopupTime) {
-				addPopupNotification({
-					contentType: 'standard',
-					title: formatMessage(updatePopupMessages.updateAvailable),
-					text: formatMessage(updatePopupMessages.linuxBody, { version: latestVersion }),
-					type: 'info',
-					autoCloseMs: null,
-				})
-				markAppUpdatePopupShown(latestVersion)
-			}
-		}
-	} catch (e) {
-		console.error('Failed to check for updates:', e)
-	}
-}
-
 async function downloadAvailableUpdate() {
-	return downloadUpdate(availableUpdate.value)
-}
-
-async function downloadUpdate(versionToDownload) {
-	if (!versionToDownload) {
-		handleError(formatMessage(messages.updateDownloadMissingVersion))
-		return
-	}
-
-	if (downloading.value || appUpdateDownload.progress.value !== 0) {
-		console.error(`Update ${versionToDownload.version} already downloading`)
-		return
-	}
-
-	console.log(`Downloading update ${versionToDownload.version}`)
-	downloading.value = true
-
-	try {
-		enqueueUpdateForInstallation(versionToDownload.rid)
-			.then(() => {
-				downloading.value = false
-				finishedDownloading.value = true
-				unlistenUpdateDownload?.()
-				unlistenUpdateDownload = null
-				console.log('Finished downloading!')
-				markAppUpdateActionable(versionToDownload.version, 'downloaded')
-				scheduleDelayedUpdatePopup()
-			})
-			.catch((e) => {
-				downloading.value = false
-				appUpdateDownload.progress.value = 0
-				handleError(e)
-			})
-		unlistenUpdateDownload = await subscribeToDownloadProgress(
-			appEvents,
-			appUpdateDownload,
-			versionToDownload.version,
-		)
-	} catch (e) {
-		downloading.value = false
-		appUpdateDownload.progress.value = 0
-		handleError(e)
-	}
+	return openLauncherUpdateDownload()
 }
 
 async function installUpdate() {
-	restarting.value = true
-
-	try {
-		await setRestartAfterPendingUpdate(true)
-	} catch (e) {
-		restarting.value = false
-		handleError(e)
-		return
-	}
-	setTimeout(async () => {
-		await handleClose()
-	}, 250)
+	return openLauncherUpdateDownload()
 }
 
 setAppUpdateActions({
 	download: downloadAvailableUpdate,
 	install: installUpdate,
-	changelog: () => openUrl('https://modrinth.com/news/changelog?filter=app'),
+	changelog: () =>
+		openUrl(launcherUpdateInfo.value?.releasePageUrl || 'https://github.com/Dr3sh/dr3shapp/releases'),
 })
 
 async function openModrinthProjectLinkInApp(parsed) {
@@ -2167,9 +1943,218 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 	<InstallToPlayModal ref="installToPlayModal" :show-external-warnings="false" />
 	<UpdateToPlayModal ref="updateToPlayModal" :show-external-warnings="false" />
 	<DeveloperMenu v-model="developerMenuOpen" />
+	<div
+		v-if="launcherUpdateInfo"
+		class="dr3sh-update-backdrop"
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="dr3sh-update-title"
+		@click="dismissLauncherUpdateModal"
+	>
+		<div class="dr3sh-update-modal" @click.stop>
+			<div class="dr3sh-update-header">
+				<div>
+					<span class="dr3sh-update-pill">Nueva actualización</span>
+					<h3 id="dr3sh-update-title" class="dr3sh-update-title">
+						{{ launcherUpdateInfo.releaseName || `Dr3sh Launcher v${launcherUpdateInfo.latestVersion}` }}
+					</h3>
+					<p class="dr3sh-update-versions">
+						Instalada: <strong>v{{ launcherUpdateInfo.currentVersion }}</strong> → Disponible:
+						<strong class="dr3sh-update-new-ver">v{{ launcherUpdateInfo.latestVersion }}</strong>
+					</p>
+				</div>
+				<button
+					type="button"
+					class="dr3sh-update-close"
+					aria-label="Cerrar"
+					@click="dismissLauncherUpdateModal"
+				>
+					✕
+				</button>
+			</div>
+
+			<div v-if="launcherUpdateInfo.releaseNotes" class="dr3sh-update-notes">
+				{{ launcherUpdateInfo.releaseNotes }}
+			</div>
+
+			<p class="dr3sh-update-safe-note">
+				Al abrir el instalador, deja marcada la opción <strong>Actualizar</strong> (viene seleccionada por defecto) para conservar todos tus modpacks, mundos y cuentas.
+			</p>
+
+			<div class="dr3sh-update-actions">
+				<button
+					type="button"
+					class="dr3sh-update-btn-secondary"
+					@click="dismissLauncherUpdateModal"
+				>
+					Más tarde
+				</button>
+				<button
+					type="button"
+					class="dr3sh-update-btn-secondary"
+					@click="openLauncherUpdateDownload(launcherUpdateInfo.releasePageUrl)"
+				>
+					Ver en GitHub
+				</button>
+				<button
+					type="button"
+					class="dr3sh-update-btn-primary"
+					@click="openLauncherUpdateDownload()"
+				>
+					Descargar actualización (Recomendado)
+				</button>
+			</div>
+		</div>
+	</div>
 </template>
 
 <style lang="scss" scoped>
+.dr3sh-update-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 9999;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 20px;
+	background: rgba(6, 8, 13, 0.72);
+	backdrop-filter: blur(8px);
+}
+
+.dr3sh-update-modal {
+	width: min(520px, 96vw);
+	padding: 22px;
+	border-radius: 16px;
+	background: #141822;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+	color: #f3f5f8;
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+
+.dr3sh-update-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.dr3sh-update-pill {
+	display: inline-block;
+	padding: 3px 9px;
+	border-radius: 999px;
+	font-size: 11px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: #34d399;
+	background: rgba(16, 185, 129, 0.14);
+	border: 1px solid rgba(16, 185, 129, 0.35);
+	margin-bottom: 8px;
+}
+
+.dr3sh-update-title {
+	margin: 0;
+	font-size: 18px;
+	font-weight: 700;
+	color: #ffffff;
+}
+
+.dr3sh-update-versions {
+	margin: 4px 0 0;
+	font-size: 13px;
+	color: rgba(243, 245, 248, 0.76);
+}
+
+.dr3sh-update-new-ver {
+	color: #34d399;
+}
+
+.dr3sh-update-close {
+	appearance: none;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	background: rgba(255, 255, 255, 0.05);
+	color: rgba(243, 245, 248, 0.75);
+	width: 30px;
+	height: 30px;
+	border-radius: 8px;
+	cursor: pointer;
+	font-size: 13px;
+	flex-shrink: 0;
+}
+
+.dr3sh-update-close:hover {
+	background: rgba(255, 255, 255, 0.12);
+	color: #ffffff;
+}
+
+.dr3sh-update-notes {
+	max-height: 180px;
+	overflow-y: auto;
+	padding: 12px;
+	border-radius: 10px;
+	background: rgba(0, 0, 0, 0.32);
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	font-size: 12.5px;
+	line-height: 1.5;
+	color: rgba(243, 245, 248, 0.88);
+	white-space: pre-wrap;
+}
+
+.dr3sh-update-safe-note {
+	margin: 0;
+	padding: 10px 12px;
+	border-radius: 10px;
+	background: rgba(59, 130, 246, 0.1);
+	border: 1px solid rgba(59, 130, 246, 0.28);
+	font-size: 12.5px;
+	line-height: 1.45;
+	color: #dbeafe;
+}
+
+.dr3sh-update-actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 2px;
+}
+
+.dr3sh-update-btn-secondary {
+	appearance: none;
+	border: 1px solid rgba(255, 255, 255, 0.14);
+	background: rgba(255, 255, 255, 0.06);
+	color: #e5e7eb;
+	padding: 9px 14px;
+	border-radius: 10px;
+	font-size: 13px;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.dr3sh-update-btn-secondary:hover {
+	background: rgba(255, 255, 255, 0.12);
+}
+
+.dr3sh-update-btn-primary {
+	appearance: none;
+	border: none;
+	background: linear-gradient(135deg, #10b981, #059669);
+	color: #052e16;
+	padding: 9px 16px;
+	border-radius: 10px;
+	font-size: 13px;
+	font-weight: 700;
+	cursor: pointer;
+	box-shadow: 0 6px 20px rgba(16, 185, 129, 0.28);
+}
+
+.dr3sh-update-btn-primary:hover {
+	filter: brightness(1.08);
+}
+
 .launcher {
 	display: grid;
 	grid-template-columns: 268px minmax(0, 1fr);

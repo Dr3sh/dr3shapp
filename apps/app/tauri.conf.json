@@ -17,6 +17,11 @@
 		"windows": {
 			"nsis": {
 				"installMode": "currentUser",
+				"languages": ["Spanish"],
+				"customLanguageFiles": {
+					"Spanish": "./nsis/Spanish.nsh"
+				},
+				"template": "./nsis/installer.nsi",
 				"installerHooks": "./nsis/hooks.nsi"
 			}
 		},

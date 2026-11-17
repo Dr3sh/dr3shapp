@@ -31,30 +31,32 @@
 Var /GLOBAL OldInstallDir
 
 !macro NSIS_HOOK_PREINSTALL
-    SetShellVarContext all
-    ${If} ${FileExists} "$SMPROGRAMS\${PRODUCTNAME}.lnk"
-        UserInfo::GetAccountType
-        Pop $0
-        ${If} $0 != "Admin"
-            MessageBox MB_ICONINFORMATION|MB_OK "An old installation of ${PRODUCTNAME} was detected that requires administrator permission to update from. You will be prompted with an admin prompt shortly."
+    ${If} $UpdateMode <> 1
+        SetShellVarContext all
+        ${If} ${FileExists} "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+            UserInfo::GetAccountType
+            Pop $0
+            ${If} $0 != "Admin"
+                MessageBox MB_ICONINFORMATION|MB_OK "Se detectó una instalación global anterior de ${PRODUCTNAME} que requiere permisos de administrador para actualizarse. A continuación se solicitarán permisos."
+            ${EndIf}
+
+            ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
+            ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
+
+            ReadRegStr $OldInstallDir SHCTX "${UNINSTKEY}" "InstallLocation"
+            StrCpy $OldInstallDir $OldInstallDir "" 1
+            StrCpy $OldInstallDir $OldInstallDir -1 ""
+
+            DetailPrint "Executing $R1"
+            !insertmacro ShellExecWait "runas" '$R1' '/P /UPDATE _?=$4' "" ${SW_SHOW} $3
+            ${If} $3 <> 0
+                SetErrorLevel $3
+                MessageBox MB_ICONEXCLAMATION|MB_OK "No se pudo migrar la instalación global anterior."
+                Abort
+            ${EndIf}
         ${EndIf}
-
-        ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
-        ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
-
-        ReadRegStr $OldInstallDir SHCTX "${UNINSTKEY}" "InstallLocation"
-        StrCpy $OldInstallDir $OldInstallDir "" 1
-        StrCpy $OldInstallDir $OldInstallDir -1 ""
-
-        DetailPrint "Executing $R1"
-        !insertmacro ShellExecWait "runas" '$R1' '/P _?=$4' "" ${SW_SHOW} $3
-        ${If} $3 <> 0
-            SetErrorLevel $3
-            MessageBox MB_ICONEXCLAMATION|MB_OK "Failed to uninstall old global installation"
-            Abort
-        ${EndIf}
+        SetShellVarContext current
     ${EndIf}
-    SetShellVarContext current
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
@@ -68,16 +70,21 @@ Var /GLOBAL OldInstallDir
 
 !macro NSIS_HOOK_POSTUNINSTALL
     SetShellVarContext current
-    RMDir /r "$APPDATA\com.dr3sh.launcher"
-    RMDir /r "$LOCALAPPDATA\com.dr3sh.launcher"
-    RMDir /r "$APPDATA\Dr3sh Launcher"
-    RMDir /r "$LOCALAPPDATA\Dr3sh Launcher"
-    RMDir /r "$APPDATA\Dr3shLauncher"
-    RMDir /r "$LOCALAPPDATA\Dr3shLauncher"
-    RMDir /r "$APPDATA\dr3sh-launcher-electron"
-    RMDir /r "$INSTDIR"
-    Delete "$DESKTOP\${PRODUCTNAME}.lnk"
-    Delete "$SMPROGRAMS\${PRODUCTNAME}.lnk"
-    Delete "$SMPROGRAMS\${PRODUCTNAME}\*.*"
-    RMDir "$SMPROGRAMS\${PRODUCTNAME}"
+    ${If} $DeleteAppDataCheckboxState = 1
+    ${AndIf} $UpdateMode <> 1
+        RMDir /r "$APPDATA\com.dr3sh.launcher"
+        RMDir /r "$LOCALAPPDATA\com.dr3sh.launcher"
+        RMDir /r "$APPDATA\Dr3sh Launcher"
+        RMDir /r "$LOCALAPPDATA\Dr3sh Launcher"
+        RMDir /r "$APPDATA\Dr3shLauncher"
+        RMDir /r "$LOCALAPPDATA\Dr3shLauncher"
+        RMDir /r "$APPDATA\dr3sh-launcher-electron"
+    ${EndIf}
+    ${If} $UpdateMode <> 1
+        RMDir /r "$INSTDIR"
+        Delete "$DESKTOP\${PRODUCTNAME}.lnk"
+        Delete "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+        Delete "$SMPROGRAMS\${PRODUCTNAME}\*.*"
+        RMDir "$SMPROGRAMS\${PRODUCTNAME}"
+    ${EndIf}
 !macroend

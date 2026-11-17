@@ -2,13 +2,13 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 
-let pkg = { version: '1.0.6' };
+let pkg = { version: '1.1.0' };
 try {
 	pkg = JSON.parse(
 		fs.readFileSync(path.resolve(__dirname, '../apps/app-frontend/package.json'), 'utf8'),
 	);
 } catch {
-	pkg = { version: '1.0.6' };
+	pkg = { version: '1.1.0' };
 }
 
 const args = process.argv.slice(2);
@@ -19,7 +19,7 @@ function getArg(flag, fallback) {
 
 const OWNER = 'Dr3sh';
 const REPO = getArg('--repo', 'dr3shapp');
-const rawVer = getArg('--version', pkg.version || '1.0.6');
+const rawVer = getArg('--version', pkg.version || '1.1.0');
 const cleanVer = rawVer.replace(/^v/i, '');
 const TAG = `v${cleanVer}`;
 const TITLE = `Dr3sh Launcher ${TAG} (Tauri 2.0)`;
@@ -177,16 +177,22 @@ async function main() {
 	for (const dir of candidateDirs) {
 		if (!fs.existsSync(dir)) continue;
 		const items = fs.readdirSync(dir);
-		for (const item of items) {
-			if (
+		const exes = items.filter(
+			(item) =>
 				item.toLowerCase().endsWith('.exe') &&
-				(item.toLowerCase().includes('setup') || item.toLowerCase().includes('dr3sh'))
-			) {
-				if (!sourceExe) sourceExe = path.join(dir, item);
-			}
-			if (item.toLowerCase().endsWith('.sig')) {
-				if (!sourceSig) sourceSig = path.join(dir, item);
-			}
+				(item.toLowerCase().includes('setup') || item.toLowerCase().includes('dr3sh')),
+		);
+		const sigs = items.filter((item) => item.toLowerCase().endsWith('.sig'));
+
+		if (!sourceExe && exes.length > 0) {
+			const exactExe = exes.find((item) => item.toLowerCase().includes(version.toLowerCase()));
+			if (exactExe) sourceExe = path.join(dir, exactExe);
+			else if (exes.length === 1) sourceExe = path.join(dir, exes[0]);
+		}
+		if (!sourceSig && sigs.length > 0) {
+			const exactSig = sigs.find((item) => item.toLowerCase().includes(version.toLowerCase()));
+			if (exactSig) sourceSig = path.join(dir, exactSig);
+			else if (sigs.length === 1) sourceSig = path.join(dir, sigs[0]);
 		}
 	}
 
