@@ -12,7 +12,7 @@ import {
 	users,
 } from '@/helpers/auth'
 
-export const LAUNCHER_VERSION = pkg.version || '1.0.5'
+export const LAUNCHER_VERSION = pkg.version || '1.1.2'
 export const launcherVersion = ref<string>(LAUNCHER_VERSION)
 
 getVersion()
