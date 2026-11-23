@@ -216,55 +216,133 @@ function loadAndValidateRules(packId, customRulesPath) {
 	return rules
 }
 
-function walkSourceDirectory(rootDir, rules) {
-	const collected = []
-	const seenLower = new Set()
+async function collectFromSources(sources, rules, emitProgress = null) {
+	const pendingMap = new Map()
 
-	function walk(currentDir, relPrefix) {
-		const entries = fs.readdirSync(currentDir, { withFileTypes: true })
-		for (const entry of entries) {
-			const nameLower = entry.name.toLowerCase()
-			if (OS_JUNK_NAMES.has(nameLower)) {
-				continue
-			}
-			const relPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name
-			const fullPath = path.join(currentDir, entry.name)
+	for (const src of sources) {
+		const resolved = path.resolve(src)
+		if (!fs.existsSync(resolved)) {
+			console.warn(`Origen no encontrado, omitiendo: ${resolved}`)
+			continue
+		}
+		const stat = fs.statSync(resolved)
 
-			if (entry.isDirectory()) {
-				const dirPolicy = resolvePolicy(rules, `${relPath}/placeholder`)
-				if (dirPolicy === 'ignore' && globMatches('.dr3sh/**', `${relPath}/x`)) {
-					continue
-				}
-				walk(fullPath, relPath)
-			} else if (entry.isFile()) {
-				validateSafeRelativePath(relPath)
-				const policy = resolvePolicy(rules, relPath)
-				if (!VALID_POLICIES.has(policy)) {
-					throw new Error(`Invalid resolved policy '${policy}' for ${relPath}`)
-				}
-				if (policy === 'ignore') {
-					continue
-				}
-				const lowerKey = relPath.toLowerCase()
-				if (seenLower.has(lowerKey)) {
-					throw new Error(`Case-insensitive duplicate path detected: ${relPath}`)
-				}
-				seenLower.add(lowerKey)
-				const buf = fs.readFileSync(fullPath)
-				collected.push({
-					path: relPath,
-					fullPath,
-					size: buf.length,
-					sha256: sha256Hex(buf),
-					policy,
-				})
+		if (stat.isFile()) {
+			const fileName = path.basename(resolved)
+			const nameLower = fileName.toLowerCase()
+			if (OS_JUNK_NAMES.has(nameLower)) continue
+
+			const relPath = fileName
+			validateSafeRelativePath(relPath)
+			const policy = resolvePolicy(rules, relPath)
+			if (policy === 'ignore') continue
+
+			pendingMap.set(relPath.toLowerCase(), {
+				path: relPath,
+				fullPath: resolved,
+				size: stat.size,
+				policy,
+			})
+		} else if (stat.isDirectory()) {
+			const folderName = path.basename(resolved)
+			let isInstanceRoot = false
+			if (!STANDARD_MODPACK_TOP_DIRS.has(folderName.toLowerCase())) {
+				try {
+					const children = fs.readdirSync(resolved)
+					const childrenLower = new Set(children.map((c) => c.toLowerCase()))
+					if (
+						childrenLower.has('mods') ||
+						childrenLower.has('config') ||
+						childrenLower.has('instance.cfg') ||
+						childrenLower.has('mmc-pack.json')
+					) {
+						isInstanceRoot = true
+					}
+				} catch {}
 			}
+
+			const relPrefix = isInstanceRoot ? '' : folderName
+
+			function walk(currentDir, currentRelPrefix) {
+				const entries = fs.readdirSync(currentDir, { withFileTypes: true })
+				for (const entry of entries) {
+					const nameLower = entry.name.toLowerCase()
+					if (OS_JUNK_NAMES.has(nameLower)) continue
+
+					const relPath = currentRelPrefix ? `${currentRelPrefix}/${entry.name}` : entry.name
+					const fullPath = path.join(currentDir, entry.name)
+
+					if (entry.isDirectory()) {
+						const dirPolicy = resolvePolicy(rules, `${relPath}/placeholder`)
+						if (dirPolicy === 'ignore' && globMatches('.dr3sh/**', `${relPath}/x`)) {
+							continue
+						}
+						walk(fullPath, relPath)
+					} else if (entry.isFile()) {
+						validateSafeRelativePath(relPath)
+						const policy = resolvePolicy(rules, relPath)
+						if (policy === 'ignore') continue
+
+						const fileStat = fs.statSync(fullPath)
+						pendingMap.set(relPath.toLowerCase(), {
+							path: relPath,
+							fullPath,
+							size: fileStat.size,
+							policy,
+						})
+					}
+				}
+			}
+
+			walk(resolved, relPrefix)
 		}
 	}
 
-	walk(rootDir, '')
+	const pending = Array.from(pendingMap.values())
+	const totalCount = pending.length
+	const totalBytes = pending.reduce((sum, item) => sum + (item.size || 0), 0)
+	let processedBytes = 0
+	let lastEmitTime = 0
+
+	const emitScanProgress = (idx, force = false) => {
+		if (typeof emitProgress !== 'function') return
+		const now = Date.now()
+		if (!force && now - lastEmitTime < 250) return
+		lastEmitTime = now
+		const ratio = totalBytes > 0 ? processedBytes / totalBytes : (idx + 1) / Math.max(1, totalCount)
+		const pct = 5 + Math.min(9, Math.round(ratio * 9))
+		emitProgress('pack', pct, `Analizando y calculando huellas de archivos (${idx + 1}/${totalCount})...`)
+	}
+
+	if (typeof emitProgress === 'function' && totalCount > 0) {
+		emitProgress('pack', 5, `Analizando y calculando huellas de archivos (0/${totalCount})...`)
+	}
+
+	const collected = []
+	for (let i = 0; i < totalCount; i++) {
+		const item = pending[i]
+		const sha256 = item.size > 4 * 1024 * 1024 ? await sha256File(item.fullPath) : sha256Hex(fs.readFileSync(item.fullPath))
+		processedBytes += item.size
+		collected.push({
+			path: item.path,
+			fullPath: item.fullPath,
+			size: item.size,
+			sha256,
+			policy: item.policy,
+		})
+		const prevEmit = lastEmitTime
+		emitScanProgress(i, i === totalCount - 1)
+		if (lastEmitTime !== prevEmit) {
+			await new Promise((r) => setImmediate(r))
+		}
+	}
+
 	collected.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 	return collected
+}
+
+function walkSourceDirectory(rootDir, rules) {
+	return collectFromSources([rootDir], rules)
 }
 
 function createZipWriter(outputZipPath) {
@@ -380,6 +458,87 @@ function createZipWriter(outputZipPath) {
 			}
 		},
 	}
+}
+
+let archiver = null
+try {
+	archiver = require('archiver')
+} catch {}
+
+function writeZipWithArchiver(entries, outputZipPath, emitProgress = null) {
+	if (!archiver) return null
+	return new Promise((resolve, reject) => {
+		const output = fs.createWriteStream(outputZipPath, { highWaterMark: 1024 * 1024 })
+		const hash = crypto.createHash('sha256')
+		let totalBytes = 0
+		const totalEntries = entries.length
+		const totalInputBytes = entries.reduce((sum, item) => sum + (item.size || 0), 0)
+		let lastEmitTime = 0
+
+		const archiveOptions = {
+			zlib: { level: 4 },
+		}
+		const archive =
+			typeof archiver === 'function'
+				? archiver('zip', archiveOptions)
+				: archiver && typeof archiver.ZipArchive === 'function'
+					? new archiver.ZipArchive(archiveOptions)
+					: null
+
+		if (!archive) {
+			try {
+				output.close()
+			} catch {}
+			return resolve(null)
+		}
+
+		output.on('close', () => {
+			if (typeof emitProgress === 'function') {
+				emitProgress('pack', 24, `Paquete ZIP creado (${totalEntries}/${totalEntries} archivos).`)
+			}
+			resolve({
+				size: totalBytes,
+				sha256: hash.digest('hex'),
+			})
+		})
+
+		archive.on('data', (chunk) => {
+			hash.update(chunk)
+			totalBytes += chunk.length
+		})
+
+		archive.on('progress', (prog) => {
+			if (typeof emitProgress !== 'function') return
+			const now = Date.now()
+			if (now - lastEmitTime < 250) return
+			lastEmitTime = now
+			const processedBytes = prog?.fs?.processedBytes || 0
+			const processedEntries = prog?.entries?.processed || 0
+			const ratio =
+				totalInputBytes > 0
+					? Math.min(1, processedBytes / totalInputBytes)
+					: Math.min(1, processedEntries / Math.max(1, totalEntries))
+			const pct = 15 + Math.round(ratio * 9)
+			emitProgress('pack', pct, `Empaquetando archivos (${processedEntries}/${totalEntries})...`)
+		})
+
+		archive.on('error', (err) => {
+			reject(err)
+		})
+
+		archive.pipe(output)
+
+		for (const item of entries) {
+			const ext = path.posix.extname(item.path).toLowerCase()
+			const isStored = item.size === 0 || PRECOMPRESSED_EXTS.has(ext)
+			archive.file(item.fullPath, {
+				name: item.path,
+				store: isStored,
+			})
+		}
+
+		archive.finalize()
+	})
 }
 
 function writeZipDeterministic(entries, outputZipPath) {
@@ -828,6 +987,19 @@ async function prepareInputZip(srcZipPath, outputZipPath, rules, emitProgress) {
 	}
 }
 
+function verifyZipEntryHeaderBounds(fd, fileSize, rec, localHdrBuf) {
+	readFully(fd, localHdrBuf, 0, 30, rec.localHeaderOffset)
+	if (localHdrBuf.readUInt32LE(0) !== 0x04034b50) {
+		throw new Error(`Invalid Local File Header for ZIP entry ${rec.rawName}`)
+	}
+	const localNameLen = localHdrBuf.readUInt16LE(26)
+	const localExtraLen = localHdrBuf.readUInt16LE(28)
+	const dataStart = rec.localHeaderOffset + 30 + localNameLen + localExtraLen
+	if (dataStart + rec.compressedSize > fileSize) {
+		throw new Error(`Truncated data for ZIP entry ${rec.rawName}`)
+	}
+}
+
 function selfCheckZipHeadersAgainstManifest(zipPath, manifest, expectedCrcs) {
 	const fd = fs.openSync(zipPath, 'r')
 	try {
@@ -837,7 +1009,7 @@ function selfCheckZipHeadersAgainstManifest(zipPath, manifest, expectedCrcs) {
 		const localHdrBuf = Buffer.allocUnsafe(30)
 		for (const rec of records) {
 			if (rec.rawName.endsWith('/') || rec.rawName.endsWith('\\')) continue
-			readZipEntrySlice(fd, fileSize, rec, localHdrBuf)
+			verifyZipEntryHeaderBounds(fd, fileSize, rec, localHdrBuf)
 			byName.set(rec.rawName, rec)
 		}
 		for (const fileEntry of manifest.files) {
@@ -903,6 +1075,9 @@ function resolveGithubToken(explicitToken) {
 }
 
 const UPLOAD_HIGH_WATER_MARK = 4 * 1024 * 1024
+const FILE_READ_CHUNK_SIZE = 256 * 1024
+const UPLOAD_TIMEOUT_MS = 300000
+const UPLOAD_HTTPS_AGENT = new https.Agent({ keepAlive: true, maxSockets: 4 })
 
 function githubApiRequest(endpoint, token, options = {}) {
 	return new Promise((resolve, reject) => {
@@ -924,6 +1099,7 @@ function githubApiRequest(endpoint, token, options = {}) {
 			headers['Content-Length'] = Buffer.byteLength(options.body, 'utf8')
 		}
 
+		const timeoutMs = options.timeoutMs || 120000
 		let progressTimer = null
 		const cleanupTimers = () => {
 			if (progressTimer) {
@@ -944,6 +1120,8 @@ function githubApiRequest(endpoint, token, options = {}) {
 		let bodyStartSocketBytes = null
 		let streamEnded = false
 		let settled = false
+		let onDrainCallback = null
+		let lastActivityAt = Date.now()
 
 		const req = https.request(
 			{
@@ -958,6 +1136,7 @@ function githubApiRequest(endpoint, token, options = {}) {
 				cleanupTimers()
 				const chunks = []
 				res.on('data', (chunk) => {
+					lastActivityAt = Date.now()
 					chunks.push(chunk)
 				})
 				res.on('error', () => {
@@ -991,21 +1170,39 @@ function githubApiRequest(endpoint, token, options = {}) {
 			},
 		)
 
-		req.setTimeout(120000, () => {
+		req.setTimeout(timeoutMs, () => {
 			settled = true
 			cleanupBody()
-			req.destroy(new Error('Tiempo de espera agotado conectando con GitHub (120s sin respuesta).'))
+			req.destroy(
+				new Error(
+					`Tiempo de espera agotado conectando con GitHub (${Math.round(timeoutMs / 1000)}s sin respuesta).`,
+				),
+			)
+		})
+		req.on('drain', () => {
+			if (onDrainCallback) onDrainCallback()
 		})
 		req.on('socket', (sock) => {
 			reqSocket = sock
 			if (typeof sock.setNoDelay === 'function') {
 				sock.setNoDelay(true)
 			}
-			sock.once('secureConnect', () => {
+			sock.on('drain', () => {
+				if (onDrainCallback) onDrainCallback()
+			})
+			if (!sock.connecting) {
 				if (bodyStartSocketBytes === null) {
 					bodyStartSocketBytes = sock.bytesWritten || 0
 				}
-			})
+				if (onDrainCallback) onDrainCallback()
+			} else {
+				sock.once('secureConnect', () => {
+					if (bodyStartSocketBytes === null) {
+						bodyStartSocketBytes = sock.bytesWritten || 0
+					}
+					if (onDrainCallback) onDrainCallback()
+				})
+			}
 		})
 		req.on('error', (err) => {
 			settled = true
@@ -1014,13 +1211,38 @@ function githubApiRequest(endpoint, token, options = {}) {
 		})
 		if (options.body) {
 			if (typeof options.body.pipe === 'function') {
-				options.body.on('data', () => {
-					if (bodyStartSocketBytes === null && reqSocket) {
+				const pauseThreshold = 2 * 1024 * 1024
+				const resumeThreshold = 1024 * 1024
+				let bodyPaused = false
+
+				const getQueuedBytes = () =>
+					(reqSocket ? (reqSocket.writableLength || 0) : 0) + (req.writableLength || 0)
+
+				const maybeResumeBody = () => {
+					if (settled || streamEnded || !bodyPaused) return
+					if (getQueuedBytes() < resumeThreshold) {
+						bodyPaused = false
+						options.body.resume()
+					}
+				}
+				onDrainCallback = maybeResumeBody
+
+				options.body.on('data', (chunk) => {
+					if (settled) return
+					if (bodyStartSocketBytes === null && reqSocket && !reqSocket.connecting) {
 						bodyStartSocketBytes = reqSocket.bytesWritten || 0
+					}
+					req.write(chunk)
+					if (!bodyPaused && getQueuedBytes() > pauseThreshold) {
+						bodyPaused = true
+						options.body.pause()
 					}
 				})
 				options.body.on('end', () => {
 					streamEnded = true
+					if (!settled) {
+						req.end()
+					}
 				})
 				options.body.on('error', (err) => {
 					settled = true
@@ -1028,15 +1250,19 @@ function githubApiRequest(endpoint, token, options = {}) {
 					req.destroy(err)
 				})
 
-				if (typeof options.onUploadProgress === 'function' && options.totalBytes > 0) {
-					const totalBytes = options.totalBytes
-					const startTime = Date.now()
-					let lastEmitBytes = -1
-					let lastEmitWaiting = false
-					let lastSpeedTime = startTime
-					let lastSpeedBytes = 0
-					let emaSpeedBps = 0
+				const totalBytes = options.totalBytes || 0
+				const hasProgressCb = typeof options.onUploadProgress === 'function' && totalBytes > 0
+				const startTime = Date.now()
+				let lastEmitBytes = -1
+				let lastEmitWaiting = false
+				let lastProgressTick = startTime
+				let lastTimeoutRefresh = startTime
+				let lastObservedSocketBytes = 0
+				let lastMonotonicBytes = 0
+				let emaSpeedBps = 0
+				const speedSamples = [{ time: startTime, bytes: 0 }]
 
+				if (hasProgressCb) {
 					options.onUploadProgress({
 						uploadedBytes: 0,
 						totalBytes,
@@ -1044,55 +1270,93 @@ function githubApiRequest(endpoint, token, options = {}) {
 						etaSeconds: null,
 						waitingAck: false,
 					})
-
-					progressTimer = setInterval(() => {
-						if (settled) {
-							cleanupTimers()
-							return
-						}
-						const now = Date.now()
-						let rawSent = 0
-						let writableLen = 0
-						if (reqSocket && bodyStartSocketBytes !== null) {
-							writableLen = reqSocket.writableLength || 0
-							rawSent = Math.max(0, (reqSocket.bytesWritten || 0) - bodyStartSocketBytes - writableLen)
-						}
-						const waitingAck = Boolean(streamEnded && writableLen === 0)
-						const sentBytes = waitingAck
-							? totalBytes
-							: Math.min(Math.max(0, totalBytes - 1), rawSent)
-
-						const dt = (now - lastSpeedTime) / 1000
-						if (dt >= 0.4 && sentBytes >= lastSpeedBytes) {
-							const instant = (sentBytes - lastSpeedBytes) / dt
-							emaSpeedBps = emaSpeedBps > 0 ? emaSpeedBps * 0.65 + instant * 0.35 : instant
-							lastSpeedTime = now
-							lastSpeedBytes = sentBytes
-						} else if (emaSpeedBps === 0 && sentBytes > 0) {
-							const elapsed = Math.max(0.25, (now - startTime) / 1000)
-							emaSpeedBps = sentBytes / elapsed
-						}
-
-						const etaSeconds =
-							!waitingAck && emaSpeedBps > 1024
-								? Math.max(1, Math.round((totalBytes - sentBytes) / emaSpeedBps))
-								: null
-
-						if (sentBytes !== lastEmitBytes || waitingAck !== lastEmitWaiting) {
-							lastEmitBytes = sentBytes
-							lastEmitWaiting = waitingAck
-							options.onUploadProgress({
-								uploadedBytes: sentBytes,
-								totalBytes,
-								speedBps: Math.round(emaSpeedBps),
-								etaSeconds,
-								waitingAck,
-							})
-						}
-					}, 200)
 				}
 
-				options.body.pipe(req)
+				progressTimer = setInterval(() => {
+					if (settled) {
+						cleanupTimers()
+						return
+					}
+
+					maybeResumeBody()
+
+					const now = Date.now()
+					const curSocketBytes = reqSocket ? (reqSocket.bytesWritten || 0) : 0
+					if (curSocketBytes > lastObservedSocketBytes) {
+						lastObservedSocketBytes = curSocketBytes
+						lastActivityAt = now
+						if (
+							now - lastTimeoutRefresh >= 1000 &&
+							reqSocket &&
+							typeof reqSocket.setTimeout === 'function'
+						) {
+							lastTimeoutRefresh = now
+							reqSocket.setTimeout(timeoutMs)
+						}
+					} else if (now - lastActivityAt >= timeoutMs) {
+						settled = true
+						cleanupBody()
+						req.destroy(
+							new Error(
+								`Tiempo de espera agotado conectando con GitHub (${Math.round(timeoutMs / 1000)}s sin actividad).`,
+							),
+						)
+						return
+					}
+
+					if (!hasProgressCb) return
+
+					let rawSent = 0
+					let socketWritableLen = 0
+					const totalQueuedLen = getQueuedBytes()
+					if (reqSocket && bodyStartSocketBytes !== null) {
+						socketWritableLen = reqSocket.writableLength || 0
+						rawSent = Math.max(0, curSocketBytes - bodyStartSocketBytes - socketWritableLen)
+					}
+					const waitingAck = Boolean(streamEnded && totalQueuedLen === 0)
+					const sentBytes = waitingAck
+						? totalBytes
+						: Math.max(lastMonotonicBytes, Math.min(Math.max(0, totalBytes - 1), rawSent))
+					lastMonotonicBytes = sentBytes
+
+					const dueProgressTick = now - lastProgressTick >= 500
+					if (!dueProgressTick && waitingAck === lastEmitWaiting) {
+						return
+					}
+					if (dueProgressTick) {
+						lastProgressTick = now
+						speedSamples.push({ time: now, bytes: sentBytes })
+						while (speedSamples.length > 2 && now - speedSamples[0].time > 12000) {
+							speedSamples.shift()
+						}
+						const oldest = speedSamples[0]
+						const winDt = (now - oldest.time) / 1000
+						if (winDt >= 0.4 && sentBytes >= oldest.bytes) {
+							const windowSpeed = (sentBytes - oldest.bytes) / winDt
+							emaSpeedBps = emaSpeedBps > 0 ? emaSpeedBps * 0.82 + windowSpeed * 0.18 : windowSpeed
+						} else if (emaSpeedBps === 0 && sentBytes > 0) {
+							const elapsed = Math.max(0.5, (now - startTime) / 1000)
+							emaSpeedBps = sentBytes / elapsed
+						}
+					}
+
+					const etaSeconds =
+						!waitingAck && emaSpeedBps > 1024
+							? Math.max(1, Math.round((totalBytes - sentBytes) / emaSpeedBps))
+							: null
+
+					if (sentBytes !== lastEmitBytes || waitingAck !== lastEmitWaiting || dueProgressTick) {
+						lastEmitBytes = sentBytes
+						lastEmitWaiting = waitingAck
+						options.onUploadProgress({
+							uploadedBytes: sentBytes,
+							totalBytes,
+							speedBps: Math.round(emaSpeedBps),
+							etaSeconds,
+							waitingAck,
+						})
+					}
+				}, 20)
 			} else {
 				req.write(options.body)
 				req.end()
@@ -1109,11 +1373,12 @@ async function uploadReleaseAsset(uploadUrlTemplate, token, filePath, fileName, 
 		`?name=${encodeURIComponent(fileName)}`,
 	)
 	const fileSize = fs.statSync(filePath).size
-	const fileStream = fs.createReadStream(filePath, { highWaterMark: UPLOAD_HIGH_WATER_MARK })
+	const fileStream = fs.createReadStream(filePath, { highWaterMark: FILE_READ_CHUNK_SIZE })
 	return await githubApiRequest(uploadUrl, token, {
 		method: 'POST',
 		highWaterMark: UPLOAD_HIGH_WATER_MARK,
-		agent: false,
+		agent: UPLOAD_HTTPS_AGENT,
+		timeoutMs: UPLOAD_TIMEOUT_MS,
 		totalBytes: fileSize,
 		onUploadProgress: typeof onByteProgress === 'function' ? onByteProgress : undefined,
 		headers: {
@@ -1151,8 +1416,8 @@ async function publishModpack(options) {
 
 	if (!packId) throw new Error('--pack <pack_id> is required')
 	if (!version) throw new Error('--version <semver> is required')
-	if (!srcPath || !fs.existsSync(srcPath)) {
-		throw new Error(`--src path does not exist: ${srcPath}`)
+	if (!srcPath) {
+		throw new Error('--src path is required')
 	}
 
 	const cleanPackId = String(packId).trim().toLowerCase()
@@ -1166,15 +1431,25 @@ async function publishModpack(options) {
 
 	emitProgress('extract', 5, 'Preparando y analizando archivos del modpack...')
 
-	let effectiveSrcDir = path.resolve(srcPath)
-	const srcStat = fs.statSync(effectiveSrcDir)
-	if (!srcStat.isDirectory() && !srcStat.isFile()) {
-		throw new Error(`El origen seleccionado no es una carpeta ni archivo válido: ${effectiveSrcDir}`)
+	const rawSources = (Array.isArray(srcPath) ? srcPath : String(srcPath).split('|'))
+		.map((s) => s.trim())
+		.filter(Boolean)
+
+	if (rawSources.length === 0) {
+		throw new Error('--src path is required')
 	}
-	if (srcStat.isFile() && !/\.(zip|mrpack)$/i.test(effectiveSrcDir)) {
-		throw new Error('El archivo del modpack debe tener extensión .zip o .mrpack.')
+
+	for (const s of rawSources) {
+		if (!fs.existsSync(s)) {
+			throw new Error(`El origen seleccionado no existe: ${s}`)
+		}
 	}
-	const isInputZip = srcStat.isFile()
+
+	const isSingleZip =
+		rawSources.length === 1 &&
+		fs.statSync(rawSources[0]).isFile() &&
+		/\.(zip|mrpack)$/i.test(rawSources[0])
+	const isInputZip = isSingleZip
 
 	const createdWorkDirTemp = !outDir
 	const workDir = outDir
@@ -1194,7 +1469,7 @@ async function publishModpack(options) {
 		let usedDirectZip = false
 
 		if (isInputZip) {
-			const prepared = await prepareInputZip(effectiveSrcDir, outputZipPath, rules, emitProgress)
+			const prepared = await prepareInputZip(path.resolve(rawSources[0]), outputZipPath, rules, emitProgress)
 			usedDirectZip = prepared.usedDirectZip
 			outputZipPath = prepared.outputZipPath
 			zipSize = prepared.zipSize
@@ -1204,9 +1479,24 @@ async function publishModpack(options) {
 			zipRepackedFromZip = !usedDirectZip
 			emitProgress('pack', 23, 'Generando manifest.json...')
 		} else {
-			emitProgress('pack', 15, 'Empaquetando carpeta del modpack...')
-			collectedFiles = walkSourceDirectory(effectiveSrcDir, rules)
-			const packed = writeZipDeterministic(collectedFiles, outputZipPath)
+			emitProgress('pack', 5, 'Analizando orígenes seleccionados...')
+			collectedFiles = await collectFromSources(rawSources, rules, emitProgress)
+			if (!collectedFiles || collectedFiles.length === 0) {
+				throw new Error('No se encontraron archivos válidos para empaquetar en los orígenes seleccionados.')
+			}
+			let packed = null
+			if (archiver) {
+				emitProgress('pack', 15, 'Empaquetando con archiver (streaming)...')
+				try {
+					packed = await writeZipWithArchiver(collectedFiles, outputZipPath, emitProgress)
+				} catch (err) {
+					console.warn('Archiver stream error, falling back to deterministic writer:', err)
+				}
+			}
+			if (!packed) {
+				emitProgress('pack', 16, 'Empaquetando archivos...')
+				packed = writeZipDeterministic(collectedFiles, outputZipPath)
+			}
 			zipSize = packed.size
 			zipSha256 = packed.sha256
 		}
@@ -1235,11 +1525,8 @@ async function publishModpack(options) {
 		fs.writeFileSync(outputManifestPath, `${JSON.stringify(manifest, null, '\t')}\n`, 'utf8')
 
 		if (!usedDirectZip) {
-			if (zipRepackedFromZip && repackedEntryCrcs) {
-				selfCheckZipHeadersAgainstManifest(outputZipPath, manifest, repackedEntryCrcs)
-			} else {
-				selfCheckZipAgainstManifest(outputZipPath, manifest)
-			}
+			emitProgress('pack', 24, 'Verificando cabeceras e integridad del paquete ZIP...')
+			selfCheckZipHeadersAgainstManifest(outputZipPath, manifest, repackedEntryCrcs || new Map())
 		}
 
 		const sizeMb =
@@ -1395,7 +1682,36 @@ async function publishModpack(options) {
 			})
 			emitProgress('upload_manifest', 92, 'Subiendo manifest.json a GitHub Releases...')
 			await uploadWithRetry(outputManifestPath, 'manifest.json')
-			emitProgress('done', 95, 'Release subida a GitHub. Publicando versions.json...')
+			emitProgress('upload_manifest', 94, 'Verificando release y archivos subidos en GitHub...')
+			let verifiedRelease = await githubApiRequest(`/repos/${repo}/releases/${release.id}`, token)
+			if (verifiedRelease && verifiedRelease.draft) {
+				verifiedRelease = await githubApiRequest(
+					`/repos/${repo}/releases/${verifiedRelease.id}`,
+					token,
+					{
+						method: 'PATCH',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ draft: false }),
+					},
+				)
+			}
+			if (verifiedRelease && verifiedRelease.html_url) {
+				releaseUrl = verifiedRelease.html_url
+			}
+			const verifiedAssets = Array.isArray(verifiedRelease?.assets) ? verifiedRelease.assets : []
+			const zipAsset = verifiedAssets.find((a) => a && a.name === zipFileName)
+			const manifestAsset = verifiedAssets.find((a) => a && a.name === 'manifest.json')
+			if (!zipAsset || zipAsset.state !== 'uploaded') {
+				throw new Error(
+					`GitHub no confirmó el archivo ${zipFileName} en la release ${tagName} (estado: ${zipAsset ? zipAsset.state : 'no encontrado'}).`,
+				)
+			}
+			if (!manifestAsset || manifestAsset.state !== 'uploaded') {
+				throw new Error(
+					`GitHub no confirmó manifest.json en la release ${tagName} (estado: ${manifestAsset ? manifestAsset.state : 'no encontrado'}).`,
+				)
+			}
+			emitProgress('done', 95, 'Release subida y verificada en GitHub. Publicando versions.json...')
 		}
 
 		return {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { useQuery } from '@tanstack/vue-query'
@@ -28,6 +29,7 @@ import {
 	useDr3shDownloader,
 	installedVersionsMap,
 	getInstalledVersion,
+	hasServerOrRuntimeUpdate,
 	getInstalledFolder,
 	findMatchingInstance,
 	removeInstalledVersion,
@@ -38,11 +40,18 @@ import {
 	acknowledgeMigrationNotice,
 	type Dr3shLastError,
 } from '@/composables/use-dr3sh-downloader'
-import { run, kill as killInstance, remove, get_full_path } from '@/helpers/instance'
+import { run, kill as killInstance, remove, get_full_path, edit as editInstance } from '@/helpers/instance'
 import { install_existing_instance } from '@/helpers/install'
 import { get as getSettings, set as setSettings } from '@/helpers/settings'
 import { get_max_memory, get_java_versions } from '@/helpers/jre.js'
 import { get_by_instance_id } from '@/helpers/process.js'
+import {
+	get_logs,
+	get_output_by_filename,
+	get_live_log_buffer,
+	get_latest_log_cursor,
+	clear_log_buffer,
+} from '@/helpers/logs.js'
 import { showInstanceInFolder } from '@/helpers/utils.js'
 import { handleSevereError } from '@/composables/use-error.js'
 
@@ -71,10 +80,14 @@ const {
 	testingHours,
 	isDeveloper,
 	launcherRefreshMode,
+	isOffline,
+	catalogError,
+	retryingCatalog,
 	fetchVersionsData,
 	addOwned,
 	removeOwned,
 	resolveImageUrl,
+	handleAvatarError,
 } = useDr3shLauncher()
 
 const instancesQuery = useQuery(instanceListQueryOptions())
@@ -113,6 +126,15 @@ function showToast(msg: string, durationMs = 3800) {
 	}
 }
 
+async function handleRetryCatalog() {
+	await fetchVersionsData(true)
+	if (!catalogError.value && servers.value.length > 0) {
+		showToast('Conexión restablecida. Catálogo actualizado.')
+	} else {
+		showToast('Sigue sin haber conexión. Comprueba tu internet e inténtalo de nuevo.')
+	}
+}
+
 // 3-dots dropdown menu state
 const instanceMenuOpen = ref(false)
 
@@ -136,6 +158,7 @@ const defaultInstancesBaseDir = ref<string>('AppData\\Roaming\\Dr3shLauncher\\in
 
 const {
 	isDownloading,
+	isCancelling,
 	currentServerId,
 	serverStatesMap,
 	downloadProgress,
@@ -161,6 +184,10 @@ async function handleDismissMigrationNotice() {
 }
 
 function openErrorDiagnosticsModal(err: any) {
+	if (err?.code === 'E_CANCELLED') {
+		showToast('Operación cancelada.')
+		return
+	}
 	const code = err?.code || 'E_UNKNOWN'
 	const opId = err?.op_id || err?.opId || 'unknown'
 	const message = err?.message || String(err || 'Error inesperado durante la operación.')
@@ -223,6 +250,54 @@ let galleryAutoTimer: ReturnType<typeof setInterval> | null = null
 let catalogAutoRefreshTimer: ReturnType<typeof setInterval> | null = null
 let runningPollTimer: ReturnType<typeof setInterval> | null = null
 
+const slideBatchStart = computed(() => {
+	const total = previewImages.value.length
+	if (total <= 3) return 0
+	return Math.max(0, Math.min(total - 3, activeScreenshotIndex.value - 1))
+})
+
+function restartGalleryTimer() {
+	if (galleryAutoTimer) clearInterval(galleryAutoTimer)
+	galleryAutoTimer = setInterval(() => {
+		if (currentView.value === 'home' && !isHoveringGallery.value && !zoomedScreenshot.value) {
+			const total = previewImages.value.length
+			if (total > 1) {
+				activeScreenshotIndex.value = (activeScreenshotIndex.value + 1) % total
+			}
+		}
+	}, 3800)
+}
+
+function selectScreenshot(idx: number) {
+	activeScreenshotIndex.value = idx
+	restartGalleryTimer()
+}
+
+function prevSlide() {
+	const total = previewImages.value.length
+	if (total <= 1) return
+	activeScreenshotIndex.value = (activeScreenshotIndex.value - 1 + total) % total
+	restartGalleryTimer()
+}
+
+function nextSlide() {
+	const total = previewImages.value.length
+	if (total <= 1) return
+	activeScreenshotIndex.value = (activeScreenshotIndex.value + 1) % total
+	restartGalleryTimer()
+}
+
+const isSearchExpanded = ref(false)
+const marketSearchInput = ref<HTMLInputElement | null>(null)
+function toggleSearchExpand() {
+	isSearchExpanded.value = !isSearchExpanded.value
+	if (isSearchExpanded.value) {
+		nextTick(() => {
+			marketSearchInput.value?.focus()
+		})
+	}
+}
+
 const previewImages = computed(() => {
 	if (!selectedServer.value) return []
 	return getServerPreviewImages(selectedServer.value)
@@ -279,25 +354,446 @@ const isInstalled = computed(() => {
 })
 
 const hasUpdate = computed(() => {
-	if (!isInstalled.value || !selectedVersion.value?.version || !localInstalledVersion.value) return false
-	const cleanInstalled = localInstalledVersion.value.replace(/^v/i, '').trim()
-	const cleanLatest = selectedVersion.value.version.replace(/^v/i, '').trim()
-	return cleanInstalled !== cleanLatest
+	const _map = installedVersionsMap.value
+	if (!isInstalled.value) return false
+	return hasServerOrRuntimeUpdate(selectedServer.value, selectedVersion.value, matchingInstance.value)
 })
 
-// Running state check
+// Running & instance health state checks
 const isSelectedRunning = ref(false)
+const killingInstance = ref(false)
+const selectedInstanceHealth = ref<{
+	healthy: boolean
+	needs_repair: boolean
+	reason: string | null
+}>({
+	healthy: true,
+	needs_repair: false,
+	reason: null,
+})
 
-async function checkRunningState() {
+interface InstanceLogEntry {
+	filename: string
+	log_type: 'InfoLog' | 'CrashReport'
+	age: number
+	output?: string | null
+}
+
+const logsModalOpen = ref(false)
+const logsModalInstanceId = ref<string | null>(null)
+const logsModalInstanceName = ref<string>('')
+const logsLoading = ref(false)
+const logsEntries = ref<InstanceLogEntry[]>([])
+const logSelectedSource = ref<string>('live')
+const logRawText = ref('')
+const logSearchQuery = ref('')
+const logFilterMode = ref<'all' | 'errors' | 'crashes'>('all')
+const logOutputEl = ref<HTMLElement | null>(null)
+const logAutoScroll = ref(true)
+const lastLaunchStartedAtSec = ref<Record<string, number>>({})
+const seenCrashReportKeys = new Set<string>()
+let logsPollTimer: ReturnType<typeof setInterval> | null = null
+let liveLogCursor = 0
+let lastRunningInstanceId: string | null = null
+
+const crashReportEntries = computed(() =>
+	logsEntries.value.filter((entry) => entry.log_type === 'CrashReport'),
+)
+
+const filteredSelectorEntries = computed(() => {
+	if (logFilterMode.value === 'crashes') {
+		return crashReportEntries.value
+	}
+	return logsEntries.value
+})
+
+const detectedCrashHint = computed<{ title: string; advice: string } | null>(() => {
+	const text = logRawText.value
+	if (!text) return null
+	if (/OutOfMemoryError|Java heap space|GC overhead limit exceeded/i.test(text)) {
+		return {
+			title: 'Posible falta de memoria RAM (OutOfMemoryError)',
+			advice:
+				'Aumenta la memoria RAM asignada (-Xmx) en Ajustes → Java y Memoria (recomendado 4 GB – 8 GB según la memoria de tu PC).',
+		}
+	}
+	if (
+		/EXCEPTION_ACCESS_VIOLATION.*(?:atio6axx|nvoglv|ig[0-9]+icd|opengl)|GLFW error|Pixel format not accelerated|WGL: The driver does not appear to support OpenGL/i.test(
+			text,
+		)
+	) {
+		return {
+			title: 'Error de drivers gráficos / OpenGL',
+			advice:
+				'Actualiza los drivers de tu tarjeta gráfica (NVIDIA / AMD / Intel) o comprueba si Windows está ejecutando Java con la GPU dedicada.',
+		}
+	}
+	if (/UnsupportedClassVersionError|class file version \d+\.\d+/i.test(text)) {
+		return {
+			title: 'Versión de Java incompatible con el modpack',
+			advice:
+				'Cambia el entorno a "Automático (Runtime Oficial)" en Ajustes → Java y Memoria para usar la versión exacta que requiere este modpack.',
+		}
+	}
+	if (
+		/MixinApplyError|ModLoadingException|ModResolutionException|Incompatible mod set|Requires any version of|Could not execute entrypoint stage|Failed to create mod instance/i.test(
+			text,
+		)
+	) {
+		return {
+			title: 'Error o incompatibilidad al cargar un mod',
+			advice:
+				'Un mod falló durante la carga o falta una dependencia. Si añadiste mods manuales, retíralos o ejecuta "Verificar y reparar instalación".',
+		}
+	}
+	if (
+		/---- Minecraft Crash Report ----|A fatal error has been detected by the Java Runtime Environment/i.test(
+			text,
+		)
+	) {
+		return {
+			title: 'Se detectó un Crash Report de Minecraft',
+			advice:
+				'Usa el botón "Copiar log" de abajo y compártelo con soporte para identificar exactamente qué provocó el cierre.',
+		}
+	}
+	return null
+})
+
+interface DisplayLogLine {
+	text: string
+	level: 'normal' | 'warn' | 'error'
+}
+
+const logStatsAndLines = computed<{
+	lines: DisplayLogLine[]
+	totalMatched: number
+	truncated: boolean
+}>(() => {
+	const raw = logRawText.value
+	if (!raw) {
+		return { lines: [], totalMatched: 0, truncated: false }
+	}
+	const query = logSearchQuery.value.trim().toLowerCase()
+	const onlyErrors = logFilterMode.value === 'errors'
+	const rawLines = raw.split(/\r?\n/)
+	const matched: DisplayLogLine[] = []
+	for (const line of rawLines) {
+		if (onlyErrors && !/\b(ERROR|FATAL|WARN|Exception|Caused by:|MixinApplyError|Crash Report)\b/i.test(line)) {
+			continue
+		}
+		if (query && !line.toLowerCase().includes(query)) {
+			continue
+		}
+		let level: 'normal' | 'warn' | 'error' = 'normal'
+		if (/\b(ERROR|FATAL|Exception|Caused by:|MixinApplyError)\b/i.test(line)) {
+			level = 'error'
+		} else if (/\bWARN\b/i.test(line)) {
+			level = 'warn'
+		}
+		matched.push({ text: line, level })
+	}
+	const MAX_RENDERED_LINES = 2500
+	if (matched.length > MAX_RENDERED_LINES) {
+		return {
+			lines: matched.slice(-MAX_RENDERED_LINES),
+			totalMatched: matched.length,
+			truncated: true,
+		}
+	}
+	return {
+		lines: matched,
+		totalMatched: matched.length,
+		truncated: false,
+	}
+})
+
+function scrollLogsToBottom() {
+	if (!logAutoScroll.value) return
+	void nextTick(() => {
+		const el = logOutputEl.value
+		if (el) {
+			el.scrollTop = el.scrollHeight
+		}
+	})
+}
+
+function handleLogsScroll() {
+	const el = logOutputEl.value
+	if (!el) return
+	logAutoScroll.value = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+}
+
+function sortLogEntries(entries: InstanceLogEntry[]): InstanceLogEntry[] {
+	return [...entries].sort((a, b) => {
+		if (a.log_type !== b.log_type) {
+			return a.log_type === 'CrashReport' ? -1 : 1
+		}
+		return (b.age || 0) - (a.age || 0) || b.filename.localeCompare(a.filename)
+	})
+}
+
+async function refreshInstanceLogEntries(instanceId: string) {
+	try {
+		const list = (await get_logs(instanceId, true)) as InstanceLogEntry[]
+		logsEntries.value = sortLogEntries(Array.isArray(list) ? list : [])
+	} catch (e) {
+		console.warn('Error loading log list:', e)
+		logsEntries.value = []
+	}
+}
+
+async function pollLiveLogsTick() {
+	if (!logsModalOpen.value || logSelectedSource.value !== 'live' || !logsModalInstanceId.value) {
+		return
+	}
+	const instId = logsModalInstanceId.value
+	try {
+		const res = await get_latest_log_cursor(instId, liveLogCursor)
+		if (res) {
+			const chunk = String(res.output || '')
+			if (res.new_file) {
+				liveLogCursor = Number(res.cursor || 0)
+				logRawText.value = chunk
+				scrollLogsToBottom()
+				return
+			}
+			if (chunk) {
+				liveLogCursor = Number(res.cursor || 0)
+				logRawText.value = logRawText.value
+					? `${logRawText.value}${logRawText.value.endsWith('\n') ? '' : '\n'}${chunk}`
+					: chunk
+				scrollLogsToBottom()
+				return
+			}
+			liveLogCursor = Number(res.cursor || liveLogCursor)
+		}
+		if (!logRawText.value) {
+			const liveBuf = await get_live_log_buffer(instId).catch(() => '')
+			if (liveBuf) {
+				logRawText.value = String(liveBuf)
+				scrollLogsToBottom()
+			}
+		}
+	} catch {}
+}
+
+function stopLogsPolling() {
+	if (logsPollTimer) {
+		clearInterval(logsPollTimer)
+		logsPollTimer = null
+	}
+}
+
+function startLogsPolling() {
+	stopLogsPolling()
+	logsPollTimer = setInterval(() => {
+		void pollLiveLogsTick()
+	}, 1200)
+}
+
+async function loadSelectedLogSource(sourceKey: string) {
+	const instId = logsModalInstanceId.value
+	if (!instId) return
+	logSelectedSource.value = sourceKey
+	logsLoading.value = true
+	logAutoScroll.value = true
+	try {
+		if (sourceKey === 'live') {
+			liveLogCursor = 0
+			logRawText.value = ''
+			const [cursorRes, liveBuf] = await Promise.all([
+				get_latest_log_cursor(instId, 0).catch(() => null),
+				get_live_log_buffer(instId).catch(() => ''),
+			])
+			if (cursorRes && typeof cursorRes.cursor === 'number') {
+				liveLogCursor = cursorRes.cursor
+			}
+			logRawText.value = String(cursorRes?.output || liveBuf || '')
+			startLogsPolling()
+			scrollLogsToBottom()
+			return
+		}
+
+		stopLogsPolling()
+		const sepIdx = sourceKey.indexOf('::')
+		const logType = sepIdx > 0 ? sourceKey.slice(0, sepIdx) : 'InfoLog'
+		const filename = sepIdx > 0 ? sourceKey.slice(sepIdx + 2) : sourceKey
+		const content = await get_output_by_filename(instId, logType, filename)
+		logRawText.value = String(content || '')
+		if (logType === 'CrashReport') {
+			logAutoScroll.value = false
+			void nextTick(() => {
+				if (logOutputEl.value) logOutputEl.value.scrollTop = 0
+			})
+		} else {
+			scrollLogsToBottom()
+		}
+	} catch (e: any) {
+		logRawText.value = `No se pudo leer el log seleccionado: ${e?.message || e}`
+	} finally {
+		logsLoading.value = false
+	}
+}
+
+function handleLogFilterModeChange(mode: 'all' | 'errors' | 'crashes') {
+	logFilterMode.value = mode
+	if (mode === 'crashes' && !logSelectedSource.value.startsWith('CrashReport::')) {
+		const newestCrash = crashReportEntries.value[0]
+		if (newestCrash) {
+			void loadSelectedLogSource(`${newestCrash.log_type}::${newestCrash.filename}`)
+		}
+	}
+}
+
+async function openInstanceLogsModal(initialSource = 'live') {
 	if (!matchingInstance.value?.id) {
-		isSelectedRunning.value = false
+		showToast('La instancia aún no está instalada localmente.')
+		return
+	}
+	const instId = matchingInstance.value.id
+	logsModalInstanceId.value = instId
+	logsModalInstanceName.value = selectedServer.value?.title || matchingInstance.value.name
+	logSearchQuery.value = ''
+	logFilterMode.value = initialSource.startsWith('CrashReport::') ? 'crashes' : 'all'
+	logsModalOpen.value = true
+	await refreshInstanceLogEntries(instId)
+	await loadSelectedLogSource(initialSource)
+}
+
+function closeInstanceLogsModal() {
+	logsModalOpen.value = false
+	stopLogsPolling()
+}
+
+async function handleCopyCurrentLog() {
+	const hasActiveFilter = Boolean(logSearchQuery.value.trim()) || logFilterMode.value === 'errors'
+	const textToCopy = hasActiveFilter
+		? logStatsAndLines.value.lines.map((l) => l.text).join('\n')
+		: logRawText.value
+	if (!textToCopy) {
+		showToast('No hay contenido de log para copiar.')
 		return
 	}
 	try {
-		const procs = await get_by_instance_id(matchingInstance.value.id)
-		isSelectedRunning.value = Array.isArray(procs) && procs.length > 0
+		await navigator.clipboard.writeText(textToCopy)
+		showToast('Log copiado al portapapeles.')
+	} catch (e: any) {
+		showToast(`No se pudo copiar el log: ${e?.message || e}`)
+	}
+}
+
+async function handleClearLiveConsole() {
+	if (logSelectedSource.value !== 'live' || !logsModalInstanceId.value) return
+	logRawText.value = ''
+	await clear_log_buffer(logsModalInstanceId.value).catch(() => {})
+	showToast('Vista de consola limpiada.')
+}
+
+async function handleOpenCurrentLogsFolder() {
+	const instId = logsModalInstanceId.value || matchingInstance.value?.id
+	if (instId) {
+		const instPath = await get_full_path(instId).catch(() => null)
+		if (instPath) {
+			const sep = instPath.includes('\\') ? '\\' : '/'
+			const sub = logSelectedSource.value.startsWith('CrashReport::') ? 'crash-reports' : 'logs'
+			try {
+				await openPath(`${instPath}${sep}${sub}`)
+				return
+			} catch {
+				try {
+					await openPath(instPath)
+					return
+				} catch {}
+			}
+		}
+	}
+	await handleOpenLogsFolder()
+}
+
+async function checkForRecentCrashAfterStop(instanceId: string) {
+	try {
+		const entries = sortLogEntries(
+			((await get_logs(instanceId, true)) as InstanceLogEntry[]) || [],
+		)
+		const crashes = entries.filter((e) => e.log_type === 'CrashReport')
+		if (crashes.length === 0) return
+		const nowSec = Math.floor(Date.now() / 1000)
+		const launchStarted = lastLaunchStartedAtSec.value[instanceId] || 0
+		const recentCrash = crashes.find((c) => {
+			const key = `${instanceId}::${c.filename}`
+			if (seenCrashReportKeys.has(key)) return false
+			const isFreshByWallClock = nowSec - (c.age || 0) <= 120
+			const isFromLatestLaunch = launchStarted > 0 && (c.age || 0) >= launchStarted - 5
+			return isFreshByWallClock || isFromLatestLaunch
+		})
+		if (!recentCrash) return
+		seenCrashReportKeys.add(`${instanceId}::${recentCrash.filename}`)
+		showToast('Minecraft se cerró con un crash report. Abriendo diagnóstico...', 6000)
+		if (matchingInstance.value?.id === instanceId) {
+			await openInstanceLogsModal(`${recentCrash.log_type}::${recentCrash.filename}`)
+		}
+	} catch {}
+}
+
+async function checkRunningState() {
+	const instId = matchingInstance.value?.id || null
+	if (!instId) {
+		isSelectedRunning.value = false
+		lastRunningInstanceId = null
+		return
+	}
+	try {
+		const procs = await get_by_instance_id(instId)
+		const nowRunning = Array.isArray(procs) && procs.length > 0
+		const sameInstanceStopped =
+			lastRunningInstanceId === instId && isSelectedRunning.value && !nowRunning
+		isSelectedRunning.value = nowRunning
+		lastRunningInstanceId = instId
+		if (sameInstanceStopped) {
+			void checkForRecentCrashAfterStop(instId)
+		}
 	} catch {
 		isSelectedRunning.value = false
+		lastRunningInstanceId = instId
+	}
+}
+
+async function checkSelectedInstanceHealth() {
+	const srv = selectedServer.value
+	if (!srv) {
+		selectedInstanceHealth.value = { healthy: true, needs_repair: false, reason: null }
+		return
+	}
+	const expectsInstalled = Boolean(localInstalledVersion.value || matchingInstance.value)
+	if (!expectsInstalled) {
+		selectedInstanceHealth.value = { healthy: true, needs_repair: false, reason: null }
+		return
+	}
+	try {
+		let fallbackPath = getInstalledFolder(srv.id)
+		if (!fallbackPath && matchingInstance.value?.id) {
+			fallbackPath = await get_full_path(matchingInstance.value.id).catch(() => null)
+		}
+		const res = await invoke<{
+			healthy: boolean
+			needs_repair: boolean
+			reason: string | null
+		}>('dr3sh_check_instance_health', {
+			serverId: srv.id,
+			fallbackInstancePath: fallbackPath || null,
+		})
+		if (selectedServer.value?.id === srv.id) {
+			selectedInstanceHealth.value = {
+				healthy: Boolean(res?.healthy),
+				needs_repair: Boolean(res?.needs_repair),
+				reason: res?.reason ?? null,
+			}
+		}
+	} catch {
+		if (selectedServer.value?.id === srv.id) {
+			selectedInstanceHealth.value = { healthy: true, needs_repair: false, reason: null }
+		}
 	}
 }
 
@@ -305,9 +801,60 @@ watch(matchingInstance, () => {
 	void checkRunningState()
 })
 
-const buttonAction = computed<'running' | 'play' | 'update' | 'download' | 'maintenance'>(() => {
+watch(
+	[selectedId, matchingInstance, localInstalledVersion, isDownloading],
+	([_id, _inst, _ver, downloading]) => {
+		if (downloading) return
+		void checkSelectedInstanceHealth()
+	},
+	{ immediate: true },
+)
+
+// Live countdown clock
+const countdownNow = ref(Date.now())
+let countdownInterval: ReturnType<typeof setInterval> | null = null
+
+onMounted(() => {
+	countdownInterval = setInterval(() => {
+		countdownNow.value = Date.now()
+	}, 1000)
+})
+
+onUnmounted(() => {
+	if (countdownInterval) {
+		clearInterval(countdownInterval)
+		countdownInterval = null
+	}
+})
+
+const isCountdownActive = computed(() => {
+	if (!selectedServer.value?.release_date) return false
+	const target = new Date(selectedServer.value.release_date).getTime()
+	return !isNaN(target) && target > countdownNow.value
+})
+
+const countdownLabel = computed(() => {
+	if (!selectedServer.value?.release_date) return ''
+	const target = new Date(selectedServer.value.release_date).getTime()
+	if (isNaN(target) || target <= countdownNow.value) return ''
+	const diffSec = Math.floor((target - countdownNow.value) / 1000)
+	const days = Math.floor(diffSec / 86400)
+	const hours = Math.floor((diffSec % 86400) / 3600)
+	const mins = Math.floor((diffSec % 3600) / 60)
+	const secs = diffSec % 60
+	const pad = (n: number) => String(n).padStart(2, '0')
+	if (days > 0) {
+		return `Estreno en ${days}d ${pad(hours)}h ${pad(mins)}m ${pad(secs)}s`
+	}
+	return `Estreno en ${pad(hours)}:${pad(mins)}:${pad(secs)}`
+})
+
+const buttonAction = computed<'running' | 'repair' | 'play' | 'update' | 'download' | 'maintenance' | 'disabled' | 'countdown'>(() => {
 	if (maintenanceMode.value && !isDeveloper.value) return 'maintenance'
+	if (selectedServer.value?.disabled && !isDeveloper.value) return 'disabled'
+	if (isCountdownActive.value && !isDeveloper.value) return 'countdown'
 	if (isSelectedRunning.value) return 'running'
+	if (selectedInstanceHealth.value.needs_repair) return 'repair'
 	if (!isInstalled.value) return 'download'
 	if (hasUpdate.value) return 'update'
 	return 'play'
@@ -317,12 +864,36 @@ const buttonLabel = computed(() => {
 	if (buttonAction.value === 'maintenance') {
 		return 'MANTENIMIENTO'
 	}
+	if (buttonAction.value === 'disabled') {
+		return 'Modpack no disponible'
+	}
+	if (buttonAction.value === 'countdown') {
+		return countdownLabel.value || 'Próximamente'
+	}
 	if (isDownloading.value && currentServerId.value === selectedServer.value?.id) {
-		return 'DESCARGANDO...'
+		switch (downloadProgress.value.phase) {
+			case 'preparing':
+				return 'PREPARANDO...'
+			case 'downloading':
+				return (downloadProgress.value.attempt ?? 0) > 0
+					? 'RECONECTANDO...'
+					: 'DESCARGANDO...'
+			case 'verifying':
+				return 'VERIFICANDO...'
+			case 'extracting':
+				return 'DESCOMPRIMIENDO...'
+			case 'applying':
+			case 'finishing':
+				return 'INSTALANDO...'
+			default:
+				return 'DESCARGANDO...'
+		}
 	}
 	switch (buttonAction.value) {
 		case 'running':
 			return 'EN EJECUCIÓN'
+		case 'repair':
+			return 'REPARAR INSTANCIA'
 		case 'play':
 			return 'JUGAR'
 		case 'update':
@@ -361,11 +932,14 @@ watch(hoveredMarketId, (id) => {
 function updateScrollDescMetrics(el: HTMLElement) {
 	const inner = el.querySelector('.scrolling-desc-track') as HTMLElement | null
 	if (!inner) return
-	const diff = Math.ceil(inner.scrollHeight - el.clientHeight)
-	if (diff > 3) {
+	const p = inner.querySelector('p')
+	const contentHeight = Math.ceil(p ? p.scrollHeight : inner.scrollHeight)
+	const boxHeight = el.clientHeight || 42
+	const diff = Math.ceil(contentHeight - boxHeight)
+	if (diff > 4) {
 		el.classList.add('is-overflowing')
-		el.style.setProperty('--desc-scroll-distance', `-${diff + 4}px`)
-		const durationSec = Math.max(7, Math.min(20, diff / 9 + 5)).toFixed(1)
+		el.style.setProperty('--desc-scroll-distance', `-${diff + 6}px`)
+		const durationSec = Math.max(6, Math.min(18, diff / 8 + 4)).toFixed(1)
 		el.style.setProperty('--desc-scroll-duration', `${durationSec}s`)
 	} else {
 		el.classList.remove('is-overflowing')
@@ -376,19 +950,30 @@ function updateScrollDescMetrics(el: HTMLElement) {
 
 const vScrollDesc = {
 	mounted(el: HTMLElement) {
-		nextTick(() => updateScrollDescMetrics(el))
-		const ro = new ResizeObserver(() => updateScrollDescMetrics(el))
+		const check = () => updateScrollDescMetrics(el)
+		nextTick(check)
+		setTimeout(check, 100)
+		setTimeout(check, 400)
+		const ro = new ResizeObserver(check)
 		ro.observe(el)
 		const inner = el.querySelector('.scrolling-desc-track')
 		if (inner) ro.observe(inner)
+		const p = inner?.querySelector('p')
+		if (p) ro.observe(p)
 		;(el as any).__scrollDescRo = ro
+		window.addEventListener('resize', check)
+		;(el as any).__scrollDescWinResize = check
 	},
 	updated(el: HTMLElement) {
-		nextTick(() => updateScrollDescMetrics(el))
+		const check = () => updateScrollDescMetrics(el)
+		nextTick(check)
+		setTimeout(check, 100)
 	},
 	unmounted(el: HTMLElement) {
 		const ro = (el as any).__scrollDescRo as ResizeObserver | undefined
 		if (ro) ro.disconnect()
+		const winCheck = (el as any).__scrollDescWinResize
+		if (winCheck) window.removeEventListener('resize', winCheck)
 	},
 }
 
@@ -401,8 +986,8 @@ const maxAllowedRamMb = computed(() => {
 })
 const settingsMemoryMb = ref(4096)
 const settingsMinMemoryMb = ref(1024)
-const settingsJavaAuto = ref(true)
-const settingsJavaPath = ref('')
+const settingsJavaAuto = ref(localStorage.getItem('dr3sh.java_auto') !== 'false')
+const settingsJavaPath = ref(localStorage.getItem('dr3sh.java_path') || '')
 const settingsJvmArgs = ref('')
 const settingsWidth = ref(1280)
 const settingsHeight = ref(720)
@@ -464,6 +1049,18 @@ async function loadLauncherSettings() {
 			}))
 			detectedJavas.value = list
 		}
+		const savedJavaAuto = localStorage.getItem('dr3sh.java_auto')
+		const savedJavaPath = (localStorage.getItem('dr3sh.java_path') || '').trim()
+		if (savedJavaAuto === 'false' && savedJavaPath) {
+			settingsJavaAuto.value = false
+			settingsJavaPath.value = savedJavaPath
+		} else if (savedJavaAuto === null && matchingInstance.value?.java_path) {
+			settingsJavaAuto.value = false
+			settingsJavaPath.value = matchingInstance.value.java_path
+		} else {
+			settingsJavaAuto.value = true
+			settingsJavaPath.value = ''
+		}
 		if (s) {
 			rawBackendSettings.value = s
 			const savedMax = Number(s.memory?.maximum) || 4096
@@ -476,13 +1073,24 @@ async function loadLauncherSettings() {
 			settingsWidth.value = s.game_resolution?.[0] || 1280
 			settingsHeight.value = s.game_resolution?.[1] || 720
 			settingsFullscreen.value = Boolean(s.force_fullscreen)
-			if (s.hide_on_process_start && settingsCloseOnLaunchMode.value === 'keep') {
-				settingsCloseOnLaunchMode.value = 'close'
+			if (!localStorage.getItem('dr3sh.close_on_launch') && s.hide_on_process_start) {
+				settingsCloseOnLaunchMode.value = 'minimize'
 			}
 		}
 	} catch (e) {
 		console.warn('Error loading settings:', e)
 	}
+}
+
+async function syncJavaOverrideToInstances() {
+	const trimmedJavaPath = settingsJavaPath.value.trim()
+	const useAuto = settingsJavaAuto.value || !trimmedJavaPath
+	const desiredJavaPath = useAuto ? (null as unknown as string) : trimmedJavaPath
+	await Promise.all(
+		instances.value.map((inst) =>
+			editInstance(inst.id, { java_path: desiredJavaPath }).catch(() => {}),
+		),
+	)
 }
 
 async function saveLauncherSettings(notify = false) {
@@ -492,30 +1100,40 @@ async function saveLauncherSettings(notify = false) {
 		if (settingsMinMemoryMb.value > clampedRam) {
 			settingsMinMemoryMb.value = clampedRam
 		}
+		const trimmedJavaPath = settingsJavaPath.value.trim()
+		const useAutoJava = settingsJavaAuto.value || !trimmedJavaPath
+		settingsJavaAuto.value = useAutoJava
+		if (useAutoJava) {
+			settingsJavaPath.value = ''
+		}
+		localStorage.setItem('dr3sh.java_auto', String(useAutoJava))
+		localStorage.setItem('dr3sh.java_path', useAutoJava ? '' : trimmedJavaPath)
 		localStorage.setItem('dr3sh.min_ram_mb', String(settingsMinMemoryMb.value))
 		localStorage.setItem('dr3sh.close_on_launch', settingsCloseOnLaunchMode.value)
 		localStorage.setItem('dr3sh.default_instances_dir', settingsDefaultInstancesDir.value)
 
 		const base = rawBackendSettings.value || (await getSettings())
-		if (!base) return
-		const extraArgs = settingsJvmArgs.value
-			.split(/\s+/)
-			.map((a) => a.trim())
-			.filter(Boolean)
-		const updated = {
-			...base,
-			memory: {
-				...(base.memory || {}),
-				maximum: clampedRam,
-			},
-			extra_launch_args: extraArgs,
-			game_resolution: [Number(settingsWidth.value) || 1280, Number(settingsHeight.value) || 720],
-			force_fullscreen: settingsFullscreen.value,
-			hide_on_process_start: settingsCloseOnLaunchMode.value !== 'keep',
-			discord_rpc: false,
+		if (base) {
+			const extraArgs = settingsJvmArgs.value
+				.split(/\s+/)
+				.map((a) => a.trim())
+				.filter(Boolean)
+			const updated = {
+				...base,
+				memory: {
+					...(base.memory || {}),
+					maximum: clampedRam,
+				},
+				extra_launch_args: extraArgs,
+				game_resolution: [Number(settingsWidth.value) || 1280, Number(settingsHeight.value) || 720],
+				force_fullscreen: settingsFullscreen.value,
+				hide_on_process_start: settingsCloseOnLaunchMode.value === 'minimize',
+				discord_rpc: false,
+			}
+			await setSettings(updated)
+			rawBackendSettings.value = updated
 		}
-		await setSettings(updated)
-		rawBackendSettings.value = updated
+		await syncJavaOverrideToInstances()
 		if (notify) {
 			showToast('Ajustes guardados correctamente.')
 		}
@@ -541,7 +1159,8 @@ async function handleSelectJavaExe() {
 		if (selected) {
 			settingsJavaPath.value = String(selected)
 			settingsJavaAuto.value = false
-			showToast(`Ruta de Java seleccionada: ${selected}`)
+			await saveLauncherSettings()
+			showToast(`Ruta de Java guardada: ${selected}`)
 		}
 	} catch (e) {
 		console.warn('Error choosing Java:', e)
@@ -638,7 +1257,12 @@ async function handleMicrosoftLogin() {
 			showToast(`Conectado con Microsoft como ${acc.name}`)
 		}
 	} catch (e: any) {
-		showToast(`Error de autenticación Microsoft: ${e?.message || e}`)
+		const rawErr = String(e?.message || e || '')
+		if (isOffline.value || /network|dns|connect|timeout|fetch|offline/i.test(rawErr)) {
+			showToast('No hay conexión a internet para iniciar sesión con Microsoft.')
+		} else {
+			showToast(`Error de autenticación Microsoft: ${e?.message || e}`)
+		}
 	} finally {
 		busy.value = false
 	}
@@ -699,6 +1323,13 @@ function handleBeforeUnload() {
 	}
 }
 
+function handleWindowFocus() {
+	if (!isDownloading.value) {
+		void checkSelectedInstanceHealth()
+		void checkRunningState()
+	}
+}
+
 let testingHeartbeatTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(async () => {
@@ -715,15 +1346,8 @@ onMounted(async () => {
 		}
 	}
 
-	// Gallery auto-advance every 3.8s unless hovered or zoomed
-	galleryAutoTimer = setInterval(() => {
-		if (currentView.value === 'home' && !isHoveringGallery.value && !zoomedScreenshot.value) {
-			const total = previewImages.value.length
-			if (total > 1) {
-				activeScreenshotIndex.value = (activeScreenshotIndex.value + 1) % total
-			}
-		}
-	}, 3800)
+	// Gallery auto-advance every 3.8s unless hovered or zoomed (resettable on manual interaction)
+	restartGalleryTimer()
 
 	// Poll catalog every 15s when automatic refresh mode is enabled
 	catalogAutoRefreshTimer = setInterval(() => {
@@ -813,11 +1437,15 @@ onMounted(async () => {
 	}, 30000)
 
 	window.addEventListener('beforeunload', handleBeforeUnload)
+	window.addEventListener('focus', handleWindowFocus)
+	void checkRunningState()
+	void checkSelectedInstanceHealth()
 })
 
 onUnmounted(() => {
 	window.removeEventListener('click', closeInstanceMenu)
 	window.removeEventListener('beforeunload', handleBeforeUnload)
+	window.removeEventListener('focus', handleWindowFocus)
 	if (toastTimer) {
 		clearTimeout(toastTimer)
 		toastTimer = null
@@ -842,6 +1470,7 @@ onUnmounted(() => {
 		clearInterval(marketHoverTimer)
 		marketHoverTimer = null
 	}
+	stopLogsPolling()
 })
 
 async function handlePlayOrInstall() {
@@ -860,10 +1489,38 @@ async function handlePlayOrInstall() {
 		return
 	}
 
+	if (buttonAction.value === 'disabled') {
+		showToast(
+			selectedServer.value?.disabled_message ||
+				'Este modpack no se encuentra disponible actualmente.',
+			4500,
+		)
+		return
+	}
+
+	if (buttonAction.value === 'countdown') {
+		showToast(`Este modpack no está disponible hasta el estreno: ${countdownLabel.value}`, 4500)
+		return
+	}
+
+	if (buttonAction.value === 'repair') {
+		await repairInstance()
+		return
+	}
+
 	if (buttonAction.value === 'play' && matchingInstance.value) {
 		try {
 			busy.value = true
 			notice.value = null
+			await checkSelectedInstanceHealth()
+			if (selectedInstanceHealth.value.needs_repair) {
+				showToast(
+					selectedInstanceHealth.value.reason ||
+						'Faltan archivos vitales de la instancia. Repárala antes de jugar.',
+					5000,
+				)
+				return
+			}
 			if (!activeAccount.value) {
 				await refreshAccount()
 			}
@@ -886,9 +1543,23 @@ async function handlePlayOrInstall() {
 					}
 				}
 			}
+			const trimmedJava = settingsJavaPath.value.trim()
+			const desiredJavaPath =
+				!settingsJavaAuto.value && trimmedJava
+					? trimmedJava
+					: (null as unknown as string)
+			await editInstance(matchingInstance.value.id, {
+				java_path: desiredJavaPath,
+			}).catch(() => {})
+			lastLaunchStartedAtSec.value[matchingInstance.value.id] = Math.floor(Date.now() / 1000)
 			await run(matchingInstance.value.id)
 			isSelectedRunning.value = true
 			showToast(`Iniciando ${matchingInstance.value.name}...`)
+			if (settingsCloseOnLaunchMode.value === 'minimize') {
+				await getCurrentWindow().minimize().catch(() => {})
+			} else if (settingsCloseOnLaunchMode.value === 'close') {
+				await getCurrentWindow().close().catch(() => {})
+			}
 		} catch (err: any) {
 			console.error('Launch failed:', err)
 			handleSevereError(err, { instanceId: matchingInstance.value.id })
@@ -952,19 +1623,23 @@ async function handlePlayOrInstall() {
 }
 
 async function handleKillRunningInstance() {
-	if (!matchingInstance.value) return
+	if (!matchingInstance.value || killingInstance.value) return
 	try {
+		killingInstance.value = true
 		await killInstance(matchingInstance.value.id)
-		isSelectedRunning.value = false
+		await checkRunningState()
 		showToast(`Se ha forzado el cierre de ${selectedServer.value?.title || 'Minecraft'}.`)
 	} catch (e: any) {
 		showToast(`Error al cerrar instancia: ${e?.message || e}`)
+	} finally {
+		killingInstance.value = false
 	}
 }
 
 async function handleCancelDownload() {
+	if (isCancelling.value) return
+	showToast('Cancelando operación...')
 	await cancelActiveDownload()
-	showToast('Operación cancelada.')
 }
 
 async function browseCustomFolder() {
@@ -980,6 +1655,26 @@ async function browseCustomFolder() {
 		}
 	} catch (e) {
 		console.warn('Error selecting custom folder:', e)
+	}
+}
+
+async function handleCreateDesktopShortcut() {
+	if (!selectedServer.value || !matchingInstance.value) return
+	try {
+		const srv = selectedServer.value
+		const inst = matchingInstance.value
+		const rawIcon = srv.logo_square || srv.logo || srv.image
+		const iconUrl = rawIcon ? resolveImageUrl(rawIcon) : null
+		const createdPath = await invoke<string>('dr3sh_create_desktop_shortcut', {
+			instanceName: srv.title,
+			instanceId: inst.id,
+			serverId: srv.id,
+			iconUrl,
+		})
+		showToast(`Acceso directo creado en el escritorio (${createdPath})`)
+	} catch (err: any) {
+		console.error('Error creando acceso directo:', err)
+		showToast(`Error creando acceso directo: ${err?.message || err}`)
 	}
 }
 
@@ -1032,6 +1727,15 @@ async function confirmInstallLocation() {
 					} catch {}
 				}
 				await instancesQuery.refetch()
+				const createdInst = findInstanceForServer(server)
+				const rawIcon = server.logo_square || server.logo || server.image
+				const iconUrl = rawIcon ? resolveImageUrl(rawIcon) : null
+				void invoke('dr3sh_create_desktop_shortcut', {
+					instanceName: server.title,
+					instanceId: createdInst?.id || server.id,
+					serverId: server.id,
+					iconUrl,
+				}).catch(() => {})
 				showToast(`¡${server.title} se ha instalado correctamente y está listo para jugar!`)
 			},
 			onError: (err) => {
@@ -1159,344 +1863,626 @@ const filteredMarketServers = computed(() => {
 	<!-- =========================================================
 	     VIEW 1: HOME (BIBLIOTECA DE INSTANCIAS)
 	     ========================================================= -->
-	<div v-if="currentView === 'home' && selectedServer" class="home-layout">
-		<!-- Hero Banner -->
-		<section class="modrinth-hero">
+	<div v-if="currentView === 'home' && selectedServer" class="home-layout obsidian-home">
+		<!-- 1. CAPTURA PANORÁMICA DE FONDO CON FADE -->
+		<div
+			class="hero-slideshow-stack"
+			@mouseenter="isHoveringGallery = true"
+			@mouseleave="isHoveringGallery = false"
+		>
 			<div
-				class="modrinth-hero-backdrop"
-				:style="{ backgroundImage: `url(&quot;${getStageImageUrl(heroBackdropUrl)}&quot;)` }"
+				v-for="(s, idx) in previewImages"
+				:key="`bg-${selectedServer.id}-${idx}`"
+				class="slide-fade-image"
+				:class="{ 'is-active': idx === activeScreenshotIndex }"
+				:style="{ backgroundImage: `url(&quot;${getStageImageUrl(s)}&quot;)` }"
 			/>
-			<div class="modrinth-hero-content">
-				<div class="modrinth-hero-left">
-					<div class="modrinth-pack-avatar">
-						<img
-							:src="resolveImageUrl(selectedServer.logo_square || selectedServer.logo || selectedServer.image)"
-							:alt="selectedServer.title"
-							@error="handleImageError($event)"
-						/>
-					</div>
-					<div class="modrinth-pack-meta">
-						<div class="modrinth-title-row">
-							<h1>{{ selectedServer.title }}</h1>
-							<span v-if="hasUpdate" class="status-pill">Actualización disponible</span>
-						</div>
-						<div
-							v-if="selectedServer.description"
-							v-scroll-desc="selectedServer.description"
-							class="scrolling-desc-viewport modrinth-pack-desc"
-						>
-							<p class="scrolling-desc-track">{{ selectedServer.description }}</p>
-						</div>
-						<div class="modrinth-badges">
-							<span class="meta-badge loader-badge">
-								<img :src="loaderIconUrl(selectedServer.mod_loader)" alt="" class="loader-logo-img" />
-								<span>{{ formatLoaderName(selectedServer.mod_loader) }}</span>
-								<small v-if="selectedServer.mod_loader_version">{{ selectedServer.mod_loader_version }}</small>
-							</span>
-							<span v-if="selectedServer.minecraft_version" class="meta-badge">
-								Minecraft {{ selectedServer.minecraft_version }}
-							</span>
-							<span v-if="selectedVersion?.version" class="meta-badge">
-								v{{ selectedVersion.version.replace(/^v/i, '') }}
-							</span>
-							<span v-if="selectedVersion?.size_mb" class="meta-badge">
-								{{ selectedVersion.size_mb }} MB
-							</span>
-						</div>
-					</div>
-				</div>
 
-				<div class="modrinth-hero-actions">
-					<div class="play-action-group">
-						<button
-							type="button"
-							class="play-button"
-							:class="[`action-${buttonAction}`, { 'is-running': buttonAction === 'running' }]"
-							:disabled="busy || isDownloading || buttonAction === 'running'"
-							@click="handlePlayOrInstall"
-						>
-							<template v-if="buttonAction === 'running'">
-								<span class="running-dot-indicator" aria-hidden="true" />
-							</template>
-							<svg
-								v-else-if="buttonAction === 'update'"
-								viewBox="0 0 20 20"
-								aria-hidden="true"
-								class="play-btn-icon"
-							>
-								<path d="M10 15V5m0 0-4 4m4-4 4 4" />
-							</svg>
-							<svg
-								v-else-if="buttonAction === 'download'"
-								viewBox="0 0 20 20"
-								aria-hidden="true"
-								class="play-btn-icon"
-							>
-								<path d="M10 3.5v9m0 0-3.5-3.5M10 12.5 13.5 9M4 15.5h12" />
-							</svg>
-							<svg v-else viewBox="0 0 20 20" aria-hidden="true" class="play-btn-icon">
-								<path d="M6 4.5 15.5 10 6 15.5V4.5Z" fill="currentColor" stroke="none" />
-							</svg>
-							<span>{{ buttonLabel }}</span>
-						</button>
+			<!-- Viñeta oscura cinematográfica y resplandor ambiental -->
+			<div class="slideshow-vignette-top" />
+			<div class="slideshow-vignette-bottom" />
+			<div class="slideshow-ambient-glow" />
+		</div>
 
-						<button
-							v-if="buttonAction === 'running'"
-							type="button"
-							class="kill-instance-button"
-							title="Forzar el cierre de Minecraft inmediatamente"
-							@click="handleKillRunningInstance"
-						>
-							<svg viewBox="0 0 20 20" aria-hidden="true">
-								<rect x="5" y="5" width="10" height="10" rx="2" fill="currentColor" stroke="none" />
-							</svg>
-							<span>Forzar cierre</span>
-						</button>
-
-						<!-- Three Dots (⋮) Dropdown Anchor -->
-						<div class="instance-menu-anchor" @click.stop>
-							<button
-								type="button"
-								class="instance-menu-trigger"
-								:class="{ active: instanceMenuOpen }"
-								title="Opciones de la instancia"
-								@click="toggleInstanceMenu"
-							>
-								<svg viewBox="0 0 20 20" aria-hidden="true">
-									<circle cx="10" cy="4.5" r="1.6" fill="currentColor" stroke="none" />
-									<circle cx="10" cy="10" r="1.6" fill="currentColor" stroke="none" />
-									<circle cx="10" cy="15.5" r="1.6" fill="currentColor" stroke="none" />
-								</svg>
-							</button>
-
-							<!-- Dropdown Menu -->
-							<div v-if="instanceMenuOpen" class="instance-dropdown-menu" role="menu">
-								<div class="instance-menu-header">
-									<span class="instance-menu-header-icon">
-										<img
-											:src="resolveImageUrl(selectedServer.logo_square || selectedServer.logo || selectedServer.image)"
-											:alt="selectedServer.title"
-										/>
-									</span>
-									<div class="instance-menu-header-copy">
-										<strong>{{ selectedServer.title }}</strong>
-										<small>
-											{{ formatLoaderName(selectedServer.mod_loader) }} •
-											{{ isInstalled ? 'Instalado' : 'Sin instalar' }}
-										</small>
-									</div>
-								</div>
-								<button
-									type="button"
-									class="instance-menu-item"
-									:disabled="busy || isDownloading"
-									@click="repairInstance(); closeInstanceMenu()"
-								>
-									<svg viewBox="0 0 20 20" aria-hidden="true">
-										<path
-											d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2-2a5.5 5.5 0 0 1-7.4 7.4l-6.2 6.2a1.8 1.8 0 0 1-2.6-2.6l6.2-6.2a5.5 5.5 0 0 1 7.4-7.4l-2.4 1.6Z"
-										/>
-									</svg>
-									<span>Verificar y reparar instalación</span>
-								</button>
-
-								<button
-									type="button"
-									class="instance-menu-item"
-									@click="openInstanceFolder(); closeInstanceMenu()"
-								>
-									<svg viewBox="0 0 20 20" aria-hidden="true">
-										<path
-											d="M2.5 5.5A1.5 1.5 0 0 1 4 4h4.2l1.8 2H16a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 16 16H4a1.5 1.5 0 0 1-1.5-1.5v-9Z"
-										/>
-									</svg>
-									<span>Ir a la carpeta de la instancia</span>
-								</button>
-
-								<div class="instance-menu-divider" />
-
-								<button
-									type="button"
-									class="instance-menu-item danger"
-									:disabled="!isInstalled || busy || isDownloading"
-									@click="requestDeleteConfirm(selectedServer, 'local-only'); closeInstanceMenu()"
-								>
-									<svg viewBox="0 0 20 20" aria-hidden="true">
-										<path
-											d="M4 6h12M7.5 6V4.5A1.5 1.5 0 0 1 9 3h2a1.5 1.5 0 0 1 1.5 1.5V6m2 0v9.5a1.5 1.5 0 0 1-1.5 1.5H7a1.5 1.5 0 0 1-1.5-1.5V6h9Z"
-										/>
-									</svg>
-									<span>Eliminar instalación local</span>
-								</button>
-
-								<button
-									type="button"
-									class="instance-menu-item danger"
-									:disabled="busy || isDownloading"
-									@click="requestDeleteConfirm(selectedServer, 'pack-remove'); closeInstanceMenu()"
-								>
-									<svg viewBox="0 0 20 20" aria-hidden="true">
-										<path d="M3 5h14M8 5V3h4v2m-6 3 1 9h6l1-9M7 8h6" />
-									</svg>
-									<span>Quitar modpack del launcher</span>
-								</button>
-							</div>
-						</div>
-					</div>
-				</div>
-			</div>
-
-			<!-- Clean, Minimal Liquid Glass Hero Task Progress Bar -->
-			<div
-				v-if="isDownloading && currentServerId === selectedServer.id"
-				class="hero-task-bar liquid-glass-task-bar"
-				aria-live="polite"
-			>
-				<div class="task-header-row">
-					<div class="task-title-group">
-						<span class="task-spinner-orb" aria-hidden="true" />
-						<strong class="task-phase-label">{{ downloadProgress.phaseText }}</strong>
-					</div>
-					<div class="task-badges-group">
-						<span class="task-percent-pill">{{ downloadProgress.percent }}%</span>
-						<button type="button" class="task-cancel-btn" @click="handleCancelDownload">
-							Cancelar
-						</button>
-					</div>
-				</div>
-
-				<div class="progress-track liquid-shimmer-track">
-					<span :style="{ width: `${Math.max(3, downloadProgress.percent)}%` }" />
-				</div>
-			</div>
-
-			<div
-				v-if="hasPendingMigrationNotice"
-				class="hero-task-bar liquid-glass-task-bar"
-				style="margin-top: 10px"
-				role="status"
-			>
-				<div class="task-header-row">
-					<div class="task-title-group">
-						<strong class="task-phase-label">
-							Se guardó una copia de seguridad automática de tus archivos previos en .dr3sh/backup.
-						</strong>
-					</div>
-					<div class="task-badges-group">
-						<button type="button" class="task-cancel-btn" @click="handleDismissMigrationNotice">
-							Entendido
-						</button>
-					</div>
-				</div>
-			</div>
-		</section>
-
-		<!-- Bottom 2 Columns Grid: Galería & Notas de versión -->
-		<div class="modrinth-body-grid">
-			<!-- Galería -->
-			<section class="gallery-card">
-				<div class="card-header">
-					<h2>Galería</h2>
-					<span v-if="previewImages.length > 1" class="card-counter">
-						{{ activeScreenshotIndex + 1 }} / {{ previewImages.length }}
-					</span>
-				</div>
+		<!-- 2. HEADER DEL MODPACK (SIN PÍLDORA 'AL DÍA', SIN VERSIÓN DUPLICADA ARRIBA) -->
+		<div class="hero-top-row">
+			<div class="hero-meta-col">
+				<h1 class="hero-modpack-title">{{ selectedServer.title }}</h1>
 				<div
-					class="gallery-viewer"
-					@mouseenter="isHoveringGallery = true"
-					@mouseleave="isHoveringGallery = false"
+					v-if="selectedServer.description"
+					v-scroll-desc="selectedServer.description"
+					class="hero-desc-scroll-box"
 				>
-					<div
-						class="gallery-stage"
-						title="Haz clic para ampliar la captura"
-						@click="zoomedScreenshot = getStageImageUrl(currentPreviewImage)"
+					<div class="scrolling-desc-track">
+						<p>{{ selectedServer.description }}</p>
+					</div>
+				</div>
+			</div>
+
+			<!-- MENÚ DE 3 PUNTOS (CONTIENE ACCESO DIRECTO SI ESTÁ DESCARGADO) -->
+			<div class="instance-menu-anchor" @click.stop>
+				<button
+					type="button"
+					class="hero-menu-trigger"
+					:class="{ active: instanceMenuOpen }"
+					title="Opciones de la instancia"
+					@click="toggleInstanceMenu"
+				>
+					<svg viewBox="0 0 20 20" aria-hidden="true" class="w-4 h-4 fill-current">
+						<circle cx="10" cy="4.5" r="1.6" />
+						<circle cx="10" cy="10" r="1.6" />
+						<circle cx="10" cy="15.5" r="1.6" />
+					</svg>
+				</button>
+
+				<!-- Dropdown Flotante -->
+				<div v-if="instanceMenuOpen" class="instance-dropdown-menu" role="menu">
+					<div class="instance-menu-header">
+						<span class="instance-menu-header-icon">
+							<img
+								:src="resolveImageUrl(selectedServer.logo_square || selectedServer.logo || selectedServer.image)"
+								:alt="selectedServer.title"
+								@error="handleImageError($event)"
+							/>
+						</span>
+						<div class="instance-menu-header-copy">
+							<strong>{{ selectedServer.title }}</strong>
+							<small>
+								{{ formatLoaderName(selectedServer.mod_loader) }} •
+								{{ isInstalled ? 'Instalado' : 'Sin instalar' }}
+							</small>
+						</div>
+					</div>
+
+					<button
+						v-if="isSelectedRunning && matchingInstance"
+						type="button"
+						class="instance-menu-item danger"
+						:disabled="killingInstance"
+						@click="handleKillRunningInstance(); closeInstanceMenu()"
+					>
+						<svg viewBox="0 0 20 20" aria-hidden="true">
+							<rect x="4.5" y="4.5" width="11" height="11" rx="2" fill="currentColor" />
+						</svg>
+						<span>{{ killingInstance ? 'Cerrando Minecraft...' : 'Matar proceso de Minecraft' }}</span>
+					</button>
+
+					<button
+						v-if="matchingInstance"
+						type="button"
+						class="instance-menu-item"
+						@click="handleCreateDesktopShortcut(); closeInstanceMenu()"
+					>
+						<svg viewBox="0 0 20 20" aria-hidden="true">
+							<path d="M3 4.5A1.5 1.5 0 0 1 4.5 3h11A1.5 1.5 0 0 1 17 4.5v8a1.5 1.5 0 0 1-1.5 1.5H4.5A1.5 1.5 0 0 1 3 12.5v-8ZM7 17h6M10 14v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+						</svg>
+						<span>Crear acceso directo en el escritorio</span>
+					</button>
+
+					<button
+						v-if="matchingInstance"
+						type="button"
+						class="instance-menu-item"
+						@click="openInstanceLogsModal(); closeInstanceMenu()"
+					>
+						<svg viewBox="0 0 20 20" aria-hidden="true">
+							<path d="M3.5 4.5A1.5 1.5 0 0 1 5 3h10a1.5 1.5 0 0 1 1.5 1.5v11A1.5 1.5 0 0 1 15 17H5a1.5 1.5 0 0 1-1.5-1.5v-11ZM6.5 7.5l2.5 2-2.5 2m4 0H14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+						</svg>
+						<span>Ver consola y logs</span>
+					</button>
+
+					<button
+						type="button"
+						class="instance-menu-item"
+						:disabled="busy || isDownloading"
+						@click="repairInstance(); closeInstanceMenu()"
+					>
+						<svg viewBox="0 0 20 20" aria-hidden="true">
+							<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2-2a5.5 5.5 0 0 1-7.4 7.4l-6.2 6.2a1.8 1.8 0 0 1-2.6-2.6l6.2-6.2a5.5 5.5 0 0 1 7.4-7.4l-2.4 1.6Z" />
+						</svg>
+						<span>Verificar y reparar instalación</span>
+					</button>
+
+					<button
+						type="button"
+						class="instance-menu-item"
+						@click="openInstanceFolder(); closeInstanceMenu()"
+					>
+						<svg viewBox="0 0 20 20" aria-hidden="true">
+							<path d="M2.5 5.5A1.5 1.5 0 0 1 4 4h4.2l1.8 2H16a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 16 16H4a1.5 1.5 0 0 1-1.5-1.5v-9Z" />
+						</svg>
+						<span>Ir a la carpeta de la instancia</span>
+					</button>
+
+					<div class="instance-menu-divider" />
+
+					<button
+						type="button"
+						class="instance-menu-item danger"
+						:disabled="!isInstalled || busy || isDownloading"
+						@click="requestDeleteConfirm(selectedServer, 'local-only'); closeInstanceMenu()"
+					>
+						<svg viewBox="0 0 20 20" aria-hidden="true">
+							<path d="M4 6h12M7.5 6V4.5A1.5 1.5 0 0 1 9 3h2a1.5 1.5 0 0 1 1.5 1.5V6m2 0v9.5a1.5 1.5 0 0 1-1.5 1.5H7a1.5 1.5 0 0 1-1.5-1.5V6h9Z" />
+						</svg>
+						<span>Eliminar instalación local</span>
+					</button>
+
+					<button
+						type="button"
+						class="instance-menu-item danger"
+						:disabled="busy || isDownloading"
+						@click="requestDeleteConfirm(selectedServer, 'pack-remove'); closeInstanceMenu()"
+					>
+						<svg viewBox="0 0 20 20" aria-hidden="true">
+							<path d="M3 5h14M8 5V3h4v2m-6 3 1 9h6l1-9M7 8h6" />
+						</svg>
+						<span>Quitar modpack del launcher</span>
+					</button>
+				</div>
+			</div>
+		</div>
+
+		<!-- 3. SLIDESHOW DE MINIATURAS: PEGADO ABAJO JUSTO SOBRE EL FOOTER (3 MINIATURAS POR TANDA) -->
+		<div
+			v-if="previewImages.length > 0"
+			class="hero-thumbnails-bar"
+		>
+			<div class="hero-thumbnails-capsule">
+				<button
+					v-if="previewImages.length > 1"
+					type="button"
+					class="batch-nav-btn prev"
+					title="Captura anterior"
+					@click="prevSlide"
+				>
+					<svg viewBox="0 0 20 20" aria-hidden="true" class="w-4 h-4 fill-none stroke-current" stroke-width="2">
+						<path d="M12.5 15 7.5 10l5-5" stroke-linecap="round" stroke-linejoin="round" />
+					</svg>
+				</button>
+
+				<div class="thumbnails-track">
+					<button
+						v-for="(shot, idxInBatch) in previewImages.slice(slideBatchStart, slideBatchStart + 3)"
+						:key="`thumb-${slideBatchStart + idxInBatch}`"
+						type="button"
+						class="batch-thumb-item"
+						:class="{ active: (slideBatchStart + idxInBatch) === activeScreenshotIndex }"
+						:title="`Ver captura ${slideBatchStart + idxInBatch + 1}`"
+						@click="selectScreenshot(slideBatchStart + idxInBatch)"
 					>
 						<img
-							:src="getStageImageUrl(currentPreviewImage)"
-							:alt="`Captura de ${selectedServer.title}`"
-							:class="{ 'preview-fallback': isPreviewFallback }"
-							@error="handleImageError($event, currentPreviewImage)"
+							:src="getThumbnailUrl(shot)"
+							:alt="`Captura ${slideBatchStart + idxInBatch + 1}`"
+							loading="lazy"
+							@error="handleImageError($event, shot)"
 						/>
-						<div class="gallery-zoom-badge" aria-hidden="true">
-							<svg viewBox="0 0 20 20">
-								<circle cx="8.5" cy="8.5" r="5" />
-								<path d="m12.5 12.5 4 4M8.5 6v5M6 8.5h5" />
-							</svg>
-							<span>Ampliar</span>
-						</div>
-					</div>
-
-					<!-- Carousel dots cleanly below the stage -->
-					<div v-if="previewImages.length > 1" class="gallery-stage-dots" role="tablist">
-						<button
-							v-for="idx in getPagedDots(previewImages.length, activeScreenshotIndex, 6)"
-							:key="idx"
-							type="button"
-							class="gallery-stage-dot"
-							:class="{ active: idx === activeScreenshotIndex }"
-							:aria-label="`Ver captura ${idx + 1}`"
-							@click="activeScreenshotIndex = idx"
-						/>
-					</div>
-
-					<!-- Small Thumbnail Gallery Strip with all screenshots -->
-					<div v-if="previewImages.length > 1" class="gallery-thumbs">
-						<button
-							v-for="(shot, idx) in previewImages"
-							:key="`${selectedServer.id}-thumb-${idx}`"
-							type="button"
-							class="gallery-thumb"
-							:class="{ active: idx === activeScreenshotIndex }"
-							:aria-label="`Miniatura ${idx + 1}`"
-							@click="activeScreenshotIndex = idx"
-						>
-							<img
-								:src="getThumbnailUrl(shot)"
-								:alt="`Miniatura ${idx + 1}`"
-								loading="lazy"
-								decoding="async"
-								@error="handleImageError($event, shot)"
-							/>
-						</button>
-					</div>
+					</button>
 				</div>
-			</section>
 
-			<!-- Notas de versión -->
-			<aside class="changelog-card">
-				<div class="card-header">
-					<h2>Notas de versión</h2>
-					<span v-if="selectedVersion?.published_at" class="card-date">
-						{{ selectedVersion.published_at }}
+				<button
+					v-if="previewImages.length > 1"
+					type="button"
+					class="batch-nav-btn next"
+					title="Captura siguiente"
+					@click="nextSlide"
+				>
+					<svg viewBox="0 0 20 20" aria-hidden="true" class="w-4 h-4 fill-none stroke-current" stroke-width="2">
+						<path d="M7.5 5l5 5-5 5" stroke-linecap="round" stroke-linejoin="round" />
+					</svg>
+				</button>
+			</div>
+		</div>
+
+		<!-- 3.5. PANEL DE DESCARGA E INSTALACIÓN (OBSIDIAN GLASS) -->
+		<div
+			v-if="isDownloading && currentServerId === selectedServer.id"
+			class="hero-download-card"
+			:class="{ 'is-reconnecting': (downloadProgress.attempt ?? 0) > 0 }"
+			aria-live="polite"
+		>
+			<div class="hero-dl-header">
+				<div class="hero-dl-status">
+					<span class="hero-dl-icon-wrap" aria-hidden="true">
+						<svg
+							v-if="
+								downloadProgress.phase === 'downloading' ||
+								downloadProgress.phase === 'preparing'
+							"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							class="hero-dl-svg hero-dl-svg-pulse"
+						>
+							<path d="M12 3v12" />
+							<path d="m7 10 5 5 5-5" />
+							<path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+						</svg>
+						<svg
+							v-else-if="downloadProgress.phase === 'verifying'"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							class="hero-dl-svg hero-dl-svg-pulse"
+						>
+							<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
+							<path d="m9 12 2 2 4-4" />
+						</svg>
+						<svg
+							v-else-if="downloadProgress.phase === 'extracting'"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							class="hero-dl-svg hero-dl-svg-pulse"
+						>
+							<path
+								d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"
+							/>
+							<path d="m3.3 7 8.7 5 8.7-5" />
+							<path d="M12 22V12" />
+						</svg>
+						<svg
+							v-else
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							class="hero-dl-svg hero-dl-svg-pulse"
+						>
+							<path d="M20 6 9 17l-5-5" />
+						</svg>
+					</span>
+					<span v-if="downloadProgress.stageLabel" class="hero-dl-stage-badge">
+						{{ downloadProgress.stageLabel }}
+					</span>
+					<span class="hero-dl-phase-text">{{ downloadProgress.phaseText }}</span>
+				</div>
+
+				<div class="hero-dl-actions">
+					<span class="hero-dl-percent">{{ downloadProgress.percent }}%</span>
+					<button
+						v-if="
+							downloadProgress.phase !== 'applying' &&
+							downloadProgress.phase !== 'finishing'
+						"
+						type="button"
+						class="hero-dl-cancel-btn"
+						:disabled="isCancelling"
+						@click="handleCancelDownload"
+					>
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2.2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							width="13"
+							height="13"
+						>
+							<path d="M18 6 6 18" />
+							<path d="m6 6 12 12" />
+						</svg>
+						<span>{{ isCancelling ? 'Cancelando...' : 'Cancelar' }}</span>
+					</button>
+				</div>
+			</div>
+
+			<div class="hero-dl-track">
+				<span
+					class="hero-dl-fill"
+					:style="{ width: `${Math.max(3, downloadProgress.percent)}%` }"
+				/>
+			</div>
+
+			<div class="hero-dl-footer">
+				<div class="hero-dl-metrics">
+					<span
+						v-if="
+							(downloadProgress.phase === 'preparing' ||
+								downloadProgress.phase === 'downloading') &&
+							downloadProgress.totalBytes > 0
+						"
+						class="hero-dl-metric"
+					>
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							width="12"
+							height="12"
+						>
+							<ellipse cx="12" cy="5" rx="9" ry="3" />
+							<path d="M3 5v14a9 3 0 0 0 18 0V5" />
+							<path d="M3 12a9 3 0 0 0 18 0" />
+						</svg>
+						<span>
+							{{ downloadProgress.downloadedFormatted }} /
+							{{ downloadProgress.totalFormatted }}
+						</span>
+					</span>
+					<span
+						v-if="
+							(downloadProgress.phase === 'verifying' ||
+								downloadProgress.phase === 'extracting' ||
+								downloadProgress.phase === 'applying') &&
+							downloadProgress.filesTotal
+						"
+						class="hero-dl-metric"
+					>
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							width="12"
+							height="12"
+						>
+							<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+							<path d="M14 2v4a2 2 0 0 0 2 2h4" />
+						</svg>
+						<span>
+							{{ downloadProgress.filesDone ?? 0 }} /
+							{{ downloadProgress.filesTotal }} archivos
+						</span>
+					</span>
+					<span
+						v-if="
+							downloadProgress.phase === 'downloading' &&
+							downloadProgress.speedFormatted
+						"
+						class="hero-dl-metric hero-dl-metric-accent"
+					>
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							width="12"
+							height="12"
+						>
+							<path d="m12 14 4-4" />
+							<path d="M3.34 19a10 10 0 1 1 17.32 0" />
+						</svg>
+						<span>{{ downloadProgress.speedFormatted }}</span>
+					</span>
+					<span
+						v-if="
+							(downloadProgress.phase === 'downloading' ||
+								downloadProgress.phase === 'extracting') &&
+							downloadProgress.etaFormatted
+						"
+						class="hero-dl-metric"
+					>
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							width="12"
+							height="12"
+						>
+							<circle cx="12" cy="12" r="10" />
+							<polyline points="12 6 12 12 16 14" />
+						</svg>
+						<span>{{ downloadProgress.etaFormatted }} restantes</span>
 					</span>
 				</div>
-				<template v-if="selectedVersion">
-					<div class="changelog-version-tag">
-						<strong>{{ selectedVersion.title }}</strong>
-						<code v-if="selectedVersion.version">
-							v{{ selectedVersion.version.replace(/^v/i, '') }}
-						</code>
-					</div>
-					<p class="changelog-body">
-						{{ selectedVersion.description || 'Sin notas adicionales para esta versión.' }}
-					</p>
-				</template>
-				<div v-else class="empty-card-note">
-					Aún no hay notas de versión publicadas para este modpack.
+
+				<div class="hero-dl-stepper" aria-label="Etapas de instalación">
+					<span
+						v-for="(stepName, idx) in ['Descargar', 'Verificar', 'Extraer', 'Instalar']"
+						:key="stepName"
+						class="hero-dl-step"
+						:class="{
+							'is-done': downloadProgress.stepIndex > idx + 1,
+							'is-active': downloadProgress.stepIndex === idx + 1,
+						}"
+					>
+						<span class="hero-dl-step-dot" aria-hidden="true" />
+						<span>{{ stepName }}</span>
+					</span>
 				</div>
-			</aside>
+			</div>
+		</div>
+
+		<!-- 4. ACTION FOOTER DOCK (VERSIÓN + MODLOADER + BOTÓN GIGANTE JUGAR) -->
+		<div class="hero-action-dock">
+			<div class="dock-tech-info">
+				<!-- Versión instalada -->
+				<div class="dock-meta-item">
+					<span class="dock-meta-label">VERSIÓN</span>
+					<div class="dock-meta-value">
+						<span
+							class="dock-status-dot"
+							:class="{
+								'is-installed': isInstalled && !selectedInstanceHealth.needs_repair,
+								'needs-repair': selectedInstanceHealth.needs_repair,
+							}"
+						/>
+						<span>
+							{{
+								selectedInstanceHealth.needs_repair
+									? 'Requiere reparación'
+									: isInstalled
+										? selectedVersion?.version
+											? `v${selectedVersion.version.replace(/^v/i, '')}`
+											: 'Instalado'
+										: 'Sin instalar'
+							}}
+						</span>
+					</div>
+				</div>
+
+				<div class="dock-separator" />
+
+				<!-- Modloader oficial (sin versión) -->
+				<div class="dock-meta-item">
+					<span class="dock-meta-label">MODLOADER</span>
+					<div class="dock-meta-value">
+						<img :src="loaderIconUrl(selectedServer.mod_loader)" alt="" class="dock-loader-icon" />
+						<span>{{ formatLoaderName(selectedServer.mod_loader) }}</span>
+					</div>
+				</div>
+			</div>
+
+			<!-- Botón Gigante Jugar Ahora / Matar Proceso -->
+			<div class="hero-action-buttons">
+				<button
+					type="button"
+					class="hero-play-button"
+					:class="[`action-${buttonAction}`, { 'is-running': buttonAction === 'running', 'is-disabled-server': buttonAction === 'disabled', 'is-countdown': buttonAction === 'countdown' }]"
+					:disabled="busy || isDownloading || buttonAction === 'running' || buttonAction === 'disabled' || buttonAction === 'countdown'"
+					:title="buttonAction === 'repair' && selectedInstanceHealth.reason ? selectedInstanceHealth.reason : undefined"
+					@click="handlePlayOrInstall"
+				>
+					<template v-if="buttonAction === 'running'">
+						<span class="running-dot-indicator" aria-hidden="true" />
+					</template>
+					<svg
+						v-else-if="buttonAction === 'repair'"
+						viewBox="0 0 20 20"
+						aria-hidden="true"
+						class="play-btn-icon"
+					>
+						<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2-2a5.5 5.5 0 0 1-7.4 7.4l-6.2 6.2a1.8 1.8 0 0 1-2.6-2.6l6.2-6.2a5.5 5.5 0 0 1 7.4-7.4l-2.4 1.6Z" fill="currentColor" stroke="none" />
+					</svg>
+					<svg
+						v-else-if="buttonAction === 'update'"
+						viewBox="0 0 20 20"
+						aria-hidden="true"
+						class="play-btn-icon"
+					>
+						<path d="M10 15V5m0 0-4 4m4-4 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+					</svg>
+					<svg
+						v-else-if="buttonAction === 'download'"
+						viewBox="0 0 20 20"
+						aria-hidden="true"
+						class="play-btn-icon"
+					>
+						<path d="M10 3.5v9m0 0-3.5-3.5M10 12.5 13.5 9M4 15.5h12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+					</svg>
+					<svg
+						v-else-if="buttonAction === 'countdown'"
+						viewBox="0 0 20 20"
+						aria-hidden="true"
+						class="play-btn-icon"
+					>
+						<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.8" />
+						<polyline points="10 6 10 10 13 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+					</svg>
+					<svg
+						v-else-if="buttonAction === 'disabled'"
+						viewBox="0 0 20 20"
+						aria-hidden="true"
+						class="play-btn-icon"
+					>
+						<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.8" />
+						<line x1="5" y1="5" x2="15" y2="15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+					</svg>
+					<svg v-else viewBox="0 0 20 20" aria-hidden="true" class="play-btn-icon">
+						<path d="M6 4.5 15.5 10 6 15.5V4.5Z" fill="currentColor" stroke="none" />
+					</svg>
+					<span>{{ buttonLabel }}</span>
+				</button>
+
+				<button
+					v-if="buttonAction === 'running'"
+					type="button"
+					class="hero-kill-button"
+					:disabled="killingInstance"
+					title="Forzar cierre del proceso de Minecraft"
+					@click="handleKillRunningInstance"
+				>
+					<svg viewBox="0 0 20 20" aria-hidden="true" class="play-btn-icon">
+						<rect x="4.5" y="4.5" width="11" height="11" rx="2" fill="currentColor" />
+					</svg>
+					<span>{{ killingInstance ? 'CERRANDO...' : 'MATAR PROCESO' }}</span>
+				</button>
+			</div>
 		</div>
 	</div>
 
 	<!-- Welcome / Empty Library State (Exact from Electron) -->
 	<div v-else-if="currentView === 'home' && !selectedServer" class="welcome-layout">
-		<div class="welcome-hero">
-			<div class="welcome-logo-badge">
-				<img src="/logo.png" alt="Dr3sh Launcher" class="welcome-logo" />
+		<div v-if="servers.length === 0 && (isOffline || catalogError)" class="welcome-hero">
+			<div class="offline-empty-icon" aria-hidden="true">
+				<svg
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					width="26"
+					height="26"
+				>
+					<path d="M12 20h.01" />
+					<path d="M8.5 16.429a5 5 0 0 1 7 0" />
+					<path d="M5 12.859a10 10 0 0 1 5.17-2.69" />
+					<path d="M19 12.859a10 10 0 0 0-2.007-1.523" />
+					<path d="M2 8.82a15 15 0 0 1 4.177-2.643" />
+					<path d="M22 8.82a15 15 0 0 0-11.288-3.764" />
+					<path d="m2 2 20 20" />
+				</svg>
 			</div>
-			<h1 class="welcome-title">Dr3sh Launcher</h1>
+			<h1 class="welcome-title">Sin conexión a internet</h1>
 			<p class="welcome-subtitle">
-				Tu biblioteca está vacía. Explora los modpacks oficiales de la comunidad y añádelos para empezar a jugar.
+				No se pudo cargar el catálogo de modpacks. Comprueba tu conexión e inténtalo de nuevo.
+			</p>
+			<div class="welcome-actions">
+				<button
+					type="button"
+					class="welcome-cta-button"
+					:disabled="retryingCatalog"
+					@click="handleRetryCatalog"
+				>
+					<svg
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						class="welcome-btn-icon"
+					>
+						<path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+						<path d="M3 3v5h5" />
+						<path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+						<path d="M16 16h5v5" />
+					</svg>
+					<span>{{ retryingCatalog ? 'REINTENTANDO...' : 'REINTENTAR CONEXIÓN' }}</span>
+				</button>
+			</div>
+		</div>
+		<div v-else class="welcome-hero">
+			<div class="welcome-logo-badge">
+				<img src="/logo.png" alt="Dr3sh App" class="welcome-logo" />
+			</div>
+			<h1 class="welcome-title">Dr3sh App</h1>
+			<p class="welcome-subtitle">
+				Selecciona un modpack de tu biblioteca para ver sus detalles o explora el catálogo para añadir nuevos servidores.
 			</p>
 			<div class="welcome-actions">
 				<button type="button" class="welcome-cta-button" @click="currentView = 'market'">
@@ -1508,184 +2494,155 @@ const filteredMarketServers = computed(() => {
 				</button>
 			</div>
 		</div>
-
-		<div class="welcome-features-grid">
-			<div class="welcome-feature-card">
-				<div class="welcome-feature-icon">
-					<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#1bd96a" stroke-width="2">
-						<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-						<polyline points="7 10 12 15 17 10" />
-						<line x1="12" y1="15" x2="12" y2="3" />
-					</svg>
-				</div>
-				<h3>Descarga Rápida</h3>
-				<p>Instalación automatizada de modpacks, mods y optimizaciones en un solo clic.</p>
-			</div>
-
-			<div class="welcome-feature-card">
-				<div class="welcome-feature-icon">
-					<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#1bd96a" stroke-width="2">
-						<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-					</svg>
-				</div>
-				<h3>Instancias Aisladas</h3>
-				<p>Cada modpack tiene sus propias carpetas, configuraciones y partidas protegidas.</p>
-			</div>
-
-			<div class="welcome-feature-card">
-				<div class="welcome-feature-icon">
-					<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#1bd96a" stroke-width="2">
-						<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-						<circle cx="12" cy="7" r="4" />
-					</svg>
-				</div>
-				<h3>Cuentas Flexibles</h3>
-				<p>Juega con tu cuenta oficial de Microsoft o crea perfiles locales sin conexión fácilmente.</p>
-			</div>
-		</div>
 	</div>
 
 	<!-- =========================================================
 	     VIEW 2: MARKET (EXPLORAR MODPACKS)
 	     ========================================================= -->
-	<div v-else-if="currentView === 'market'" class="market-layout">
-		<div class="page-heading">
-			<h1>Explorar modpacks</h1>
-			<label class="search-box">
-				<svg viewBox="0 0 20 20" aria-hidden="true" class="search-icon">
-					<circle cx="9" cy="9" r="5.5" />
-					<path d="m13.2 13.2 3.8 3.8" />
-				</svg>
-				<input
-					v-model="searchQuery"
-					type="search"
-					placeholder="Buscar modpacks..."
-				/>
-			</label>
+	<div v-else-if="currentView === 'market'" class="market-layout obsidian-market">
+		<div class="market-header-row">
+			<div class="market-heading-text">
+				<h1>Explorar modpacks</h1>
+				<p>Añade nuevos modpacks a tu biblioteca con un solo clic</p>
+			</div>
+
+			<!-- LUPA DESPLEGABLE CON ANIMACIÓN SUAVE HACIA LA IZQUIERDA -->
+			<div class="market-header-actions">
+				<div class="expandable-search-wrapper" :class="{ 'is-expanded': isSearchExpanded }">
+					<input
+						ref="marketSearchInput"
+						v-model="searchQuery"
+						type="search"
+						placeholder="Buscar modpack"
+						class="search-input-field"
+					/>
+					<button
+						type="button"
+						class="search-toggle-btn"
+						title="Buscar modpack"
+						@click="toggleSearchExpand"
+					>
+						<svg viewBox="0 0 20 20" aria-hidden="true" class="w-4 h-4 fill-none stroke-current" stroke-width="2">
+							<circle cx="9" cy="9" r="6" stroke-linecap="round" stroke-linejoin="round" />
+							<path d="m13.5 13.5 4 4" stroke-linecap="round" stroke-linejoin="round" />
+						</svg>
+					</button>
+				</div>
+
+				<button
+					type="button"
+					class="market-back-btn"
+					@click="currentView = 'home'"
+				>
+					<svg viewBox="0 0 20 20" aria-hidden="true" class="w-4 h-4 fill-none stroke-current" stroke-width="2">
+						<path d="M12.5 15 7.5 10l5-5" stroke-linecap="round" stroke-linejoin="round" />
+					</svg>
+					<span>Volver</span>
+				</button>
+			</div>
 		</div>
 
 		<div class="market-grid">
 			<article
 				v-for="server in filteredMarketServers"
 				:key="server.id"
-				class="market-item"
+				class="market-card-item"
 				@mouseenter="hoveredMarketId = server.id"
 				@mouseleave="hoveredMarketId = null"
 			>
-				<!-- Blurred Screenshot Background Banner -->
-				<div class="market-image" aria-hidden="true">
+				<div class="market-card-banner">
 					<img
-						:src="
-							getThumbnailUrl(
-								getServerPreviewImages(server)[0] ||
-									resolveImageUrl(server.image || server.logo || server.logo_square),
-							)
-						"
+						:src="getThumbnailUrl(getServerPreviewImages(server)[0] || resolveImageUrl(server.image || server.logo || server.logo_square))"
 						:alt="server.title"
-						class="market-blurred-slide"
-						@error="
-							handleImageError(
-								$event,
-								getServerPreviewImages(server)[0] ||
-									resolveImageUrl(server.image || server.logo || server.logo_square),
-							)
-						"
+						class="market-card-img"
+						@error="handleImageError($event, getServerPreviewImages(server)[0] || resolveImageUrl(server.image || server.logo || server.logo_square))"
 					/>
-					<div class="market-image-scrim" />
+					<span class="market-loader-badge">
+						{{ formatLoaderName(server.mod_loader) }}
+					</span>
 				</div>
 
-				<!-- Hover Screenshot Preview on Market Card -->
-				<div
-					v-if="hoveredMarketId === server.id && getServerPreviewImages(server).length > 0"
-					class="library-preview-slideshow market"
-					aria-hidden="true"
-				>
-					<img
-						:src="
-							getThumbnailUrl(
-								getServerPreviewImages(server)[
-									marketHoverSlideIdx % getServerPreviewImages(server).length
-								],
-							)
-						"
-						alt=""
-						class="library-preview-img"
-						@error="
-							handleImageError(
-								$event,
-								getServerPreviewImages(server)[
-									marketHoverSlideIdx % getServerPreviewImages(server).length
-								],
-							)
-						"
-					/>
-					<div class="library-preview-overlay" />
-					<div v-if="getServerPreviewImages(server).length > 1" class="library-preview-dots">
+				<div class="market-card-body">
+					<h2 class="market-card-title">{{ server.title }}</h2>
+					<p class="market-card-desc">
+						{{ server.description || 'Disponible para instalar en tu biblioteca.' }}
+					</p>
+
+					<div class="market-card-footer">
 						<span
-							v-for="(_, idx) in getServerPreviewImages(server).slice(0, 5)"
-							:key="idx"
-							class="library-preview-dot"
-							:class="{ active: idx === marketHoverSlideIdx % Math.min(5, getServerPreviewImages(server).length) }"
-						/>
-					</div>
-				</div>
-
-				<div class="market-info">
-					<div class="market-info-head">
-						<div class="market-mini-icon">
-							<img
-								:src="resolveImageUrl(server.logo_square || server.logo || server.image)"
-								:alt="server.title"
-							/>
-						</div>
-						<div>
-							<h2>{{ server.title }}</h2>
-							<small>Minecraft {{ server.minecraft_version || '1.21.1' }}</small>
-						</div>
-					</div>
-					<div
-						v-scroll-desc="server.description"
-						class="scrolling-desc-viewport market-desc"
-					>
-						<p class="scrolling-desc-track">
-							{{ server.description || 'Disponible para instalar en tu biblioteca.' }}
-						</p>
-					</div>
-					<div class="market-bottom">
-						<span class="market-loader">
-							<img :src="loaderIconUrl(server.mod_loader)" alt="" class="loader-logo-img" />
-							{{ formatLoaderName(server.mod_loader) }}
+							class="market-status-tag"
+							:class="{ 'in-library': owned.has(server.id) }"
+						>
+							{{ owned.has(server.id) ? 'EN BIBLIOTECA' : 'DISPONIBLE' }}
 						</span>
-						<div v-if="owned.has(server.id)" class="market-owned-actions">
+
+						<div class="market-card-actions">
 							<button
 								type="button"
-								class="get-button"
+								class="card-view-btn"
 								@click="selectedId = server.id; currentView = 'home'"
 							>
-								Abrir
+								Ver
 							</button>
+
 							<button
+								v-if="owned.has(server.id)"
 								type="button"
-								class="owned-button"
+								class="card-remove-btn"
 								@click="requestDeleteConfirm(server, 'pack-remove')"
 							>
 								Quitar
 							</button>
+							<button
+								v-else
+								type="button"
+								class="card-add-btn"
+								@click="addOwned(server.id); showToast(`Modpack &quot;${server.title}&quot; añadido a tu biblioteca.`)"
+							>
+								Añadir
+							</button>
 						</div>
-						<button
-							v-else
-							type="button"
-							class="get-button"
-							@click="addOwned(server.id); showToast(`Modpack &quot;${server.title}&quot; añadido a tu biblioteca.`)"
-						>
-							Añadir
-						</button>
 					</div>
 				</div>
 			</article>
 		</div>
 
-		<div v-if="filteredMarketServers.length === 0" class="no-results">
+		<div v-if="loading && servers.length === 0" class="no-results">
+			Cargando catálogo de modpacks...
+		</div>
+		<div v-else-if="servers.length === 0 && (isOffline || catalogError)" class="offline-empty-card">
+			<div class="offline-empty-icon" aria-hidden="true">
+				<svg
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					width="24"
+					height="24"
+				>
+					<path d="M12 20h.01" />
+					<path d="M8.5 16.429a5 5 0 0 1 7 0" />
+					<path d="M5 12.859a10 10 0 0 1 5.17-2.69" />
+					<path d="M19 12.859a10 10 0 0 0-2.007-1.523" />
+					<path d="M2 8.82a15 15 0 0 1 4.177-2.643" />
+					<path d="M22 8.82a15 15 0 0 0-11.288-3.764" />
+					<path d="m2 2 20 20" />
+				</svg>
+			</div>
+			<h3>Sin conexión a internet</h3>
+			<p>No se pudo descargar la lista de modpacks. Revisa tu conexión e inténtalo de nuevo.</p>
+			<button
+				type="button"
+				class="offline-retry-btn"
+				:disabled="retryingCatalog"
+				@click="handleRetryCatalog"
+			>
+				{{ retryingCatalog ? 'Reintentando...' : 'Reintentar conexión' }}
+			</button>
+		</div>
+		<div v-else-if="filteredMarketServers.length === 0" class="no-results">
 			No se encontraron modpacks con ese nombre.
 		</div>
 	</div>
@@ -2013,6 +2970,7 @@ const filteredMarketServers = computed(() => {
 											:src="`https://mc-heads.net/avatar/${acc.uuid || encodeURIComponent(acc.name)}/64`"
 											alt=""
 											class="skin-face-img"
+											@error="handleAvatarError"
 										/>
 									</span>
 									<span>
@@ -2095,6 +3053,7 @@ const filteredMarketServers = computed(() => {
 											:src="`https://mc-heads.net/avatar/${encodeURIComponent(acc.name)}/64`"
 											alt=""
 											class="skin-face-img"
+											@error="handleAvatarError"
 										/>
 									</span>
 									<span>
@@ -2748,6 +3707,219 @@ const filteredMarketServers = computed(() => {
 				>
 					Cerrar
 				</button>
+			</div>
+		</div>
+	</div>
+
+	<!-- Console & Logs / Crash Viewer Modal -->
+	<div
+		v-if="logsModalOpen"
+		class="confirm-modal-backdrop"
+		role="dialog"
+		aria-modal="true"
+		aria-label="Consola y logs de la instancia"
+		@click="closeInstanceLogsModal"
+	>
+		<div class="logs-modal-box" @click.stop>
+			<div class="logs-modal-header">
+				<div class="logs-modal-title-row">
+					<div class="logs-modal-icon" aria-hidden="true">
+						<svg
+							viewBox="0 0 24 24"
+							width="20"
+							height="20"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						>
+							<polyline points="4 17 10 11 4 5" />
+							<line x1="12" y1="19" x2="20" y2="19" />
+						</svg>
+					</div>
+					<div class="logs-modal-title-group">
+						<h3>
+							<span>Consola y Logs — {{ logsModalInstanceName || 'Instancia' }}</span>
+							<span class="logs-status-pill" :class="{ 'is-running': isSelectedRunning }">
+								<span class="logs-status-dot" />
+								<span>{{ isSelectedRunning ? 'En ejecución' : 'Detenido' }}</span>
+							</span>
+						</h3>
+						<p>
+							{{
+								logSelectedSource === 'live'
+									? 'Consola en vivo (launcher_log.txt)'
+									: logSelectedSource.replace(/^.*?::/, '')
+							}}
+						</p>
+					</div>
+				</div>
+
+				<button
+					type="button"
+					class="logs-close-btn"
+					aria-label="Cerrar consola"
+					@click="closeInstanceLogsModal"
+				>
+					<svg
+						viewBox="0 0 20 20"
+						width="16"
+						height="16"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+					>
+						<path d="M5 5l10 10M15 5 5 15" />
+					</svg>
+				</button>
+			</div>
+
+			<div class="logs-controls-bar">
+				<select
+					v-model="logSelectedSource"
+					class="logs-select"
+					aria-label="Seleccionar fuente de log"
+					@change="loadSelectedLogSource(logSelectedSource)"
+				>
+					<option value="live">Consola en vivo (launcher_log.txt)</option>
+					<option
+						v-for="entry in filteredSelectorEntries"
+						:key="`${entry.log_type}::${entry.filename}`"
+						:value="`${entry.log_type}::${entry.filename}`"
+					>
+						{{ entry.log_type === 'CrashReport' ? `[CRASH] ${entry.filename}` : entry.filename }}
+					</option>
+				</select>
+
+				<input
+					v-model="logSearchQuery"
+					type="search"
+					class="logs-search-input"
+					placeholder="Buscar en el log (error, mod, clase...)"
+				/>
+
+				<div class="logs-filter-pills" role="group" aria-label="Filtrar líneas">
+					<button
+						type="button"
+						class="logs-filter-pill"
+						:class="{ active: logFilterMode === 'all' }"
+						@click="handleLogFilterModeChange('all')"
+					>
+						Todo
+					</button>
+					<button
+						type="button"
+						class="logs-filter-pill"
+						:class="{ active: logFilterMode === 'errors' }"
+						@click="handleLogFilterModeChange('errors')"
+					>
+						Errores / Warn
+					</button>
+					<button
+						type="button"
+						class="logs-filter-pill has-crash"
+						:class="{ active: logFilterMode === 'crashes' }"
+						@click="handleLogFilterModeChange('crashes')"
+					>
+						Crash Reports ({{ crashReportEntries.length }})
+					</button>
+				</div>
+			</div>
+
+			<div v-if="detectedCrashHint" class="logs-crash-banner" role="alert">
+				<svg
+					viewBox="0 0 24 24"
+					width="20"
+					height="20"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					style="flex-shrink: 0; margin-top: 2px"
+				>
+					<path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+				</svg>
+				<div>
+					<strong>{{ detectedCrashHint.title }}</strong>
+					<span>{{ detectedCrashHint.advice }}</span>
+				</div>
+			</div>
+
+			<div ref="logOutputEl" class="logs-terminal-box" @scroll="handleLogsScroll">
+				<div v-if="logsLoading" class="logs-terminal-empty">
+					Cargando registros de la instancia...
+				</div>
+				<div v-else-if="logStatsAndLines.lines.length === 0" class="logs-terminal-empty">
+					{{
+						logSearchQuery.trim() || logFilterMode === 'errors'
+							? 'No hay líneas que coincidan con el filtro aplicado.'
+							: 'Todavía no hay salida registrada para esta fuente.'
+					}}
+				</div>
+				<template v-else>
+					<div
+						v-if="logStatsAndLines.truncated"
+						class="logs-terminal-line is-warn"
+						style="margin-bottom: 8px; opacity: 0.85"
+					>
+						[Mostrando las últimas 2500 líneas de {{ logStatsAndLines.totalMatched }} para mantener el rendimiento]
+					</div>
+					<div
+						v-for="(line, idx) in logStatsAndLines.lines"
+						:key="idx"
+						class="logs-terminal-line"
+						:class="{
+							'is-error': line.level === 'error',
+							'is-warn': line.level === 'warn',
+						}"
+					>
+						{{ line.text || '\u00A0' }}
+					</div>
+				</template>
+			</div>
+
+			<div class="logs-modal-footer">
+				<span class="logs-footer-meta">
+					{{ logStatsAndLines.totalMatched }} líneas
+					<template v-if="logSelectedSource === 'live'">
+						• {{ logAutoScroll ? 'Autodesplazamiento activo' : 'Desplazamiento manual' }}
+					</template>
+				</span>
+
+				<div class="logs-footer-actions">
+					<button
+						type="button"
+						class="confirm-modal-cancel-btn"
+						@click="handleCopyCurrentLog"
+					>
+						Copiar log
+					</button>
+					<button
+						v-if="logSelectedSource === 'live'"
+						type="button"
+						class="confirm-modal-cancel-btn"
+						@click="handleClearLiveConsole"
+					>
+						Limpiar vista
+					</button>
+					<button
+						type="button"
+						class="confirm-modal-cancel-btn"
+						@click="handleOpenCurrentLogsFolder"
+					>
+						Abrir carpeta
+					</button>
+					<button
+						type="button"
+						class="install-modal-confirm-btn"
+						@click="closeInstanceLogsModal"
+					>
+						Cerrar
+					</button>
+				</div>
 			</div>
 		</div>
 	</div>

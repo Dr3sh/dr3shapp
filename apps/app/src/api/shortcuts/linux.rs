@@ -8,8 +8,12 @@ pub(super) async fn create_shortcut(
     profile_name: &str,
     launch_url: &Url,
     output_path: &Path,
+    icon_path: Option<&Path>,
 ) -> Result<()> {
     let target_path = std::env::current_exe()?;
+    let icon_value = icon_path
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "ModrinthApp".to_string());
     tokio::fs::write(
         output_path,
         format!(
@@ -17,12 +21,13 @@ pub(super) async fn create_shortcut(
 			Type=Application\n\
 			Name={}\n\
 			Exec={} {}\n\
-			Icon=ModrinthApp\n\
+			Icon={}\n\
 			Terminal=false\n\
 			Categories=Game;\n",
             escape_desktop_entry_value(&format!("Launch {profile_name}")),
             quote_desktop_exec_arg(&target_path.to_string_lossy()),
             quote_desktop_exec_arg(launch_url.as_str()),
+            escape_desktop_entry_value(&icon_value),
         ),
     )
     .await?;

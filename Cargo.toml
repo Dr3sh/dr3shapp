@@ -332,6 +332,24 @@ toasty = { path = "packages/toasty" }
 [profile.dev.package.sqlx-macros]
 opt-level = 3
 
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.zip]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.crc32fast]
+opt-level = 3
+
+[profile.dev.package.zlib-rs]
+opt-level = 3
+
 # Optimize for speed and reduce size on release builds
 [profile.release]
 opt-level = "s"  # Optimize for binary size
@@ -339,6 +357,24 @@ strip = true  # Remove debug symbols
 lto = "thin"  # Multi-threaded link time optimization (avoids single-thread 45+ min bottleneck)
 codegen-units = 16  # Parallel compilation across all CPU cores
 panic = "abort"  # Strip expensive panic clean-up logic
+
+[profile.release.package.sha2]
+opt-level = 3
+
+[profile.release.package.zip]
+opt-level = 3
+
+[profile.release.package.flate2]
+opt-level = 3
+
+[profile.release.package.miniz_oxide]
+opt-level = 3
+
+[profile.release.package.crc32fast]
+opt-level = 3
+
+[profile.release.package.zlib-rs]
+opt-level = 3
 
 [profile.test]
 inherits = "dev"

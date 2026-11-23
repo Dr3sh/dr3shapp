@@ -26,6 +26,7 @@ pub async fn run(
     instance_id: &str,
     quick_play_type: QuickPlayType,
 ) -> crate::Result<ProcessMetadata> {
+    let _launch_guard = crate::launcher::LaunchGuard::enter();
     let state = State::get().await?;
     if crate::state::instances::adapters::sqlite::instance_rows::is_instance_quarantined(
         instance_id,
@@ -310,11 +311,31 @@ fn server_play_project_id(link: &InstanceLink) -> Option<&String> {
 
 pub async fn kill(instance_id: &str) -> crate::Result<()> {
     let state = State::get().await?;
-    let processes =
-        crate::api::process::get_by_instance_id(instance_id).await?;
+    let processes: Vec<ProcessMetadata> = state
+        .process_manager
+        .get_all()
+        .into_iter()
+        .filter(|x| x.instance_id == instance_id)
+        .collect();
 
     for process in processes {
         state.process_manager.kill(process.uuid).await?;
+    }
+
+    let persisted = crate::state::get_persisted_running_processes(
+        Some(instance_id),
+        &state,
+    )
+    .await?;
+    for (pid, start_time, _) in persisted {
+        if let Ok(pid_u32) = u32::try_from(pid) {
+            crate::state::kill_pid_tree(pid_u32).await;
+        }
+        crate::state::clear_persisted_process_row(
+            &state.pool,
+            Some((pid, start_time)),
+        )
+        .await;
     }
 
     Ok(())

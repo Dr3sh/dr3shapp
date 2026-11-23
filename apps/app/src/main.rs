@@ -19,11 +19,11 @@ use theseus::prelude::*;
 pub mod dr3sh;
 use dr3sh::{
     dr3sh_ack_migration_notice, dr3sh_cancel, dr3sh_cancel_download,
-    dr3sh_check_launcher_update, dr3sh_cleanup_deleted_instance, dr3sh_download_modpack,
-    dr3sh_get_diagnostics, dr3sh_get_state, dr3sh_install_or_update,
-    dr3sh_link_existing_instance, dr3sh_migrate_local_state,
-    dr3sh_open_logs_folder, dr3sh_prepare_launch, dr3sh_repair,
-    dr3sh_wait_for_instance_ready,
+    dr3sh_check_instance_health, dr3sh_check_launcher_update,
+    dr3sh_cleanup_deleted_instance, dr3sh_download_modpack, dr3sh_get_diagnostics,
+    dr3sh_get_state, dr3sh_install_or_update, dr3sh_link_existing_instance,
+    dr3sh_migrate_local_state, dr3sh_open_logs_folder, dr3sh_prepare_launch,
+    dr3sh_repair, dr3sh_wait_for_instance_ready,
 };
 
 fn cleanup_dangling_profile_junctions() {
@@ -113,9 +113,21 @@ async fn dr3sh_publish_release(
         return Err(anyhow::anyhow!("Ya hay una subida en progreso. Cancélala o espera a que termine.").into());
     }
 
-    let p = PathBuf::from(&archive_path);
-    if !p.exists() || !p.is_file() {
-        return Err(anyhow::anyhow!("El archivo ZIP no existe en: {archive_path}").into());
+    let parts: Vec<&str> = archive_path
+        .split('|')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if parts.is_empty() {
+        return Err(anyhow::anyhow!("No se especificó ninguna ruta de origen para empaquetar.").into());
+    }
+
+    for sub in &parts {
+        let p = PathBuf::from(sub);
+        if !p.exists() || (!p.is_file() && !p.is_dir()) {
+            return Err(anyhow::anyhow!("El archivo o carpeta no existe en: {sub}").into());
+        }
     }
 
     let mut script_candidates = Vec::new();
@@ -318,6 +330,300 @@ fn dr3sh_clear_dev_session(app: tauri::AppHandle) -> api::Result<()> {
         let _ = std::fs::remove_file(path);
     }
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_desktop_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{
+        FOLDERID_Desktop, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+    };
+
+    if let Ok(pwstr) = unsafe { SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT, None) } {
+        let converted = unsafe { pwstr.to_string() };
+        unsafe {
+            CoTaskMemFree(Some(pwstr.0 as *const _));
+        }
+        if let Ok(s) = converted {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return Some(PathBuf::from(trimmed));
+            }
+        }
+    }
+
+    if let Ok(p) = app.path().desktop_dir() {
+        return Some(p);
+    }
+
+    std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join("Desktop"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn resolve_windows_desktop_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().desktop_dir().ok()
+}
+
+fn build_ico_from_image_bytes(raw_bytes: &[u8]) -> Option<Vec<u8>> {
+    use image::imageops::FilterType;
+    use image::{DynamicImage, GenericImageView, ImageFormat, RgbaImage};
+    use std::io::Cursor;
+
+    let img = image::load_from_memory(raw_bytes).ok()?;
+    let sizes: &[u32] = &[256, 64, 48, 32, 16];
+    let mut frames: Vec<(u32, Vec<u8>)> = Vec::with_capacity(sizes.len());
+
+    for &size in sizes {
+        let resized = img.resize(size, size, FilterType::Lanczos3);
+        let (rw, rh) = resized.dimensions();
+        let mut canvas = RgbaImage::new(size, size);
+        let x_off = ((size.saturating_sub(rw)) / 2) as i64;
+        let y_off = ((size.saturating_sub(rh)) / 2) as i64;
+        image::imageops::overlay(&mut canvas, &resized.to_rgba8(), x_off, y_off);
+
+        let mut png_buf = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(canvas)
+            .write_to(&mut png_buf, ImageFormat::Png)
+            .ok()?;
+        frames.push((size, png_buf.into_inner()));
+    }
+
+    let count = frames.len() as u16;
+    let mut out = Vec::new();
+    // ICONDIR header: reserved=0, type=1 (.ico), count
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+
+    let mut data_offset = 6u32 + (frames.len() as u32) * 16;
+    for (size, png_bytes) in &frames {
+        let dim_byte = if *size >= 256 { 0u8 } else { *size as u8 };
+        let byte_len = u32::try_from(png_bytes.len()).ok()?;
+        out.push(dim_byte);
+        out.push(dim_byte);
+        out.push(0); // color count
+        out.push(0); // reserved
+        out.extend_from_slice(&1u16.to_le_bytes()); // planes
+        out.extend_from_slice(&32u16.to_le_bytes()); // bit count
+        out.extend_from_slice(&byte_len.to_le_bytes());
+        out.extend_from_slice(&data_offset.to_le_bytes());
+        data_offset = data_offset.checked_add(byte_len)?;
+    }
+
+    for (_, png_bytes) in frames {
+        out.extend_from_slice(&png_bytes);
+    }
+
+    Some(out)
+}
+
+async fn load_shortcut_icon_bytes(
+    instance_id: &str,
+    server_id: Option<&str>,
+    icon_url: Option<&str>,
+) -> Option<Vec<u8>> {
+    let candidate = icon_url.map(str::trim).filter(|s| !s.is_empty());
+
+    if let Some(raw_url) = candidate {
+        if raw_url.starts_with("http://") || raw_url.starts_with("https://") {
+            if let Ok(resp) = dr3sh::download::shared_http_client()
+                .get(raw_url)
+                .timeout(std::time::Duration::from_secs(12))
+                .send()
+                .await
+                && resp.status().is_success()
+                && let Ok(bytes) = resp.bytes().await
+                && !bytes.is_empty()
+            {
+                return Some(bytes.to_vec());
+            }
+        } else if let Some(b64_part) = raw_url.strip_prefix("data:")
+            && let Some((_, encoded)) = b64_part.split_once(";base64,")
+        {
+            use base64::Engine;
+            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded.trim())
+                && !decoded.is_empty()
+            {
+                return Some(decoded);
+            }
+        } else {
+            let clean = raw_url.strip_prefix("file:///").unwrap_or(raw_url);
+            let local = PathBuf::from(clean);
+            if local.is_file()
+                && let Ok(bytes) = std::fs::read(&local)
+            {
+                return Some(bytes);
+            }
+            if raw_url.starts_with('/') {
+                let fallback_gh = format!(
+                    "https://raw.githubusercontent.com/Dr3sh/Dr3sh.github.io/main{}",
+                    raw_url
+                );
+                if let Ok(resp) = dr3sh::download::shared_http_client()
+                    .get(&fallback_gh)
+                    .timeout(std::time::Duration::from_secs(12))
+                    .send()
+                    .await
+                    && resp.status().is_success()
+                    && let Ok(bytes) = resp.bytes().await
+                    && !bytes.is_empty()
+                {
+                    return Some(bytes.to_vec());
+                }
+            }
+        }
+    }
+
+    if let Ok(Some(inst)) = theseus::instance::get(instance_id).await
+        && let Some(ref icon_path) = inst.instance.icon_path
+    {
+        let p = PathBuf::from(icon_path);
+        if p.is_file()
+            && let Ok(bytes) = std::fs::read(&p)
+        {
+            return Some(bytes);
+        }
+    }
+
+    if let Some(sid) = server_id {
+        let st = dr3sh::state::get_server_state(sid);
+        if let Some(ref dir) = st.instance_path {
+            for rel in ["icon.png", "server-icon.png", ".dr3sh/icon.png"] {
+                let p = PathBuf::from(dir).join(rel);
+                if p.is_file()
+                    && let Ok(bytes) = std::fs::read(&p)
+                {
+                    return Some(bytes);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+async fn resolve_instance_shortcut_ico(
+    instance_id: &str,
+    server_id: Option<&str>,
+    icon_url: Option<&str>,
+) -> Option<PathBuf> {
+    let raw_bytes = load_shortcut_icon_bytes(instance_id, server_id, icon_url).await?;
+    let key = server_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(instance_id)
+        .to_string();
+
+    tokio::task::spawn_blocking(move || {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(&raw_bytes);
+        let hash_hex: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        let hash8 = &hash_hex[..8];
+
+        let safe_key: String = key
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let safe_key = if safe_key.is_empty() {
+            "instance".to_string()
+        } else {
+            safe_key
+        };
+
+        let ico_dir = dr3sh::logger::launcher_data_dir().join("icons");
+        let _ = std::fs::create_dir_all(&ico_dir);
+        let file_name = format!("{safe_key}-{hash8}.ico");
+        let ico_path = ico_dir.join(&file_name);
+
+        if ico_path.is_file() {
+            return Some(ico_path);
+        }
+
+        let ico_bytes = build_ico_from_image_bytes(&raw_bytes)?;
+        let prefix = format!("{safe_key}-");
+        if let Ok(entries) = std::fs::read_dir(&ico_dir) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str()
+                    && name.starts_with(&prefix)
+                    && name.ends_with(".ico")
+                    && name != file_name
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+
+        let tmp_path = ico_dir.join(format!("{file_name}.tmp"));
+        if std::fs::write(&tmp_path, &ico_bytes).is_ok()
+            && std::fs::rename(&tmp_path, &ico_path).is_ok()
+        {
+            Some(ico_path)
+        } else {
+            let _ = std::fs::remove_file(&tmp_path);
+            None
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+#[tauri::command]
+async fn dr3sh_create_desktop_shortcut(
+    app: tauri::AppHandle,
+    instance_name: String,
+    instance_id: String,
+    server_id: Option<String>,
+    icon_url: Option<String>,
+) -> api::Result<String> {
+    let desktop = resolve_windows_desktop_dir(&app)
+        .ok_or_else(|| anyhow::anyhow!("No se pudo obtener la ruta del escritorio"))?;
+    let _ = std::fs::create_dir_all(&desktop);
+    let safe_name: String = instance_name
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect();
+    let safe_name = if safe_name.trim().is_empty() {
+        "Modpack".to_string()
+    } else {
+        safe_name.trim().to_string()
+    };
+    let out_path = desktop.join(format!("{safe_name}.lnk"));
+    let icon_path = resolve_instance_shortcut_ico(
+        &instance_id,
+        server_id.as_deref(),
+        icon_url.as_deref(),
+    )
+    .await;
+
+    tracing::info!(
+        instance_id = %instance_id,
+        out_path = %out_path.display(),
+        icon_path = ?icon_path,
+        "Creating desktop shortcut"
+    );
+    api::shortcuts::create_instance_shortcut(
+        instance_name,
+        instance_id,
+        out_path.clone(),
+        None,
+        None,
+        icon_path,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(out_path = %out_path.display(), "Desktop shortcut failed: {e:?}");
+        e
+    })?;
+    Ok(out_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -611,9 +917,16 @@ fn main() {
 
     #[cfg(target_os = "windows")]
     {
+        use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
         use windows::Win32::UI::WindowsAndMessaging::{
             SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
             SWP_NOZORDER, SetWindowPos,
+        };
+
+        let _ = unsafe {
+            SetCurrentProcessExplicitAppUserModelID(windows_core::w!(
+                "com.dr3sh.launcher"
+            ))
         };
 
         // Refresh the hidden window's frame before window-state measures its client area.
@@ -778,25 +1091,62 @@ fn main() {
             dr3sh_save_dev_session,
             dr3sh_clear_dev_session,
             dr3sh_detect_github_token,
+            dr3sh_create_desktop_shortcut,
+            dr3sh_check_instance_health,
         ]);
 
     tracing::info!("Initializing app...");
     let app = builder.build(tauri_context);
 
+    static PENDING_EXIT_AFTER_LAUNCH: AtomicBool = AtomicBool::new(false);
+
+    fn trigger_deferred_exit_after_launch(app: &tauri::AppHandle) {
+        if !PENDING_EXIT_AFTER_LAUNCH.swap(true, Ordering::SeqCst) {
+            let app_handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                for _ in 0..300 {
+                    if theseus::active_launch_count() == 0 {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                }
+                app_handle.exit(0);
+            });
+        }
+    }
+
     match app {
         Ok(app) => {
             app.run(|app, event| {
-                #[cfg(not(any(feature = "updater", target_os = "macos")))]
-                let _ = app;
-
-                if matches!(&event, tauri::RunEvent::ExitRequested { .. })
-                    && let Err(error) = tauri::async_runtime::block_on(
-                        theseus::minecraft_skins::flush_pending_skin_change(),
-                    )
+                if let tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::CloseRequested { api, .. },
+                    ..
+                } = &event
+                    && label == "main"
+                    && theseus::active_launch_count() > 0
                 {
-                    tracing::warn!(
-                        "Failed to flush pending Minecraft skin change before exit: {error}"
-                    );
+                    api.prevent_close();
+                    if let Some(window) = app.get_webview_window(label) {
+                        let _ = window.hide();
+                    }
+                    trigger_deferred_exit_after_launch(app);
+                    return;
+                }
+
+                if let tauri::RunEvent::ExitRequested { api, .. } = &event {
+                    if theseus::active_launch_count() > 0 {
+                        api.prevent_exit();
+                        trigger_deferred_exit_after_launch(app);
+                        return;
+                    }
+                    if let Err(error) = tauri::async_runtime::block_on(
+                        theseus::minecraft_skins::flush_pending_skin_change(),
+                    ) {
+                        tracing::warn!(
+                            "Failed to flush pending Minecraft skin change before exit: {error}"
+                        );
+                    }
                 }
 
                 #[cfg(feature = "updater")]

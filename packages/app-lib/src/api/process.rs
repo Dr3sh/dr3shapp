@@ -12,7 +12,20 @@ use uuid::Uuid;
 #[tracing::instrument]
 pub async fn get_all() -> crate::Result<Vec<ProcessMetadata>> {
     let state = State::get().await?;
-    let processes = state.process_manager.get_all();
+    let mut processes = state.process_manager.get_all();
+    let active_instances: std::collections::HashSet<String> = processes
+        .iter()
+        .map(|p| p.instance_id.clone())
+        .collect();
+    if let Ok(persisted) =
+        crate::state::get_persisted_running_processes(None, &state).await
+    {
+        for (_, _, meta) in persisted {
+            if !active_instances.contains(&meta.instance_id) {
+                processes.push(meta);
+            }
+        }
+    }
     Ok(processes)
 }
 
@@ -55,12 +68,23 @@ pub async fn get_by_instance_id(
     instance_id: &str,
 ) -> crate::Result<Vec<ProcessMetadata>> {
     let state = State::get().await?;
-    let processes = state
+    let mut processes: Vec<ProcessMetadata> = state
         .process_manager
         .get_all()
         .into_iter()
         .filter(|x| x.instance_id == instance_id)
         .collect();
+    if processes.is_empty()
+        && let Ok(persisted) = crate::state::get_persisted_running_processes(
+            Some(instance_id),
+            &state,
+        )
+        .await
+    {
+        for (_, _, meta) in persisted {
+            processes.push(meta);
+        }
+    }
     Ok(processes)
 }
 
@@ -69,6 +93,24 @@ pub async fn get_by_instance_id(
 pub async fn kill(uuid: Uuid) -> crate::Result<()> {
     let state = State::get().await?;
     state.process_manager.kill(uuid).await?;
+
+    if state.process_manager.get(uuid).is_none()
+        && let Ok(persisted) =
+            crate::state::get_persisted_running_processes(None, &state).await
+    {
+        for (pid, start_time, meta) in persisted {
+            if meta.uuid == uuid {
+                if let Ok(pid_u32) = u32::try_from(pid) {
+                    crate::state::kill_pid_tree(pid_u32).await;
+                }
+                crate::state::clear_persisted_process_row(
+                    &state.pool,
+                    Some((pid, start_time)),
+                )
+                .await;
+            }
+        }
+    }
 
     Ok(())
 }

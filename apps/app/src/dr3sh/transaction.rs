@@ -1,15 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::dr3sh::download::emit_progress;
+use crate::dr3sh::download::emit_progress_detailed;
 use crate::dr3sh::errors::Dr3shError;
 use crate::dr3sh::logger::{format_log_line, log_event, log_op_debug_batch};
 use crate::dr3sh::manifest::{
@@ -129,7 +129,7 @@ pub fn extract_to_staging(
         os_code: e.raw_os_error().unwrap_or(-1).to_string(),
     })?;
 
-    let mut needed: HashMap<String, (String, String)> = HashMap::new();
+    let mut needed: HashMap<String, (String, String, u64)> = HashMap::new();
     for entry in &plan.items {
         if matches!(
             entry.action,
@@ -142,7 +142,10 @@ pub fn extract_to_staging(
                     .unwrap_or(&entry.path)
                     .replace('\\', "/")
                     .to_ascii_lowercase();
-                needed.insert(lookup_key, (entry.path.clone(), sha.clone()));
+                needed.insert(
+                    lookup_key,
+                    (entry.path.clone(), sha.clone(), entry.expected_size),
+                );
             }
         }
     }
@@ -159,41 +162,81 @@ pub fn extract_to_staging(
     }
 
     let result = (|| -> Result<(), Dr3shError> {
+        if cancel_token.load(Ordering::SeqCst) {
+            return Err(Dr3shError::Cancelled {
+                stage: "extract".to_string(),
+            });
+        }
+
+        let total_needed = needed.len() as u64;
+        let total_extract_bytes: u64 = needed
+            .values()
+            .map(|(_, _, sz)| *sz)
+            .sum::<u64>()
+            .max(1);
+
+        if let Some(app_handle) = app {
+            emit_progress_detailed(
+                app_handle,
+                op_id,
+                server_id,
+                "extract",
+                format!("Descomprimiendo archivos (0/{})...", total_needed),
+                0,
+                total_extract_bytes,
+                0,
+                None,
+                Some(72),
+                None,
+                Some(0),
+                Some(total_needed),
+            );
+        }
+
+        // Open File directly without BufReader: ZipArchive seeks per Central Directory entry,
+        // so wrapping File in a large BufReader thrashes page reads on large packs.
         let file = File::open(zip_path).map_err(|e| Dr3shError::ZipCorrupt {
             entry: "<archive>".to_string(),
             error: e.to_string(),
         })?;
-        let mut archive = zip::ZipArchive::new(file).map_err(|e| Dr3shError::ZipCorrupt {
+        let archive = zip::ZipArchive::new(file).map_err(|e| Dr3shError::ZipCorrupt {
             entry: "<archive>".to_string(),
             error: e.to_string(),
         })?;
+        let archive_metadata = archive.metadata();
 
-        let total_needed = needed.len() as u64;
-        let mut extracted_count = 0u64;
-        let mut last_emit = Instant::now();
-
+        let extract_start = Instant::now();
         let mut common_prefix: Option<String> = None;
-        for i in 0..archive.len() {
-            if let Ok(entry) = archive.by_index_raw(i)
-                && !entry.is_dir()
-                && let Ok(raw_n) = entry.name()
-            {
-                let norm = raw_n.replace('\\', "/");
-                if let Some((first_seg, _)) = norm.split_once('/') {
-                    let candidate = format!("{first_seg}/");
-                    match &common_prefix {
-                        None => common_prefix = Some(candidate),
-                        Some(existing) if !existing.eq_ignore_ascii_case(&candidate) => {
-                            common_prefix = None;
-                            break;
-                        }
-                        _ => {}
-                    }
-                } else {
-                    common_prefix = None;
-                    break;
-                }
+        let mut raw_entries: Vec<(usize, String)> = Vec::with_capacity(archive.len());
+
+        for (idx, name_res) in archive.file_names().enumerate() {
+            if cancel_token.load(Ordering::Relaxed) {
+                return Err(Dr3shError::Cancelled {
+                    stage: "extract".to_string(),
+                });
             }
+            let raw_n = name_res.map_err(|e| Dr3shError::ZipCorrupt {
+                entry: format!("index {}", idx),
+                error: e.to_string(),
+            })?;
+            if raw_n.ends_with('/') || raw_n.ends_with('\\') {
+                continue;
+            }
+            let norm = raw_n.replace('\\', "/");
+            validate_relative_path(&norm)?;
+            if let Some((first_seg, _)) = norm.split_once('/') {
+                let candidate = format!("{first_seg}/");
+                match &common_prefix {
+                    None => common_prefix = Some(candidate),
+                    Some(existing) if !existing.eq_ignore_ascii_case(&candidate) => {
+                        common_prefix = None;
+                    }
+                    _ => {}
+                }
+            } else {
+                common_prefix = None;
+            }
+            raw_entries.push((idx, norm));
         }
         if let Some(ref prefix) = common_prefix {
             let folder = prefix.trim_end_matches('/').to_ascii_lowercase();
@@ -212,32 +255,14 @@ pub fn extract_to_staging(
             }
         }
 
-        for i in 0..archive.len() {
-            if cancel_token.load(Ordering::SeqCst) {
+        let mut work_items: Vec<(usize, String, String, u64)> = Vec::with_capacity(needed.len());
+        for (idx, raw_name) in raw_entries {
+            if cancel_token.load(Ordering::Relaxed) {
                 return Err(Dr3shError::Cancelled {
                     stage: "extract".to_string(),
                 });
             }
-
-            let mut entry = archive.by_index(i).map_err(|e| Dr3shError::ZipCorrupt {
-                entry: format!("index {}", i),
-                error: e.to_string(),
-            })?;
-
-            let raw_name = entry
-                .name()
-                .map_err(|e| Dr3shError::ZipCorrupt {
-                    entry: format!("index {}", i),
-                    error: e.to_string(),
-                })?
-                .replace('\\', "/");
-            if entry.is_dir() || raw_name.ends_with('/') {
-                continue;
-            }
-
-            validate_relative_path(&raw_name)?;
             let key = raw_name.to_ascii_lowercase();
-
             let matched = needed.remove(&key).or_else(|| {
                 if let Some(ref prefix) = common_prefix
                     && raw_name.len() > prefix.len()
@@ -250,97 +275,247 @@ pub fn extract_to_staging(
                     None
                 }
             });
-
-            let Some((canonical_rel_path, expected_sha)) = matched else {
-                continue;
-            };
-
-            let out_path = staging_dir.join(&canonical_rel_path);
-            if let Some(parent) = out_path.parent() {
-                fs::create_dir_all(parent).map_err(|e| Dr3shError::FsPermission {
-                    path: parent.to_string_lossy().to_string(),
-                    os_code: e.raw_os_error().unwrap_or(-1).to_string(),
-                })?;
-            }
-
-            let mut out_file = File::create(&out_path).map_err(|e| Dr3shError::FsPermission {
-                path: out_path.to_string_lossy().to_string(),
-                os_code: e.raw_os_error().unwrap_or(-1).to_string(),
-            })?;
-
-            let mut hasher = Sha256::new();
-            let mut buf = [0u8; 65536];
-            loop {
-                if cancel_token.load(Ordering::SeqCst) {
-                    return Err(Dr3shError::Cancelled {
-                        stage: "extract".to_string(),
-                    });
-                }
-                let n = entry.read(&mut buf).map_err(|e| Dr3shError::ZipCorrupt {
-                    entry: canonical_rel_path.clone(),
-                    error: e.to_string(),
-                })?;
-                if n == 0 {
-                    break;
-                }
-                use std::io::Write;
-                out_file.write_all(&buf[..n]).map_err(|e| Dr3shError::FsPermission {
-                    path: out_path.to_string_lossy().to_string(),
-                    os_code: e.raw_os_error().unwrap_or(-1).to_string(),
-                })?;
-                hasher.update(&buf[..n]);
-            }
-
-            let actual_sha: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
-            if !actual_sha.eq_ignore_ascii_case(&expected_sha) {
-                return Err(Dr3shError::ZipCorrupt {
-                    entry: canonical_rel_path,
-                    error: format!("SHA-256 mismatch (expected {}, got {})", expected_sha, actual_sha),
-                });
-            }
-
-            extracted_count += 1;
-            if let Some(app_handle) = app
-                && (last_emit.elapsed() >= Duration::from_millis(100)
-                    || extracted_count == total_needed)
-            {
-                let percent = (70.0 + (extracted_count as f64 / total_needed.max(1) as f64) * 20.0)
-                    .round() as u32;
-                emit_progress(
-                    app_handle,
-                    op_id,
-                    server_id,
-                    "extract",
-                    format!("Extrayendo archivos ({}/{})...", extracted_count, total_needed),
-                    extracted_count,
-                    total_needed,
-                    0,
-                    None,
-                    Some(percent),
-                );
-                last_emit = Instant::now();
+            if let Some((canonical_rel_path, expected_sha, expected_sz)) = matched {
+                work_items.push((idx, canonical_rel_path, expected_sha, expected_sz));
             }
         }
 
         if !needed.is_empty() {
-            let missing: Vec<String> = needed.into_values().map(|(p, _)| p).collect();
+            let missing: Vec<String> = needed.into_values().map(|(p, _, _)| p).collect();
             return Err(Dr3shError::ZipContentMismatch {
                 missing_entries: missing,
             });
         }
 
-        if let Some(app_handle) = app {
-            emit_progress(
+        let mut created_parents: HashSet<PathBuf> = HashSet::new();
+        for (_, canonical_rel_path, _, _) in &work_items {
+            if let Some(parent) = staging_dir.join(canonical_rel_path).parent() {
+                if created_parents.insert(parent.to_path_buf()) {
+                    fs::create_dir_all(parent).map_err(|e| Dr3shError::FsPermission {
+                        path: parent.to_string_lossy().to_string(),
+                        os_code: e.raw_os_error().unwrap_or(-1).to_string(),
+                    })?;
+                }
+            }
+        }
+
+        let worker_count = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .clamp(2, 6)
+            .min(work_items.len().max(1));
+
+        let next_idx = AtomicUsize::new(0);
+        let extracted_count = AtomicU64::new(0);
+        let extracted_bytes = AtomicU64::new(0);
+        let abort_err = AtomicBool::new(false);
+        let first_error: Mutex<Option<Dr3shError>> = Mutex::new(None);
+        let last_emit: Mutex<Instant> = Mutex::new(extract_start);
+
+        let record_err = |err: Dr3shError| {
+            abort_err.store(true, Ordering::Release);
+            if let Ok(mut guard) = first_error.lock()
+                && guard.is_none()
+            {
+                *guard = Some(err);
+            }
+        };
+
+        let emit_extract_progress = |force: bool| {
+            let Some(app_handle) = app else {
+                return;
+            };
+            let Ok(mut guard) = last_emit.try_lock() else {
+                return;
+            };
+            if !force && guard.elapsed() < Duration::from_millis(150) {
+                return;
+            }
+            let done_cnt = extracted_count.load(Ordering::Relaxed);
+            let shown_bytes = extracted_bytes
+                .load(Ordering::Relaxed)
+                .min(total_extract_bytes);
+            let ratio = (shown_bytes as f64 / total_extract_bytes as f64).clamp(0.0, 1.0);
+            let percent = (72.0 + ratio * 22.0).round() as u32;
+            let elapsed_secs = extract_start.elapsed().as_secs_f64().max(0.2);
+            let speed_bps = (shown_bytes as f64 / elapsed_secs) as u64;
+            let eta_seconds = if total_extract_bytes > shown_bytes && speed_bps > 1024 {
+                Some(((total_extract_bytes - shown_bytes) / speed_bps).max(1))
+            } else {
+                None
+            };
+            emit_progress_detailed(
                 app_handle,
                 op_id,
                 server_id,
                 "extract",
-                "Extracción completada.",
-                total_needed,
-                total_needed,
+                format!("Descomprimiendo archivos ({}/{})...", done_cnt, total_needed),
+                shown_bytes,
+                total_extract_bytes,
+                speed_bps,
+                None,
+                Some(percent),
+                eta_seconds,
+                Some(done_cnt),
+                Some(total_needed),
+            );
+            *guard = Instant::now();
+        };
+
+        drop(archive);
+
+        std::thread::scope(|scope| {
+            for _ in 0..worker_count {
+                scope.spawn(|| {
+                    let w_file = match File::open(zip_path) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            record_err(Dr3shError::ZipCorrupt {
+                                entry: "<archive>".to_string(),
+                                error: e.to_string(),
+                            });
+                            return;
+                        }
+                    };
+                    let mut w_archive = unsafe {
+                        zip::ZipArchive::unsafe_new_with_metadata(
+                            w_file,
+                            Arc::clone(&archive_metadata),
+                        )
+                    };
+                    let mut buf = vec![0u8; 256 * 1024];
+
+                    loop {
+                        if cancel_token.load(Ordering::Relaxed) {
+                            record_err(Dr3shError::Cancelled {
+                                stage: "extract".to_string(),
+                            });
+                            return;
+                        }
+                        if abort_err.load(Ordering::Acquire) {
+                            return;
+                        }
+
+                        let idx = next_idx.fetch_add(1, Ordering::Relaxed);
+                        if idx >= work_items.len() {
+                            return;
+                        }
+
+                        let (zip_idx, ref canonical_rel_path, ref expected_sha, _) =
+                            work_items[idx];
+
+                        let mut entry = match w_archive.by_index(zip_idx) {
+                            Ok(e) => e,
+                            Err(e) => {
+                                record_err(Dr3shError::ZipCorrupt {
+                                    entry: canonical_rel_path.clone(),
+                                    error: e.to_string(),
+                                });
+                                return;
+                            }
+                        };
+
+                        let out_path = staging_dir.join(canonical_rel_path);
+                        let out_file = match File::create(&out_path) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                record_err(Dr3shError::FsPermission {
+                                    path: out_path.to_string_lossy().to_string(),
+                                    os_code: e.raw_os_error().unwrap_or(-1).to_string(),
+                                });
+                                return;
+                            }
+                        };
+                        let mut out_writer = BufWriter::with_capacity(512 * 1024, out_file);
+                        let mut hasher = Sha256::new();
+
+                        loop {
+                            if cancel_token.load(Ordering::Relaxed) {
+                                record_err(Dr3shError::Cancelled {
+                                    stage: "extract".to_string(),
+                                });
+                                return;
+                            }
+                            if abort_err.load(Ordering::Acquire) {
+                                return;
+                            }
+                            let n = match entry.read(&mut buf) {
+                                Ok(n) => n,
+                                Err(e) => {
+                                    record_err(Dr3shError::ZipCorrupt {
+                                        entry: canonical_rel_path.clone(),
+                                        error: e.to_string(),
+                                    });
+                                    return;
+                                }
+                            };
+                            if n == 0 {
+                                break;
+                            }
+                            if let Err(e) = out_writer.write_all(&buf[..n]) {
+                                record_err(Dr3shError::FsPermission {
+                                    path: out_path.to_string_lossy().to_string(),
+                                    os_code: e.raw_os_error().unwrap_or(-1).to_string(),
+                                });
+                                return;
+                            }
+                            hasher.update(&buf[..n]);
+                            extracted_bytes.fetch_add(n as u64, Ordering::Relaxed);
+                            emit_extract_progress(false);
+                        }
+
+                        if let Err(e) = out_writer.flush() {
+                            record_err(Dr3shError::FsPermission {
+                                path: out_path.to_string_lossy().to_string(),
+                                os_code: e.raw_os_error().unwrap_or(-1).to_string(),
+                            });
+                            return;
+                        }
+
+                        let actual_sha: String =
+                            hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+                        if !actual_sha.eq_ignore_ascii_case(expected_sha) {
+                            record_err(Dr3shError::ZipCorrupt {
+                                entry: canonical_rel_path.clone(),
+                                error: format!(
+                                    "SHA-256 mismatch (expected {}, got {})",
+                                    expected_sha, actual_sha
+                                ),
+                            });
+                            return;
+                        }
+
+                        let done_cnt = extracted_count.fetch_add(1, Ordering::Relaxed) + 1;
+                        emit_extract_progress(done_cnt == total_needed);
+                    }
+                });
+            }
+        });
+
+        if cancel_token.load(Ordering::SeqCst) {
+            return Err(Dr3shError::Cancelled {
+                stage: "extract".to_string(),
+            });
+        }
+        if let Some(err) = first_error.into_inner().ok().flatten() {
+            return Err(err);
+        }
+
+        if let Some(app_handle) = app {
+            emit_progress_detailed(
+                app_handle,
+                op_id,
+                server_id,
+                "extract",
+                "Descompresión completada.",
+                total_extract_bytes,
+                total_extract_bytes,
                 0,
                 None,
-                Some(90),
+                Some(94),
+                None,
+                Some(total_needed),
+                Some(total_needed),
             );
         }
 
@@ -516,23 +691,26 @@ pub fn apply_plan_transactional(
             }
 
             if let Some(app_handle) = app
-                && (last_progress_emit.elapsed() >= Duration::from_millis(100)
+                && (last_progress_emit.elapsed() >= Duration::from_millis(120)
                     || (idx + 1) as u64 == total_ops)
             {
                 let done_count = (idx + 1) as u64;
-                let percent = (90.0 + (done_count as f64 / total_ops.max(1) as f64) * 9.0)
+                let percent = (94.0 + (done_count as f64 / total_ops.max(1) as f64) * 5.0)
                     .round() as u32;
-                emit_progress(
+                emit_progress_detailed(
                     app_handle,
                     op_id,
                     server_id,
                     "apply",
-                    format!("Aplicando cambios ({}/{})...", done_count, total_ops),
-                    done_count,
-                    total_ops,
+                    format!("Instalando archivos ({}/{})...", done_count, total_ops),
+                    0,
+                    0,
                     0,
                     None,
                     Some(percent),
+                    None,
+                    Some(done_count),
+                    Some(total_ops),
                 );
                 last_progress_emit = Instant::now();
             }
@@ -590,17 +768,20 @@ pub fn apply_plan_transactional(
         finalize_committed_journal(Some(op_id), instance_dir, &journal);
 
         if let Some(app_handle) = app {
-            emit_progress(
+            emit_progress_detailed(
                 app_handle,
                 op_id,
                 server_id,
                 "commit",
-                "Instalación completada.",
-                total_ops,
-                total_ops,
+                "¡Instalación completada!",
+                0,
+                0,
                 0,
                 None,
                 Some(100),
+                None,
+                Some(total_ops),
+                Some(total_ops),
             );
         }
 
@@ -1277,6 +1458,87 @@ mod tests {
             .unwrap()
             .count();
         assert_eq!(remaining, 5);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_parallel_extract_and_cancel_immediate() {
+        let temp_dir = std::env::temp_dir().join(format!("dr3sh_par_ext_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let zip_path = temp_dir.join("pack.zip");
+        let inst_dir = temp_dir.join("inst");
+        fs::create_dir_all(&inst_dir).unwrap();
+
+        let mut plan_items = Vec::new();
+        {
+            let f = File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for i in 0..16 {
+                let rel = format!("mods/mod_{i:02}.jar");
+                let payload = vec![(i as u8).wrapping_mul(17).wrapping_add(5); 32 * 1024];
+                let sha: String = Sha256::digest(&payload)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                zw.start_file(&rel, options).unwrap();
+                zw.write_all(&payload).unwrap();
+                plan_items.push(crate::dr3sh::manifest::FilePlanItem {
+                    path: rel.clone(),
+                    policy: FilePolicy::Managed,
+                    action: PlanActionKind::Write,
+                    tag: None,
+                    expected_sha256: Some(sha),
+                    expected_size: payload.len() as u64,
+                    archive_entry_name: Some(rel),
+                });
+            }
+            zw.finish().unwrap();
+        }
+
+        let plan = ReconciliationPlan {
+            migration_mode: false,
+            items: plan_items,
+            counts_by_action: HashMap::new(),
+            counts_by_tag: HashMap::new(),
+            write_bytes_total: 16 * 32 * 1024,
+        };
+
+        // 1. Pre-cancelled token should abort cleanly before extracting
+        let pre_cancel = Arc::new(AtomicBool::new(true));
+        let cancel_res = extract_to_staging(
+            None,
+            "op_par_cancel",
+            "srv",
+            &zip_path,
+            &inst_dir,
+            "txn_cancel",
+            &plan,
+            &pre_cancel,
+        );
+        assert!(matches!(cancel_res, Err(Dr3shError::Cancelled { .. })));
+
+        // 2. Non-cancelled run should extract all 16 files accurately in parallel
+        let ok_cancel = Arc::new(AtomicBool::new(false));
+        let staging = extract_to_staging(
+            None,
+            "op_par_ok",
+            "srv",
+            &zip_path,
+            &inst_dir,
+            "txn_ok",
+            &plan,
+            &ok_cancel,
+        )
+        .expect("parallel extraction should succeed");
+        for i in 0..16 {
+            let rel = format!("mods/mod_{i:02}.jar");
+            let data = fs::read(staging.join(&rel)).unwrap();
+            assert_eq!(data.len(), 32 * 1024);
+            assert_eq!(data[0], (i as u8).wrapping_mul(17).wrapping_add(5));
+        }
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

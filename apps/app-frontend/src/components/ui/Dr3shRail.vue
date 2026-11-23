@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
+import { invoke } from '@tauri-apps/api/core'
 import { instanceListQueryOptions } from '@/pages/instance/query-options'
 import {
 	useDr3shLauncher,
@@ -16,8 +17,10 @@ import {
 import {
 	installedVersionsMap,
 	getInstalledVersion,
+	hasServerOrRuntimeUpdate,
 	findMatchingInstance as findMatchingInstanceHelper,
 } from '@/composables/use-dr3sh-downloader'
+import { run } from '@/helpers/instance'
 import { install_existing_instance } from '@/helpers/install'
 import { showInstanceInFolder } from '@/helpers/utils.js'
 
@@ -32,8 +35,15 @@ const {
 	currentView,
 	activeSettingsTab,
 	activeAccount,
+	isDeveloper,
 	refreshAccount,
 	resolveImageUrl,
+	isSidebarCollapsed,
+	railWidth,
+	setRailWidth,
+	toggleSidebarCollapse,
+	deselectModpack,
+	handleAvatarError,
 } = useDr3shLauncher()
 
 const instancesQuery = useQuery(instanceListQueryOptions())
@@ -44,7 +54,6 @@ function findMatchingInstance(server: Dr3shServer) {
 }
 
 function isServerInstalled(server: Dr3shServer): boolean {
-	// Touch reactive map
 	const _map = installedVersionsMap.value
 	const hasVer = Boolean(getInstalledVersion(server.id))
 	const hasInst = Boolean(findMatchingInstance(server))
@@ -52,137 +61,48 @@ function isServerInstalled(server: Dr3shServer): boolean {
 }
 
 function hasServerUpdate(server: Dr3shServer): boolean {
+	const _map = installedVersionsMap.value
 	if (!isServerInstalled(server)) return false
-	const installedVer = getInstalledVersion(server.id)
 	const latestObj =
 		Array.isArray(server.versions) && server.versions.length > 0
 			? server.versions[0]
 			: versions.value.find((v) => v.server === server.id)
-	if (!installedVer || !latestObj?.version) return false
-	const cleanInstalled = installedVer.replace(/^v/i, '').trim()
-	const cleanLatest = latestObj.version.replace(/^v/i, '').trim()
-	return cleanInstalled !== cleanLatest
+	return hasServerOrRuntimeUpdate(server, latestObj, findMatchingInstance(server))
 }
 
 function formatSubtitle(server: Dr3shServer): string {
 	const loader = formatLoaderName(server.mod_loader)
 	const mc = server.minecraft_version || '1.21.1'
-	const installed = isServerInstalled(server)
-	return `${loader} - ${mc} - ${installed ? 'Instalado' : 'Sin instalar'}`
+	return `${loader} • ${mc}`
 }
-
-// Sidebar Hover Screenshot Preview state
-const hoverPreview = ref<{ server: Dr3shServer; top: number; left: number } | null>(null)
-const hoverPreviewIdx = ref(0)
-let hoverTimer: ReturnType<typeof setInterval> | null = null
-
-const hoverPreviewImages = computed(() => {
-	if (!hoverPreview.value) return []
-	return getServerPreviewImages(hoverPreview.value.server)
-})
-
-watch(hoverPreview, (val) => {
-	hoverPreviewIdx.value = 0
-	if (hoverTimer) {
-		clearInterval(hoverTimer)
-		hoverTimer = null
-	}
-	if (val && hoverPreviewImages.value.length > 1) {
-		hoverTimer = setInterval(() => {
-			const total = hoverPreviewImages.value.length
-			if (total > 1) {
-				hoverPreviewIdx.value = (hoverPreviewIdx.value + 1) % total
-			}
-		}, 1600)
-	}
-})
-
-function onServerMouseEnter(event: MouseEvent, server: Dr3shServer) {
-	const target = event.currentTarget as HTMLElement
-	if (!target) return
-	const rect = target.getBoundingClientRect()
-	hoverPreview.value = {
-		server,
-		top: Math.min(Math.max(12, rect.top - 16), window.innerHeight - 160),
-		left: rect.right + 12,
-	}
-}
-
-function onServerMouseLeave(serverId: string) {
-	if (hoverPreview.value?.server.id === serverId) {
-		hoverPreview.value = null
-	}
-}
-
-// Sidebar Right-Click Context Menu state
-const contextMenu = ref<{ server: Dr3shServer; x: number; y: number } | null>(null)
-
-function openSidebarContextMenu(event: MouseEvent, server: Dr3shServer) {
-	event.preventDefault()
-	event.stopPropagation()
-	selectedId.value = server.id
-	hoverPreview.value = null
-	contextMenu.value = {
-		server,
-		x: Math.min(event.clientX, window.innerWidth - 264),
-		y: Math.min(event.clientY, window.innerHeight - 230),
-	}
-}
-
-function closeContextMenu() {
-	contextMenu.value = null
-}
-
-async function handleContextOpenFolder(server: Dr3shServer) {
-	closeContextMenu()
-	const inst = findMatchingInstance(server)
-	if (inst) {
-		try {
-			await showInstanceInFolder(inst.id)
-		} catch (e) {
-			console.warn('Error opening folder:', e)
-		}
-	}
-}
-
-async function handleContextRepair(server: Dr3shServer) {
-	closeContextMenu()
-	const inst = findMatchingInstance(server)
-	if (inst) {
-		try {
-			await install_existing_instance(inst.id, true)
-			await instancesQuery.refetch()
-		} catch (e) {
-			console.warn('Error repairing instance:', e)
-		}
-	}
-}
-
-function handleContextDeleteLocal(server: Dr3shServer) {
-	closeContextMenu()
-	requestDeleteConfirm(server, 'local-only')
-}
-
-function handleContextRemovePack(server: Dr3shServer) {
-	closeContextMenu()
-	requestDeleteConfirm(server, 'pack-remove')
-}
-
-onMounted(() => {
-	refreshAccount()
-	window.addEventListener('click', closeContextMenu)
-})
-
-onUnmounted(() => {
-	window.removeEventListener('click', closeContextMenu)
-	if (hoverTimer) clearInterval(hoverTimer)
-})
 
 function selectServer(id: string) {
 	selectedId.value = id
 	currentView.value = 'home'
 	if (router.currentRoute.value.path !== '/') {
 		router.push('/')
+	}
+}
+
+async function handleQuickPlay(event: MouseEvent, server: Dr3shServer) {
+	event.stopPropagation()
+	selectServer(server.id)
+	const inst = findMatchingInstance(server)
+	if (inst && isServerInstalled(server)) {
+		try {
+			if (!activeAccount.value) {
+				await refreshAccount()
+			}
+			await invoke('dr3sh_prepare_launch', {
+				serverId: server.id,
+				isOffline: !activeAccount.value?.isMicrosoft,
+				offlineUsername: activeAccount.value?.name || 'Player',
+				bypassGate: Boolean(isDeveloper.value),
+			})
+			await run(inst.id)
+		} catch (e) {
+			console.warn('Quick play failed:', e)
+		}
 	}
 }
 
@@ -194,6 +114,7 @@ function navigateTo(view: 'home' | 'market' | 'settings') {
 }
 
 function onSettingsClick() {
+	activeSettingsTab.value = 'memory'
 	currentView.value = 'settings'
 	if (router.currentRoute.value.path !== '/') {
 		router.push('/')
@@ -217,167 +138,338 @@ const userAvatarUrl = computed(() => {
 	}
 	return 'https://mc-heads.net/avatar/Player/64'
 })
+
+// Right-click context menu
+const contextMenu = ref<{ server: Dr3shServer; x: number; y: number } | null>(null)
+function openSidebarContextMenu(event: MouseEvent, server: Dr3shServer) {
+	event.preventDefault()
+	event.stopPropagation()
+	selectedId.value = server.id
+	contextMenu.value = {
+		server,
+		x: Math.min(event.clientX, window.innerWidth - 264),
+		y: Math.min(event.clientY, window.innerHeight - 230),
+	}
+}
+function closeContextMenu() {
+	contextMenu.value = null
+}
+async function handleContextOpenFolder(server: Dr3shServer) {
+	closeContextMenu()
+	const inst = findMatchingInstance(server)
+	if (inst) {
+		try {
+			await showInstanceInFolder(inst.id)
+		} catch (e) {
+			console.warn('Error opening folder:', e)
+		}
+	}
+}
+async function handleContextRepair(server: Dr3shServer) {
+	closeContextMenu()
+	const inst = findMatchingInstance(server)
+	if (inst) {
+		try {
+			await install_existing_instance(inst.id, true)
+			await instancesQuery.refetch()
+		} catch (e) {
+			console.warn('Error repairing instance:', e)
+		}
+	}
+}
+function handleContextDeleteLocal(server: Dr3shServer) {
+	closeContextMenu()
+	requestDeleteConfirm(server, 'local-only')
+}
+function handleContextRemovePack(server: Dr3shServer) {
+	closeContextMenu()
+	requestDeleteConfirm(server, 'pack-remove')
+}
+
+// Resizer drag handler
+let isResizing = false
+function onResizerMouseDown(e: MouseEvent) {
+	e.preventDefault()
+	isResizing = true
+	document.body.classList.add('is-resizing-rail')
+	window.addEventListener('mousemove', onResizerMouseMove)
+	window.addEventListener('mouseup', onResizerMouseUp)
+}
+function onResizerMouseMove(e: MouseEvent) {
+	if (!isResizing) return
+	setRailWidth(e.clientX, true)
+}
+function onResizerMouseUp() {
+	if (!isResizing) return
+	isResizing = false
+	document.body.classList.remove('is-resizing-rail')
+	window.removeEventListener('mousemove', onResizerMouseMove)
+	window.removeEventListener('mouseup', onResizerMouseUp)
+}
+
+onMounted(() => {
+	refreshAccount()
+	window.addEventListener('click', closeContextMenu)
+})
+onUnmounted(() => {
+	window.removeEventListener('click', closeContextMenu)
+	window.removeEventListener('mousemove', onResizerMouseMove)
+	window.removeEventListener('mouseup', onResizerMouseUp)
+})
 </script>
 
 <template>
-	<aside class="rail">
-		<!-- Brand Lockup -->
-		<div
-			class="brand-lockup"
-			role="button"
-			tabindex="0"
-			:title="`Dr3sh Launcher v${launcherVersion}`"
-			@click="navigateTo('home')"
-		>
-			<img :src="DR3SH_LOGO_DATA_URI" alt="Dr3sh" class="brand-logo-img" />
-			<span class="brand-version-badge">v{{ launcherVersion }}</span>
-		</div>
+	<aside class="rail" :class="{ collapsed: isSidebarCollapsed }">
+		<!-- Drag Resizer Handle on right border -->
+		<div class="rail-resizer" @mousedown="onResizerMouseDown" />
 
-		<!-- Section Head: INSTANCIAS -->
-		<div class="rail-section-head">
-			<span>INSTANCIAS</span>
-			<span class="rail-count">{{ ownedServers.length }}</span>
-		</div>
+		<!-- TOP HEADER: App Logo + Collapse Toggle -->
+		<div class="rail-header-row">
+			<div
+				class="rail-brand-group"
+				role="button"
+				tabindex="0"
+				:title="isSidebarCollapsed ? 'Desplegar barra lateral' : 'Dr3sh App — Inicio'"
+				@click="isSidebarCollapsed ? toggleSidebarCollapse() : (deselectModpack(), navigateTo('home'))"
+			>
+				<div class="brand-logo-badge">
+					<img :src="DR3SH_LOGO_DATA_URI" alt="Dr3sh" class="brand-logo-img" />
+					<div v-if="isSidebarCollapsed" class="brand-expand-hover-arrow">
+						<svg viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5 text-emerald-400">
+							<path d="M7.5 5l5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+						</svg>
+					</div>
+				</div>
+				<div class="brand-text-col">
+					<span class="brand-title">DR3SH</span>
+					<span class="brand-sub">APP</span>
+				</div>
+			</div>
 
-		<!-- Instances List -->
-		<nav class="server-list" aria-label="Biblioteca de modpacks">
+			<!-- Collapse Toggle Button (Arrow) -->
 			<button
+				type="button"
+				class="rail-collapse-toggle-btn"
+				:title="isSidebarCollapsed ? 'Desplegar barra lateral' : 'Plegar barra lateral'"
+				@click="toggleSidebarCollapse"
+			>
+				<svg viewBox="0 0 20 20" aria-hidden="true" class="collapse-icon" :class="{ 'is-flipped': isSidebarCollapsed }">
+					<path d="M12.5 15 7.5 10l5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+				</svg>
+			</button>
+		</div>
+
+		<!-- 3 VERTICAL NAVIGATION ITEMS (Biblioteca, Explorar, Opciones) -->
+		<div class="rail-main-nav">
+			<!-- 1. Mi Biblioteca -->
+			<div class="has-tooltip nav-tooltip-wrap">
+				<button
+					type="button"
+					class="rail-nav-card"
+					:class="{ active: currentView === 'home' && !selectedId }"
+					@click="deselectModpack(); navigateTo('home')"
+				>
+					<span class="nav-card-icon">
+						<svg viewBox="0 0 20 20" aria-hidden="true" class="w-5 h-5">
+							<path d="M3 8.5 10 3l7 5.5v7.5a1 1 0 0 1-1 1h-4v-5H8v5H4a1 1 0 0 1-1-1V8.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+						</svg>
+					</span>
+					<span class="nav-card-label">Mi Biblioteca</span>
+					<span class="nav-card-badge">{{ ownedServers.length }}</span>
+				</button>
+				<div class="tooltip-box">
+					Mi Biblioteca ({{ ownedServers.length }})
+				</div>
+			</div>
+
+			<!-- 2. Explorar -->
+			<div class="has-tooltip nav-tooltip-wrap">
+				<button
+					type="button"
+					class="rail-nav-card"
+					:class="{ active: currentView === 'market' }"
+					@click="navigateTo('market')"
+				>
+					<span class="nav-card-icon">
+						<svg viewBox="0 0 20 20" aria-hidden="true" class="w-5 h-5">
+							<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.8" />
+							<path d="m12.8 7.2-1.8 4.6-4.6 1.8 1.8-4.6 4.6-1.8Z" fill="currentColor" stroke="none" />
+						</svg>
+					</span>
+					<span class="nav-card-label">Explorar</span>
+				</button>
+				<div class="tooltip-box">
+					Explorar Servidores
+				</div>
+			</div>
+
+			<!-- 3. Opciones -->
+			<div class="has-tooltip nav-tooltip-wrap">
+				<button
+					type="button"
+					class="rail-nav-card"
+					:class="{ active: currentView === 'settings' }"
+					@click="onSettingsClick"
+				>
+					<span class="nav-card-icon">
+						<svg viewBox="0 0 24 24" aria-hidden="true" class="w-5 h-5">
+							<path
+								d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="1.8"
+							/>
+							<circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8" />
+						</svg>
+					</span>
+					<span class="nav-card-label">Opciones</span>
+				</button>
+				<div class="tooltip-box">
+					Opciones del Launcher
+				</div>
+			</div>
+		</div>
+
+		<!-- SECTION LABEL: MIS MODPACKS -->
+		<div class="rail-section-head">
+			<span class="section-head-label">MIS MODPACKS</span>
+			<span class="rail-count">{{ ownedServers.length }}</span>
+			<div class="rail-collapsed-divider" />
+		</div>
+
+		<!-- MODPACK INSTANCES LIST -->
+		<nav class="server-list" aria-label="Biblioteca de modpacks">
+			<div
 				v-for="server in ownedServers"
 				:key="server.id"
-				type="button"
-				class="server-nav"
-				:class="{ active: selectedId === server.id && currentView === 'home' }"
-				@click="selectServer(server.id)"
-				@contextmenu.prevent="openSidebarContextMenu($event, server)"
-				@mouseenter="onServerMouseEnter($event, server)"
-				@mouseleave="onServerMouseLeave(server.id)"
+				class="has-tooltip modpack-item-wrap"
 			>
-				<span class="server-thumb">
-					<img
-						v-if="server.logo_square || server.logo || server.image"
-						:src="resolveImageUrl(server.logo_square || server.logo || server.image)"
-						:alt="server.title"
-					/>
-					<span v-else class="w-full h-full flex items-center justify-center font-bold text-xs text-white/50">
-						{{ server.title.slice(0, 2) }}
-					</span>
-				</span>
-				<span class="server-nav-copy">
-					<span class="server-nav-title">{{ server.title }}</span>
-					<span class="server-nav-sub" :title="formatSubtitle(server)">
-						<img :src="loaderIconUrl(server.mod_loader)" alt="" class="loader-logo-img" />
-						<span>{{ formatSubtitle(server) }}</span>
-					</span>
-				</span>
-				<span
-					v-if="hasServerUpdate(server)"
-					class="update-badge"
-					title="Actualización disponible"
+				<button
+					type="button"
+					class="server-nav"
+					:class="{
+						active: selectedId === server.id && currentView === 'home',
+						installed: isServerInstalled(server),
+						'has-update': hasServerUpdate(server),
+					}"
+					@click="selectServer(server.id)"
+					@contextmenu.prevent="openSidebarContextMenu($event, server)"
 				>
-					<svg viewBox="0 0 20 20" aria-hidden="true">
-						<path d="M10 15V5m0 0-4 4m4-4 4 4" />
-					</svg>
-				</span>
-			</button>
+					<span class="server-thumb">
+						<img
+							v-if="server.logo_square || server.logo || server.image"
+							:src="resolveImageUrl(server.logo_square || server.logo || server.image)"
+							:alt="server.title"
+							@error="handleImageError($event)"
+						/>
+						<span v-else class="server-thumb-fallback">
+							{{ server.title.slice(0, 2) }}
+						</span>
+
+						<!-- Status Indicator Pip in corner (1:1 + expanded) -->
+						<span
+							class="server-status-pip"
+							:class="{
+								'is-update': hasServerUpdate(server),
+								'is-installed': isServerInstalled(server) && !hasServerUpdate(server),
+								'is-uninstalled': !isServerInstalled(server),
+							}"
+						/>
+
+						<!-- Overlay Play Button: visible on hover in 1:1 mode ONLY IF INSTALLED -->
+						<span
+							v-if="isServerInstalled(server)"
+							class="overlay-play-btn"
+							role="button"
+							tabindex="0"
+							:title="`Jugar a ${server.title}`"
+							@click.stop="handleQuickPlay($event, server)"
+						>
+							<svg viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5 fill-current">
+								<path d="M6 4.5 15.5 10 6 15.5V4.5Z" />
+							</svg>
+						</span>
+					</span>
+
+					<span class="server-nav-copy">
+						<span class="server-nav-title">{{ server.title }}</span>
+						<span class="server-nav-sub" :title="formatSubtitle(server)">
+							<img :src="loaderIconUrl(server.mod_loader)" alt="" class="loader-logo-img" />
+							<span>{{ formatSubtitle(server) }}</span>
+						</span>
+					</span>
+
+					<!-- Quick Play Button on the right (expanded mode) ONLY IF INSTALLED -->
+					<span
+						v-if="isServerInstalled(server)"
+						class="rail-quick-play-btn"
+						role="button"
+						tabindex="0"
+						:title="`Jugar a ${server.title}`"
+						@click.stop="handleQuickPlay($event, server)"
+					>
+						<svg viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5 fill-current">
+							<path d="M6 4.5 15.5 10 6 15.5V4.5Z" />
+						</svg>
+					</span>
+
+					<span
+						v-if="hasServerUpdate(server)"
+						class="update-badge"
+						title="Actualización disponible"
+					>
+						<svg viewBox="0 0 20 20" aria-hidden="true">
+							<path d="M10 15V5m0 0-4 4m4-4 4 4" />
+						</svg>
+					</span>
+				</button>
+
+				<!-- Floating tooltip in 1:1 mode -->
+				<div class="tooltip-box">
+					<div class="tooltip-title">{{ server.title }}</div>
+					<div class="tooltip-sub">
+						<span v-if="hasServerUpdate(server)" class="text-amber-400 font-bold">● Actualización disponible</span>
+						<span v-else-if="isServerInstalled(server)" class="text-emerald-400 font-semibold">● Instalado y al día</span>
+						<span v-else class="text-slate-400">● Sin instalar</span>
+					</div>
+					<div class="tooltip-detail">{{ formatSubtitle(server) }}</div>
+				</div>
+			</div>
 
 			<div v-if="ownedServers.length === 0" class="empty-library">
-				<p>No tienes instancias en tu biblioteca.</p>
-				<button type="button" class="empty-library-btn" @click="navigateTo('market')">
-					Ir a Explorar
+				<p class="empty-library-text">No tienes modpacks en tu biblioteca.</p>
+				<button type="button" class="empty-library-btn" :title="'Ir a Explorar'" @click="navigateTo('market')">
+					{{ isSidebarCollapsed ? '+' : 'Ir a Explorar' }}
 				</button>
 			</div>
 		</nav>
 
-		<!-- Bottom Section -->
+		<!-- BOTTOM SECTION: Profile / Account -->
 		<div class="rail-bottom">
-			<div class="rail-nav-buttons">
+			<div class="has-tooltip w-full flex justify-center">
 				<button
 					type="button"
-					class="rail-link"
-					:class="{ selected: currentView === 'home' }"
-					title="Ver biblioteca de instancias"
-					@click="navigateTo('home')"
+					class="profile-line"
+					:class="{ 'is-collapsed': isSidebarCollapsed }"
+					title="Gestionar cuentas de Minecraft"
+					@click="onProfileClick"
 				>
-					<svg viewBox="0 0 20 20" aria-hidden="true">
-						<path d="M3 8.5 10 3l7 5.5v7.5a1 1 0 0 1-1 1h-4v-5H8v5H4a1 1 0 0 1-1-1V8.5Z" />
-					</svg>
-					<span>Biblioteca</span>
+					<span class="profile-avatar">
+						<img :src="userAvatarUrl" alt="" class="skin-face-img" @error="handleAvatarError" />
+					</span>
+					<span class="profile-copy">
+						<b>{{ activeAccount?.name || 'Player' }}</b>
+						<small>{{ activeAccount?.isMicrosoft ? 'Microsoft' : 'Sin conexión' }}</small>
+					</span>
 				</button>
-				<button
-					type="button"
-					class="rail-link"
-					:class="{ selected: currentView === 'market' }"
-					title="Explorar modpacks disponibles"
-					@click="navigateTo('market')"
-				>
-					<svg viewBox="0 0 20 20" aria-hidden="true">
-						<circle cx="10" cy="10" r="7" />
-						<path d="m12.8 7.2-1.8 4.6-4.6 1.8 1.8-4.6 4.6-1.8Z" />
-					</svg>
-					<span>Explorar</span>
-				</button>
-				<button
-					type="button"
-					class="rail-link"
-					:class="{ selected: currentView === 'settings' }"
-					title="Abrir ajustes del launcher"
-					@click="onSettingsClick"
-				>
-					<svg viewBox="0 0 24 24" aria-hidden="true">
-						<path
-							d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
-						/>
-						<circle cx="12" cy="12" r="3" />
-					</svg>
-					<span>Ajustes</span>
-				</button>
-			</div>
-
-			<!-- Profile Line -->
-			<button
-				type="button"
-				class="profile-line"
-				title="Gestionar cuentas de Minecraft"
-				@click="onProfileClick"
-			>
-				<span class="profile-avatar">
-					<img :src="userAvatarUrl" alt="" class="skin-face-img" />
-				</span>
-				<span class="profile-copy">
-					<b>{{ activeAccount?.name || 'Player' }}</b>
-					<small>{{ activeAccount?.isMicrosoft ? 'Microsoft' : 'Sin conexión' }}</small>
-				</span>
-				<span class="account-pip online" />
-			</button>
-		</div>
-
-		<!-- Hover Screenshot Preview Floater -->
-		<Teleport to="body">
-			<div
-				v-if="hoverPreview && hoverPreviewImages.length > 0"
-				class="sidebar-hover-preview-floater"
-				:style="{ top: `${hoverPreview.top}px`, left: `${hoverPreview.left}px` }"
-			>
-				<div class="library-preview-slideshow sidebar" aria-hidden="true">
-					<img
-						:src="getThumbnailUrl(hoverPreviewImages[hoverPreviewIdx])"
-						alt=""
-						class="library-preview-img"
-						@error="handleImageError($event, hoverPreviewImages[hoverPreviewIdx])"
-					/>
-					<div class="library-preview-overlay" />
-					<div v-if="hoverPreviewImages.length > 1" class="library-preview-dots">
-						<span
-							v-for="(_, idx) in hoverPreviewImages.slice(0, 5)"
-							:key="idx"
-							class="library-preview-dot"
-							:class="{ active: idx === hoverPreviewIdx % Math.min(5, hoverPreviewImages.length) }"
-						/>
-					</div>
+				<div class="tooltip-box">
+					{{ activeAccount?.name || 'Player' }} ({{ activeAccount?.isMicrosoft ? 'Microsoft' : 'Sin conexión' }})
 				</div>
 			</div>
+		</div>
 
-			<!-- Sidebar Right-Click Context Menu -->
+		<!-- Context Menu Teleport -->
+		<Teleport to="body">
 			<div
 				v-if="contextMenu"
 				class="instance-dropdown-menu context-floating"
@@ -391,6 +483,7 @@ const userAvatarUrl = computed(() => {
 							v-if="contextMenu.server.logo_square || contextMenu.server.logo || contextMenu.server.image"
 							:src="resolveImageUrl(contextMenu.server.logo_square || contextMenu.server.logo || contextMenu.server.image)"
 							:alt="contextMenu.server.title"
+							@error="handleImageError($event)"
 						/>
 					</span>
 					<div class="instance-menu-header-copy">

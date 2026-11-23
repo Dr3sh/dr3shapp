@@ -213,8 +213,10 @@ pub fn run_preflight(
     // Writability test on default parent and custom target
     if let Some(parent) = default_instance_dir.parent() {
         check_writable(parent)?;
+        ensure_single_entry_user_deletable(parent);
     }
     check_writable(effective_dir)?;
+    ensure_single_entry_user_deletable(effective_dir);
 
     let report = PreflightReport {
         instance_fs: custom_fs.clone().unwrap_or_else(|| default_fs.clone()),
@@ -460,6 +462,79 @@ pub fn is_launcher_owned_dir(dir: &Path) -> bool {
         || dir.join("profile.json").exists()
 }
 
+/// Ensures a folder created or managed by the launcher has standard-user
+/// full-control ACLs (inherited to children) and is not read-only, so any
+/// non-admin Windows user can rename or delete it manually from Explorer.
+pub fn ensure_user_deletable_permissions(dir: &Path) {
+    ensure_user_deletable_impl(dir, true);
+}
+
+/// Non-recursive permission grant for a single directory or junction link.
+pub fn ensure_single_entry_user_deletable(path: &Path) {
+    ensure_user_deletable_impl(path, false);
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_user_deletable_impl(path: &Path, recursive: bool) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    if !path.exists() && !is_reparse_point(path) {
+        return;
+    }
+
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        let mut perms = meta.permissions();
+        if perms.readonly() {
+            perms.set_readonly(false);
+            let _ = fs::set_permissions(path, perms);
+        }
+    }
+
+    let clean = path
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .trim_end_matches('\\')
+        .to_string();
+    if clean.is_empty() {
+        return;
+    }
+
+    let mut cmd = std::process::Command::new("icacls");
+    cmd.arg(&clean);
+    if is_reparse_point(path) {
+        // Apply directly to the junction link object without traversing the target.
+        cmd.args([
+            "/L",
+            "/grant",
+            "*S-1-5-32-545:F",
+            "/grant",
+            "*S-1-5-11:F",
+            "/C",
+            "/Q",
+        ]);
+    } else {
+        cmd.args([
+            "/grant",
+            "*S-1-5-32-545:(OI)(CI)F",
+            "/grant",
+            "*S-1-5-11:(OI)(CI)F",
+        ]);
+        if recursive {
+            cmd.arg("/T");
+        }
+        cmd.args(["/C", "/Q"]);
+    }
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    if let Err(err) = cmd.output() {
+        tracing::warn!("icacls failed for {}: {err}", clean);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn ensure_user_deletable_impl(_path: &Path, _recursive: bool) {}
+
 pub fn remove_junction_link_only(link: &Path) -> Result<(), Dr3shError> {
     if !is_reparse_point(link) {
         return Err(Dr3shError::unknown(format!(
@@ -483,6 +558,7 @@ pub fn ensure_safe_junction(
             path: target_path.to_string_lossy().to_string(),
             os_code: e.raw_os_error().unwrap_or(-1).to_string(),
         })?;
+        ensure_user_deletable_permissions(target_path);
         return Ok(());
     }
 
@@ -524,6 +600,8 @@ pub fn ensure_safe_junction(
                 .trim_start_matches(r"\\?\")
                 .to_string();
             if paths_equal_case_insensitive(Path::new(&clean_existing), Path::new(&clean_desired)) {
+                ensure_single_entry_user_deletable(link_path);
+                ensure_user_deletable_permissions(target_path);
                 return Ok(());
             }
         }
@@ -537,6 +615,8 @@ pub fn ensure_safe_junction(
             let _ = fs::create_dir_all(parent);
         }
         create_ntfs_junction(link_path, target_path)?;
+        ensure_single_entry_user_deletable(link_path);
+        ensure_user_deletable_permissions(target_path);
         log_event(
             op_id,
             "JUNCTION",
@@ -625,6 +705,9 @@ pub fn ensure_safe_junction(
             let _ = fs::remove_dir_all(&old_backup_path);
         }
     }
+
+    ensure_single_entry_user_deletable(link_path);
+    ensure_user_deletable_permissions(target_path);
 
     log_event(
         op_id,

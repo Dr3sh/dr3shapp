@@ -395,7 +395,7 @@ Var AppStartMenuFolder
 !define MUI_FINISHPAGE_NOAUTOCLOSE
 !define MUI_FINISHPAGE_SHOWREADME
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "$(createDesktop)"
-!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateOrUpdateDesktopShortcut
+!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateDesktopShortcutFromFinish
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_FUNCTION RunMainBinary
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
@@ -693,10 +693,8 @@ Section Install
     Call CreateOrUpdateStartMenuShortcut
   !insertmacro MUI_STARTMENU_WRITE_END
 
-  ; Create desktop shortcut for silent, passive and repair installs
-  ${If} $PassiveMode = 1
-  ${OrIf} ${Silent}
-  ${OrIf} $RepairMode = 1
+  ; Create or update desktop shortcut unless /NOSHORTCUT is explicitly passed
+  ${If} $NoShortcutMode <> 1
     Call CreateOrUpdateDesktopShortcut
   ${EndIf}
 
@@ -911,23 +909,39 @@ Function CreateOrUpdateStartMenuShortcut
 FunctionEnd
 
 Function CreateOrUpdateDesktopShortcut
+  SetShellVarContext current
+  SetOutPath "$INSTDIR"
+
   !insertmacro IsShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"
   Pop $0
   ${If} $0 = 1
     !insertmacro SetShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
     ${If} $RepairMode <> 1
+      System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
       Return
     ${EndIf}
   ${EndIf}
 
   ${If} $WixMode = 0
   ${AndIf} $RepairMode <> 1
+    ${If} $NoShortcutMode = 1
+      Return
+    ${EndIf}
     ${If} $UpdateMode = 1
-    ${OrIf} $NoShortcutMode = 1
+    ${AndIf} ${FileExists} "$DESKTOP\${PRODUCTNAME}.lnk"
       Return
     ${EndIf}
   ${EndIf}
 
   CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
   !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+FunctionEnd
+
+Function CreateDesktopShortcutFromFinish
+  SetShellVarContext current
+  SetOutPath "$INSTDIR"
+  CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 FunctionEnd

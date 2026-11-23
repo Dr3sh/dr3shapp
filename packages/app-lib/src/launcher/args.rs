@@ -113,7 +113,7 @@ pub fn get_jvm_arguments(
     libraries_path: &Path,
     log_configs_path: &Path,
     class_paths: &str,
-    agent_path: &Path,
+    agent_path: Option<&Path>,
     version_name: &str,
     memory: MemorySettings,
     custom_args: Vec<String>,
@@ -121,7 +121,7 @@ pub fn get_jvm_arguments(
     quick_play_type: &QuickPlayType,
     quick_play_version: QuickPlayVersion,
     log_config: Option<&LoggingConfiguration>,
-    ipc_addr: SocketAddr,
+    ipc_addr: Option<SocketAddr>,
 ) -> crate::Result<Vec<String>> {
     let mut parsed_arguments = Vec::new();
 
@@ -165,20 +165,24 @@ pub fn get_jvm_arguments(
         parsed_arguments.push(argument.replace("${path}", &full_path));
     }
 
-    parsed_arguments.push(format!(
-        "-javaagent:{}",
-        canonicalize(agent_path)
-            .context(crate::ErrorKind::LauncherError(format!(
-                "specified java agent path {} does not exist",
-                agent_path.display()
-            )))?
-            .to_string_lossy()
-    ));
+    if let Some(agent_path) = agent_path {
+        parsed_arguments.push(format!(
+            "-javaagent:{}",
+            canonicalize(agent_path)
+                .context(crate::ErrorKind::LauncherError(format!(
+                    "specified java agent path {} does not exist",
+                    agent_path.display()
+                )))?
+                .to_string_lossy()
+        ));
+    }
 
-    parsed_arguments
-        .push(format!("-Dmodrinth.internal.ipc.host={}", ipc_addr.ip()));
-    parsed_arguments
-        .push(format!("-Dmodrinth.internal.ipc.port={}", ipc_addr.port()));
+    if let Some(ipc_addr) = ipc_addr {
+        parsed_arguments
+            .push(format!("-Dmodrinth.internal.ipc.host={}", ipc_addr.ip()));
+        parsed_arguments
+            .push(format!("-Dmodrinth.internal.ipc.port={}", ipc_addr.port()));
+    }
 
     parsed_arguments.push(format!(
         "-Dmodrinth.internal.quickPlay.serverVersion={}",

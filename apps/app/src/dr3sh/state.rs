@@ -53,6 +53,8 @@ pub struct ServerStateEntry {
     #[serde(default)]
     pub migration_notice_pending: bool,
     #[serde(default)]
+    pub marker_written: bool,
+    #[serde(default)]
     pub locked: bool,
     pub active_op_id: Option<String>,
     pub updated_at: String,

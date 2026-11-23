@@ -3,9 +3,12 @@
 		<div v-if="!doneLoading" class="splash-screen visible" data-tauri-drag-region>
 			<div class="splash-logo-wrap" data-tauri-drag-region>
 				<img src="/logo.png" alt="Dr3sh" class="splash-logo" data-tauri-drag-region />
-				<svg class="splash-spinner-svg" viewBox="0 0 40 40" aria-hidden="true">
-					<circle cx="20" cy="20" r="16" />
-				</svg>
+				<div class="splash-spinner-wrap">
+					<svg class="splash-spinner-svg" viewBox="0 0 44 44" aria-hidden="true">
+						<circle class="spinner-track" cx="22" cy="22" r="18" fill="none" stroke-width="3" />
+						<circle class="spinner-head" cx="22" cy="22" r="18" fill="none" stroke-width="3" stroke-linecap="round" stroke-dasharray="32 80" />
+					</svg>
+				</div>
 				<span v-if="message" class="dr3sh-splash-message">{{ message }}</span>
 			</div>
 		</div>
@@ -90,8 +93,9 @@ useAppEvent('loading', (e) => {
 	align-items: center;
 	justify-content: center;
 	background:
-		radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--brand, #2f65f6) 16%, transparent), transparent 54%),
-		#0d1017;
+		radial-gradient(circle at 50% 40%, rgba(27, 217, 106, 0.22), transparent 55%),
+		radial-gradient(circle at 80% 20%, rgba(27, 217, 106, 0.12), transparent 45%),
+		#07090e;
 }
 
 .splash-fade-leave-active {
@@ -114,21 +118,34 @@ useAppEvent('loading', (e) => {
 	width: 170px;
 	height: auto;
 	object-fit: contain;
-	filter: drop-shadow(0 14px 32px rgba(0, 0, 0, 0.55));
+	filter: drop-shadow(0 14px 32px rgba(0, 0, 0, 0.55)) drop-shadow(0 0 20px rgba(27, 217, 106, 0.25));
+}
+
+.splash-spinner-wrap {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 38px;
+	height: 38px;
+	background: transparent;
+	overflow: visible;
 }
 
 .splash-spinner-svg {
 	width: 38px;
 	height: 38px;
-	animation: spin 1.05s linear infinite;
+	background: transparent;
+	overflow: visible;
+	animation: spin 1s linear infinite;
+	transform-origin: center center;
 }
 
-.splash-spinner-svg circle {
-	fill: none;
-	stroke: var(--brand, #2f65f6);
-	stroke-width: 3.5;
-	stroke-linecap: round;
-	stroke-dasharray: 64 42;
+.spinner-track {
+	stroke: rgba(255, 255, 255, 0.15);
+}
+
+.spinner-head {
+	stroke: #ffffff;
 }
 
 .dr3sh-splash-message {

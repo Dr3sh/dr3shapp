@@ -6,11 +6,8 @@ use crate::event::{InstancePayloadType, ProcessPayloadType};
 use crate::event::{LogEvent, LogPayload};
 use crate::util::io::IOError;
 use crate::util::rpc::RpcServer;
-use anyhow::Context;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use dashmap::DashMap;
-use quick_xml::Reader;
-use quick_xml::events::Event;
 use serde::Deserialize;
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -23,7 +20,7 @@ use std::process::ExitStatus;
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 use tempfile::TempDir;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
 use tokio::process::{Child, Command};
 use uuid::Uuid;
 
@@ -101,6 +98,110 @@ async fn clear_persisted_process(
     {
         tracing::warn!("Failed to clear persisted process {pid}: {error}");
     }
+}
+
+pub(crate) async fn clear_persisted_process_row(
+    pool: &SqlitePool,
+    process: Option<(i64, i64)>,
+) {
+    clear_persisted_process(pool, process).await;
+}
+
+pub(crate) async fn kill_pid_tree(pid: u32) {
+    #[cfg(target_os = "windows")]
+    {
+        let pid_str = pid.to_string();
+        let _ = tokio::task::spawn_blocking(move || {
+            let mut cmd = std::process::Command::new("taskkill");
+            cmd.args(["/PID", &pid_str, "/T", "/F"]);
+            std::os::windows::process::CommandExt::creation_flags(
+                &mut cmd,
+                0x0800_0000,
+            );
+            let _ = cmd.output();
+        })
+        .await;
+    }
+
+    let _ = tokio::task::spawn_blocking(move || {
+        let sys_pid = sysinfo::Pid::from_u32(pid);
+        let mut system = sysinfo::System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[sys_pid]),
+            false,
+            sysinfo::ProcessRefreshKind::nothing(),
+        );
+        if let Some(proc_info) = system.process(sys_pid) {
+            let _ = proc_info.kill();
+        }
+    })
+    .await;
+}
+
+pub(crate) async fn get_persisted_running_processes(
+    instance_id: Option<&str>,
+    state: &crate::State,
+) -> crate::Result<Vec<(i64, i64, ProcessMetadata)>> {
+    let rows: Vec<(i64, i64, String, String, String)> =
+        if let Some(inst_id) = instance_id {
+            sqlx::query_as(
+                "SELECT p.pid, p.start_time, p.name, p.instance_id, COALESCE(i.path, p.instance_id)
+                 FROM processes p
+                 LEFT JOIN instances i ON i.id = p.instance_id
+                 WHERE p.instance_id = ?",
+            )
+            .bind(inst_id)
+            .fetch_all(&state.pool)
+            .await?
+        } else {
+            sqlx::query_as(
+                "SELECT p.pid, p.start_time, p.name, p.instance_id, COALESCE(i.path, p.instance_id)
+                 FROM processes p
+                 LEFT JOIN instances i ON i.id = p.instance_id",
+            )
+            .fetch_all(&state.pool)
+            .await?
+        };
+
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let start_times = running_process_start_times(
+        rows.iter().map(|(pid, _, _, _, _)| *pid).collect(),
+    )
+    .await?;
+
+    let mut live = Vec::new();
+    for (pid, start_time, name, inst_id, inst_path) in rows {
+        let is_live = start_times
+            .get(&pid)
+            .is_some_and(|started_at| started_at.abs_diff(start_time) <= 2);
+        if is_live {
+            let start_dt = Utc
+                .timestamp_opt(start_time, 0)
+                .single()
+                .unwrap_or_else(Utc::now);
+            let uuid = Uuid::from_u128(
+                u32::try_from(pid).map(u128::from).unwrap_or(0),
+            );
+            live.push((
+                pid,
+                start_time,
+                ProcessMetadata {
+                    uuid,
+                    instance_id: inst_id,
+                    instance_path: inst_path,
+                    instance_name: name,
+                    start_time: start_dt,
+                },
+            ));
+        } else {
+            clear_persisted_process(&state.pool, Some((pid, start_time))).await;
+        }
+    }
+
+    Ok(live)
 }
 
 /// Looks up the start time, in Unix seconds, of each listed PID that is still running.
@@ -209,18 +310,15 @@ impl ProcessManager {
         post_exit_command: Option<String>,
         post_exit_env_vars: Vec<(String, String)>,
         logs_folder: PathBuf,
-        xml_logging: bool,
-        main_class_keep_alive: TempDir,
-        rpc_server: RpcServer,
+        _xml_logging: bool,
+        main_class_keep_alive: Option<TempDir>,
+        rpc_server: Option<RpcServer>,
         state: &Arc<State>,
         post_process_init: impl AsyncFnOnce(
             &ProcessMetadata,
-            &RpcServer,
+            Option<&RpcServer>,
         ) -> crate::Result<()>,
     ) -> crate::Result<ProcessMetadata> {
-        mc_command.stdout(std::process::Stdio::piped());
-        mc_command.stderr(std::process::Stdio::piped());
-        mc_command.stdin(std::process::Stdio::piped());
         let executable = mc_command
             .as_std()
             .get_program()
@@ -257,13 +355,61 @@ impl ProcessManager {
             writeln!(log_file).map_err(|e| IOError::with_path(e, &log_path))?;
         }
 
-        let mut mc_proc = mc_command.spawn().map_err(IOError::from)?;
+        let initial_log_offset = std::fs::metadata(&log_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        // Redirect stdio directly to disk with detached flags so closing the launcher
+        // never breaks pipes or terminates the Java process.
+        let stdout_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .map_err(|e| IOError::with_path(e, &log_path))?;
+        let stderr_file = stdout_file
+            .try_clone()
+            .map_err(|e| IOError::with_path(e, &log_path))?;
+
+        mc_command.stdin(std::process::Stdio::null());
+        mc_command.stdout(std::process::Stdio::from(stdout_file));
+        mc_command.stderr(std::process::Stdio::from(stderr_file));
+        mc_command.kill_on_drop(false);
+
+        #[cfg(target_os = "windows")]
+        let mc_proc = {
+            const DETACHED_PROCESS: u32 = 0x0000_0008;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+
+            mc_command.creation_flags(
+                DETACHED_PROCESS
+                    | CREATE_NEW_PROCESS_GROUP
+                    | CREATE_BREAKAWAY_FROM_JOB,
+            );
+            match mc_command.spawn() {
+                Ok(child) => child,
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::PermissionDenied
+                        || err.raw_os_error() == Some(5) =>
+                {
+                    tracing::warn!(
+                        "Retrying Java spawn without CREATE_BREAKAWAY_FROM_JOB: {err}"
+                    );
+                    mc_command.creation_flags(
+                        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                    );
+                    mc_command.spawn().map_err(IOError::from)?
+                }
+                Err(err) => return Err(IOError::from(err).into()),
+            }
+        };
+
+        #[cfg(not(target_os = "windows"))]
+        let mc_proc = mc_command.spawn().map_err(IOError::from)?;
+
         let child_pid = mc_proc.id();
 
-        let stdout = mc_proc.stdout.take();
-        let stderr = mc_proc.stderr.take();
-
-        let mut process = Process {
+        let process = Process {
             metadata: ProcessMetadata {
                 uuid: Uuid::new_v4(),
                 start_time: Utc::now(),
@@ -304,61 +450,47 @@ impl ProcessManager {
             .execute(&state.pool)
             .await
             {
-                let _ = process.child.kill().await;
+                if let Some(pid_u32) = child_pid {
+                    kill_pid_tree(pid_u32).await;
+                }
                 return Err(error.into());
             }
         }
 
-        if let Err(e) =
-            post_process_init(&process.metadata, &process.rpc_server).await
+        if let Err(e) = post_process_init(
+            &process.metadata,
+            process.rpc_server.as_ref(),
+        )
+        .await
         {
             tracing::error!("Failed to run post-process init: {e}");
             clear_persisted_process(&state.pool, persisted_process).await;
-            let _ = process.child.kill().await;
+            if let Some(pid_u32) = child_pid {
+                kill_pid_tree(pid_u32).await;
+            }
             return Err(e);
         }
 
         let metadata = process.metadata.clone();
 
-        if let Some(stdout) = stdout {
-            let log_path_clone = log_path.clone();
+        self.processes.insert(metadata.uuid, process);
 
-            let instance_id = metadata.instance_id.clone();
-            let instance_path = metadata.instance_path.clone();
-            let pool = state.pool.clone();
+        {
+            let log_path_clone = log_path.clone();
+            let instance_id_c = metadata.instance_id.clone();
+            let uuid = metadata.uuid;
+            let state_c = Arc::clone(state);
             tokio::spawn(async move {
-                Process::process_output(
-                    &instance_id,
-                    &instance_path,
-                    stdout,
+                Process::tail_log_file(
+                    &instance_id_c,
                     log_path_clone,
-                    xml_logging,
-                    &pool,
+                    initial_log_offset,
+                    uuid,
+                    state_c,
                 )
                 .await;
             });
         }
-
-        if let Some(stderr) = stderr {
-            let log_path_clone = log_path.clone();
-
-            let instance_id = metadata.instance_id.clone();
-            let instance_path = metadata.instance_path.clone();
-            let pool = state.pool.clone();
-            tokio::spawn(async move {
-                Process::process_output(
-                    &instance_id,
-                    &instance_path,
-                    stderr,
-                    log_path_clone,
-                    xml_logging,
-                    &pool,
-                )
-                .await;
-            });
-        }
-
-        self.processes.insert(process.metadata.uuid, process);
 
         tokio::spawn(Process::sequential_process_manager(
             instance_id.to_string(),
@@ -386,7 +518,9 @@ impl ProcessManager {
     }
 
     pub fn get_rpc(&self, id: Uuid) -> Option<RpcServer> {
-        self.processes.get(&id).map(|x| x.rpc_server.clone())
+        self.processes
+            .get(&id)
+            .and_then(|x| x.rpc_server.clone())
     }
 
     pub fn get_all(&self) -> Vec<ProcessMetadata> {
@@ -415,8 +549,15 @@ impl ProcessManager {
     }
 
     pub async fn kill(&self, id: Uuid) -> crate::Result<()> {
+        let pid = self
+            .processes
+            .get(&id)
+            .and_then(|process| process.child.id());
+        if let Some(pid) = pid {
+            kill_pid_tree(pid).await;
+        }
         if let Some(mut process) = self.processes.get_mut(&id) {
-            process.child.kill().await?;
+            let _ = process.child.kill().await;
         }
 
         Ok(())
@@ -440,8 +581,8 @@ pub struct ProcessMetadata {
 struct Process {
     metadata: ProcessMetadata,
     child: Child,
-    _main_class_keep_alive: TempDir,
-    rpc_server: RpcServer,
+    _main_class_keep_alive: Option<TempDir>,
+    rpc_server: Option<RpcServer>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
@@ -459,306 +600,56 @@ pub struct Log4jEvent {
 }
 
 impl Process {
-    async fn process_output<R>(
+    async fn tail_log_file(
         instance_id: &str,
-        _instance_path: &str,
-        reader: R,
-        log_path: impl AsRef<Path>,
-        xml_logging: bool,
-        pool: &SqlitePool,
-    ) where
-        R: tokio::io::AsyncRead + Unpin,
-    {
-        let mut buf_reader = BufReader::new(reader);
+        log_path: PathBuf,
+        initial_offset: u64,
+        uuid: Uuid,
+        state: Arc<State>,
+    ) {
+        let Ok(mut file) = tokio::fs::File::open(&log_path).await else {
+            return;
+        };
+        let _ = file.seek(std::io::SeekFrom::Start(initial_offset)).await;
+        let mut reader = BufReader::new(file);
+        let mut line = String::new();
 
-        if xml_logging {
-            let mut reader = Reader::from_reader(buf_reader);
-            reader.config_mut().enable_all_checks(false);
-
-            let mut buf = Vec::new();
-            let mut current_event = Log4jEvent::default();
-            let mut in_event = false;
-            let mut in_message = false;
-            let mut in_throwable = false;
-            let mut current_content = String::new();
-
+        loop {
+            let mut read_any = false;
             loop {
-                match reader.read_event_into_async(&mut buf).await {
-                    Err(e) => {
-                        tracing::error!(
-                            "Error at position {}: {:?}",
-                            reader.buffer_position(),
-                            e
-                        );
-                        break;
-                    }
-                    // exits the loop when reaching end of file
-                    Ok(Event::Eof) => break,
-
-                    Ok(Event::Start(e)) => {
-                        match e.name().as_ref() {
-                            "log4j:Event" => {
-                                // Reset for new event
-                                current_event = Log4jEvent::default();
-                                in_event = true;
-
-                                // Extract attributes
-                                for attr in e.attributes().flatten() {
-                                    let key = attr.key.into_inner();
-                                    let value = attr.value.into_owned();
-
-                                    match key {
-                                        "logger" => {
-                                            current_event.logger_name =
-                                                Some(value)
-                                        }
-                                        "level" => {
-                                            current_event.level = Some(value)
-                                        }
-                                        "thread" => {
-                                            current_event.thread_name =
-                                                Some(value)
-                                        }
-                                        "timestamp" => {
-                                            current_event.timestamp_millis =
-                                                value.parse::<i64>().ok()
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                            "log4j:Message" => {
-                                in_message = true;
-                                current_content = String::new();
-                            }
-                            "log4j:Throwable" => {
-                                in_throwable = true;
-                                current_content = String::new();
-                            }
-                            _ => {}
-                        }
-                    }
-                    Ok(Event::End(e)) => {
-                        match e.name().as_ref() {
-                            "log4j:Message" => {
-                                in_message = false;
-                                current_event.message =
-                                    Some(current_content.clone());
-                            }
-                            "log4j:Throwable" => {
-                                in_throwable = false;
-                                current_event.throwable =
-                                    if current_content.is_empty() {
-                                        None
-                                    } else {
-                                        Some(current_content.clone())
-                                    };
-
-                                // Write log entry + throwable to file
-                                if let Some(formatted_log) =
-                                    Self::format_log4j_entry(&current_event)
-                                {
-                                    if let Err(e) = Process::append_to_log_file(
-                                        &log_path,
-                                        &formatted_log,
-                                    ) {
-                                        tracing::error!(
-                                            "Failed to write to log file: {}",
-                                            e
-                                        );
-                                    }
-
-                                    if let Some(ref throwable) =
-                                        current_event.throwable
-                                        && let Err(e) =
-                                            Process::append_to_log_file(
-                                                &log_path, throwable,
-                                            )
-                                    {
-                                        tracing::error!(
-                                            "Failed to write throwable to log file: {}",
-                                            e
-                                        );
-                                    }
-                                }
-
-                                Self::emit_log4j_event(
-                                    instance_id,
-                                    &current_event,
-                                );
-                            }
-                            "log4j:Event" => {
-                                in_event = false;
-                                // If no throwable was present, write the log entry at the end of the event
-                                if current_event.message.is_some()
-                                    && current_event.throwable.is_none()
-                                {
-                                    if let Some(formatted_log) =
-                                        Self::format_log4j_entry(&current_event)
-                                        && let Err(e) =
-                                            Process::append_to_log_file(
-                                                &log_path,
-                                                &formatted_log,
-                                            )
-                                    {
-                                        tracing::error!(
-                                            "Failed to write to log file: {}",
-                                            e
-                                        );
-                                    }
-
-                                    if let Some(timestamp_millis) =
-                                        current_event.timestamp_millis
-                                    {
-                                        let timestamp =
-                                            timestamp_millis.to_string();
-                                        let message = current_event
-                                            .message
-                                            .as_deref()
-                                            .unwrap_or("")
-                                            .trim();
-                                        if let Err(e) = Self::maybe_handle_server_join_logging(
-											instance_id,
-											&timestamp,
-											message,
-											pool,
-                                        ).await {
-                                            tracing::error!("Failed to handle server join logging: {e}");
-                                        }
-                                    }
-
-                                    Self::emit_log4j_event(
-                                        instance_id,
-                                        &current_event,
-                                    );
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    Ok(Event::Text(mut e)) => {
-                        if in_message || in_throwable {
-                            let text = e.xml11_content();
-                            current_content.push_str(&text);
-                        } else if !in_event
-                            && !e.inplace_trim_end()
-                            && !e.inplace_trim_start()
-                        {
-                            let text = e.xml11_content();
-                            if let Err(e) = Process::append_to_log_file(
-                                &log_path,
-                                &format!("{text}\n"),
-                            ) {
-                                tracing::error!(
-                                    "Failed to write to log file: {}",
-                                    e
-                                );
-                            }
-                            Self::emit_legacy_log(instance_id, &text);
-                        }
-                    }
-                    Ok(Event::CData(e)) if in_message || in_throwable => {
-                        let text = e.xml11_content();
-                        current_content.push_str(&text);
-                    }
-                    _ => (),
-                }
-
-                buf.clear();
-            }
-        } else {
-            let mut line = String::new();
-
-            while let Ok(bytes_read) = buf_reader.read_line(&mut line).await {
-                if bytes_read == 0 {
-                    break; // End of stream
-                }
-
-                if !line.is_empty() {
-                    if let Err(e) = Self::append_to_log_file(&log_path, &line) {
-                        tracing::warn!("Failed to write to log file: {}", e);
-                    }
-                    Self::emit_legacy_log(instance_id, line.trim_ascii_end());
-                    if let Err(e) = Self::maybe_handle_old_server_join_logging(
-                        instance_id,
-                        line.trim_ascii_end(),
-                        pool,
-                    )
-                    .await
-                    {
-                        tracing::error!(
-                            "Failed to handle old server join logging: {e}"
-                        );
-                    }
-                }
-
                 line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        read_any = true;
+                        let trimmed = line.trim_end_matches(&['\r', '\n'][..]);
+                        if !trimmed.is_empty() {
+                            Self::emit_legacy_log(instance_id, trimmed);
+                            if let Some(pos) = trimmed.find("Connecting to ") {
+                                let clean_msg = trimmed[pos..]
+                                    .trim_end_matches("</log4j:Message>")
+                                    .trim_end_matches("]]>")
+                                    .trim();
+                                let _ = Self::parse_and_insert_server_join(
+                                    instance_id,
+                                    clean_msg,
+                                    Utc::now(),
+                                    &state.pool,
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                }
             }
-        }
-    }
 
-    fn format_timestamp(timestamp_millis: Option<i64>) -> String {
-        if let Some(timestamp_val) = timestamp_millis {
-            let datetime_utc = if timestamp_val > i32::MAX as i64 {
-                let secs = timestamp_val / 1000;
-                let nsecs = ((timestamp_val % 1000) * 1_000_000) as u32;
-
-                chrono::DateTime::<Utc>::from_timestamp(secs, nsecs)
-                    .unwrap_or_default()
-            } else {
-                chrono::DateTime::<Utc>::from_timestamp_secs(timestamp_val)
-                    .unwrap_or_default()
-            };
-
-            let datetime_local = datetime_utc.with_timezone(&chrono::Local);
-            format!("[{}]", datetime_local.format("%H:%M:%S"))
-        } else {
-            "[??:??:??]".to_string()
-        }
-    }
-
-    fn format_log4j_entry(event: &Log4jEvent) -> Option<String> {
-        let message = event.message.as_ref()?;
-        let thread = event.thread_name.as_deref().unwrap_or("");
-        let level = event.level.as_deref().unwrap_or("");
-        let logger = event.logger_name.as_deref().unwrap_or("");
-        let formatted_time = Self::format_timestamp(event.timestamp_millis);
-
-        Some(format!(
-            "{} [{}] [{}{}]: {}\n",
-            formatted_time,
-            thread,
-            if !logger.is_empty() {
-                format!("{logger}/")
-            } else {
-                String::new()
-            },
-            level,
-            message.trim()
-        ))
-    }
-
-    fn emit_log4j_event(instance_id: &str, event: &Log4jEvent) {
-        if let Some(formatted) = Self::format_log4j_entry(event) {
-            push_log_line(instance_id, formatted.trim_end().to_string());
-        }
-        if let Some(ref throwable) = event.throwable {
-            for line in throwable.lines().filter(|l| !l.is_empty()) {
-                push_log_line(instance_id, line.to_string());
+            if state.process_manager.get(uuid).is_none() {
+                if !read_any {
+                    break;
+                }
+            } else if !read_any {
+                tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
             }
-        }
-
-        #[cfg(feature = "tauri")]
-        {
-            let event_state = crate::EventState::get();
-            let _ = event_state.send(crate::event::AppEvent::Log(LogPayload {
-                instance_id: instance_id.to_string(),
-                event: LogEvent::Log4j(event.clone()),
-            }));
-        }
-        #[cfg(not(feature = "tauri"))]
-        {
-            let _ = (instance_id, event);
         }
     }
 
@@ -790,61 +681,6 @@ impl Process {
 
         file.write_all(line.as_bytes())?;
         Ok(())
-    }
-
-    async fn maybe_handle_server_join_logging(
-        instance_id: &str,
-        timestamp: &str,
-        message: &str,
-        pool: &SqlitePool,
-    ) -> crate::Result<()> {
-        let timestamp = timestamp
-            .parse::<i64>()
-            .map(|x| x / 1000)
-            .context("failed to parse timestamp")
-            .and_then(|x| {
-                Utc.timestamp_opt(x, 0)
-                    .single()
-                    .context("failed to convert timestamp to DateTime")
-            })?;
-        Self::parse_and_insert_server_join(
-            instance_id,
-            message,
-            timestamp,
-            pool,
-        )
-        .await
-    }
-
-    async fn maybe_handle_old_server_join_logging(
-        instance_id: &str,
-        line: &str,
-        pool: &SqlitePool,
-    ) -> crate::Result<()> {
-        if let Some((timestamp, message)) = line.split_once(" [CLIENT] [INFO] ")
-        {
-            let timestamp =
-                NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S")?
-                    .and_local_timezone(chrono::Local)
-                    .map(|x| x.to_utc())
-                    .single()
-                    .unwrap_or_else(Utc::now);
-            Self::parse_and_insert_server_join(
-                instance_id,
-                message,
-                timestamp,
-                pool,
-            )
-            .await
-        } else {
-            Self::parse_and_insert_server_join(
-                instance_id,
-                line,
-                Utc::now(),
-                pool,
-            )
-            .await
-        }
     }
 
     async fn parse_and_insert_server_join(

@@ -1,3 +1,4 @@
+pub mod delta;
 pub mod download;
 pub mod errors;
 pub mod logger;
@@ -23,9 +24,12 @@ use theseus::data::{AppliedContentSetPatch, ModLoader};
 use theseus::install::InstallJobStatus;
 use theseus::prelude::*;
 
+use crate::dr3sh::delta::{
+    download_and_extract_partial_zip, should_use_partial_zip, PartialZipAttempt,
+};
 use crate::dr3sh::download::{
     build_http_client, download_zip_resumable, drive_root_for_path, emit_progress,
-    existing_part_size, extract_host, part_file_path, DownloadSpec,
+    emit_progress_detailed, existing_part_size, extract_host, part_file_path, DownloadSpec,
 };
 use crate::dr3sh::errors::{Dr3shError, Dr3shErrorPayload};
 use crate::dr3sh::logger::{
@@ -33,12 +37,13 @@ use crate::dr3sh::logger::{
     prune_logs, register_op_meta, sanitize_url, update_op_stage, OpDiagnosticMeta,
 };
 use crate::dr3sh::manifest::{
-    build_reconciliation_plan, load_baseline, synthesize_manifest_from_zip,
-    verify_zip_against_manifest, Manifest,
+    build_reconciliation_plan, load_baseline, synthesize_manifest_from_zip_cancellable,
+    verify_zip_against_manifest_cancellable, Manifest,
 };
 use crate::dr3sh::preflight::{
-    ensure_safe_junction, is_launcher_owned_dir, is_reparse_point, remove_junction_link_only,
-    run_preflight, sanitize_instance_folder_name,
+    ensure_safe_junction, ensure_single_entry_user_deletable,
+    ensure_user_deletable_permissions, is_launcher_owned_dir, is_reparse_point,
+    remove_junction_link_only, run_preflight, sanitize_instance_folder_name,
 };
 use crate::dr3sh::state::{
     cancel_operation, complete_operation, get_all_server_states, get_cached_remote_gate,
@@ -640,7 +645,7 @@ pub async fn verify_remote_gate(server_id: &str, bypass_gate: bool) -> Result<()
 
     let Ok(resp) = client
         .get(&url)
-        .timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(3))
         .send()
         .await
     else {
@@ -795,7 +800,7 @@ pub async fn wait_for_theseus_base(
                             100,
                             0,
                             None,
-                            Some(10),
+                            Some(6),
                         );
                     }
                     return Ok(());
@@ -833,7 +838,7 @@ pub async fn wait_for_theseus_base(
                     } else {
                         0.2
                     };
-                    let pct = (1.0 + ratio * 9.0).round() as u32;
+                    let pct = (1.0 + ratio * 5.0).round() as u32;
                     if let Some(app_handle) = app {
                         emit_progress(
                             app_handle,
@@ -1284,7 +1289,7 @@ async fn ensure_theseus_instance_and_base(
                     100,
                     0,
                     None,
-                    Some(10),
+                    Some(6),
                 );
             }
         }
@@ -1478,9 +1483,20 @@ pub async fn execute_pipeline(
             .unwrap_or_else(|| default_instance_dir.clone());
 
         // Crash recovery check on this instance before any operation
-        recover_instance(Some(&op_id), &effective_instance_dir)?;
+        {
+            let op_c = op_id.clone();
+            let dir_c = effective_instance_dir.clone();
+            tokio::task::spawn_blocking(move || recover_instance(Some(&op_c), &dir_c))
+                .await
+                .map_err(|e| Dr3shError::unknown(format!("Recovery task join error: {e}")))??;
+        }
 
-        let baseline = load_baseline(&effective_instance_dir);
+        let baseline = {
+            let dir_c = effective_instance_dir.clone();
+            tokio::task::spawn_blocking(move || load_baseline(&dir_c))
+                .await
+                .map_err(|e| Dr3shError::unknown(format!("Baseline task join error: {e}")))?
+        };
         let from_version = baseline
             .as_ref()
             .map(|b| b.version.clone())
@@ -1489,6 +1505,11 @@ pub async fn execute_pipeline(
         // Fetch manifest if available
         let stage_manifest_start = Instant::now();
         let remote_manifest = fetch_manifest_if_available(&op_id, &server_id, &spec).await?;
+        if cancel_token.load(Ordering::SeqCst) {
+            return Err(Dr3shError::Cancelled {
+                stage: "manifest".to_string(),
+            });
+        }
         log_event(
             Some(&op_id),
             "STAGE",
@@ -1519,27 +1540,39 @@ pub async fn execute_pipeline(
             .map(|m| m.zip.sha256.clone())
             .or_else(|| spec.sha256.clone());
 
-        let already_downloaded_bytes = existing_part_size(
-            &effective_instance_dir,
-            &server_id,
-            &spec.id,
-            expected_zip_sha.as_deref(),
-        );
-        let zip_remaining = expected_zip_size.saturating_sub(already_downloaded_bytes);
-
         let est_write_bytes = remote_manifest
             .as_ref()
             .map(|m| m.files.iter().map(|f| f.size).sum::<u64>())
             .unwrap_or(expected_zip_size);
 
         // Section 10: Run preflight BEFORE creating junctions or downloading
-        let preflight_report = run_preflight(
-            &op_id,
-            &default_instance_dir,
-            custom_target_dir.as_deref(),
-            zip_remaining,
-            est_write_bytes,
-        )?;
+        let preflight_report = {
+            let op_c = op_id.clone();
+            let def_c = default_instance_dir.clone();
+            let cust_c = custom_target_dir.clone();
+            let eff_c = effective_instance_dir.clone();
+            let srv_c = server_id.clone();
+            let spec_id_c = spec.id.clone();
+            let sha_c = expected_zip_sha.clone();
+            tokio::task::spawn_blocking(move || {
+                let already_downloaded_bytes = existing_part_size(
+                    &eff_c,
+                    &srv_c,
+                    &spec_id_c,
+                    sha_c.as_deref(),
+                );
+                let zip_remaining = expected_zip_size.saturating_sub(already_downloaded_bytes);
+                run_preflight(
+                    &op_c,
+                    &def_c,
+                    cust_c.as_deref(),
+                    zip_remaining,
+                    est_write_bytes,
+                )
+            })
+            .await
+            .map_err(|e| Dr3shError::unknown(format!("Preflight task join error: {e}")))??
+        };
 
         log_event(
             Some(&op_id),
@@ -1582,14 +1615,25 @@ pub async fn execute_pipeline(
 
         let inner_res: Result<DoneEventPayload, Dr3shError> = (|| async {
             // Section 11: Safe NTFS junction if custom directory is used
-            if let Some(ref custom_target) = custom_target_dir {
-                ensure_safe_junction(Some(&op_id), &default_instance_dir, custom_target)?;
-            } else {
-                fs::create_dir_all(&default_instance_dir).map_err(|e| Dr3shError::FsPermission {
-                    path: default_instance_dir.to_string_lossy().to_string(),
-                    os_code: e.raw_os_error().unwrap_or(-1).to_string(),
-                })?;
-                let _ = fs::write(default_instance_dir.join(".dr3sh_instance"), b"dr3sh");
+            {
+                let op_c = op_id.clone();
+                let def_c = default_instance_dir.clone();
+                let cust_c = custom_target_dir.clone();
+                tokio::task::spawn_blocking(move || -> Result<(), Dr3shError> {
+                    if let Some(ref custom_target) = cust_c {
+                        ensure_safe_junction(Some(&op_c), &def_c, custom_target)?;
+                    } else {
+                        fs::create_dir_all(&def_c).map_err(|e| Dr3shError::FsPermission {
+                            path: def_c.to_string_lossy().to_string(),
+                            os_code: e.raw_os_error().unwrap_or(-1).to_string(),
+                        })?;
+                        let _ = fs::write(def_c.join(".dr3sh_instance"), b"dr3sh");
+                        ensure_single_entry_user_deletable(&def_c);
+                    }
+                    Ok(())
+                })
+                .await
+                .map_err(|e| Dr3shError::unknown(format!("Junction setup join error: {e}")))??;
             }
 
             if let Some(ref app_handle) = app {
@@ -1598,20 +1642,31 @@ pub async fn execute_pipeline(
                     .allow_directory(&effective_instance_dir, true);
             }
 
+            if cancel_token.load(Ordering::SeqCst) {
+                return Err(Dr3shError::Cancelled {
+                    stage: "preflight".to_string(),
+                });
+            }
+
             // If we already have a schema-1 remote manifest, we can compute the plan BEFORE downloading!
             // That satisfies Section 15 #15: "No changes between versions -> the ZIP is not downloaded and the baseline is updated."
+            let txn_id = format!("txn_{}", op_id);
             let mut downloaded_zip_path: Option<PathBuf> = None;
             let mut dl_bytes = 0u64;
             let mut dl_speed = 0u64;
             let mut dl_retries = 0u32;
 
             let (manifest, plan) = if let Some(m) = remote_manifest {
-                let mut plan = build_reconciliation_plan(
-                    &effective_instance_dir,
-                    baseline.as_ref(),
-                    &m,
-                    ignore_cache,
-                );
+                let mut plan = {
+                    let eff_c = effective_instance_dir.clone();
+                    let base_c = baseline.clone();
+                    let m_c = m.clone();
+                    tokio::task::spawn_blocking(move || {
+                        build_reconciliation_plan(&eff_c, base_c.as_ref(), &m_c, ignore_cache)
+                    })
+                    .await
+                    .map_err(|e| Dr3shError::unknown(format!("Plan task join error: {e}")))?
+                };
 
                 if plan.needs_zip() {
                     update_op_stage(&op_id, "DOWNLOAD", None);
@@ -1619,50 +1674,191 @@ pub async fn execute_pipeline(
                         st.state = ServerInstallState::Downloading;
                     });
                     let dl_stage_start = Instant::now();
-                    let part_path = part_file_path(
-                        &effective_instance_dir,
-                        &m.pack_id,
-                        &m.version,
-                        &m.zip.sha256,
-                    );
-                    let outcome = download_zip_resumable(DownloadSpec {
-                        app: app.as_ref(),
-                        op_id: &op_id,
-                        server_id: &server_id,
-                        server_title: folder_label,
-                        url: &m.zip.url,
-                        part_path: &part_path,
-                        expected_size: Some(m.zip.size),
-                        expected_sha256: Some(&m.zip.sha256),
-                        cancel_flag: &cancel_token,
-                    })
-                    .await?;
-                    log_event(
-                        Some(&op_id),
-                        "STAGE",
-                        "INFO",
-                        "download and verify stage finished",
-                        &[(
-                            "duration_ms",
-                            dl_stage_start.elapsed().as_millis().to_string(),
-                        )],
-                    );
-                    update_op_stage(&op_id, "VERIFY", None);
-                    update_server_state(app.as_ref(), &server_id, |st| {
-                        st.state = ServerInstallState::Verifying;
-                    });
-                    let resolved_map = verify_zip_against_manifest(&outcome.part_path, &m)?;
-                    for item in &mut plan.items {
-                        if item.archive_entry_name.is_none()
-                            && let Some(actual) = resolved_map.get(&item.path.to_ascii_lowercase())
+                    let remote_zip_bytes = if m.zip.size > 0 {
+                        m.zip.size
+                    } else {
+                        expected_zip_size
+                    };
+                    let mut used_delta = false;
+                    if should_use_partial_zip(remote_zip_bytes, &plan, 4 * 1024 * 1024) {
+                        match download_and_extract_partial_zip(
+                            app.as_ref(),
+                            &op_id,
+                            &server_id,
+                            &m.zip.url,
+                            remote_zip_bytes,
+                            &effective_instance_dir,
+                            &txn_id,
+                            &plan,
+                            &cancel_token,
+                        )
+                        .await?
                         {
-                            item.archive_entry_name = Some(actual.clone());
+                            PartialZipAttempt::Completed(outcome) => {
+                                dl_bytes = outcome.downloaded_bytes;
+                                dl_speed = outcome.avg_speed_bps;
+                                used_delta = true;
+                                log_event(
+                                    Some(&op_id),
+                                    "DOWNLOAD",
+                                    "INFO",
+                                    "delta partial ZIP completed",
+                                    &[
+                                        ("downloaded_bytes", outcome.downloaded_bytes.to_string()),
+                                        ("full_zip_bytes", remote_zip_bytes.to_string()),
+                                        (
+                                            "saved_bytes",
+                                            remote_zip_bytes
+                                                .saturating_sub(outcome.downloaded_bytes)
+                                                .to_string(),
+                                        ),
+                                        ("files_extracted", outcome.files_extracted.to_string()),
+                                        (
+                                            "duration_ms",
+                                            dl_stage_start.elapsed().as_millis().to_string(),
+                                        ),
+                                    ],
+                                );
+                            }
+                            PartialZipAttempt::FallbackToFull(reason) => {
+                                log_event(
+                                    Some(&op_id),
+                                    "DOWNLOAD",
+                                    "WARN",
+                                    "partial ZIP fallback to full download",
+                                    &[("reason", reason)],
+                                );
+                            }
                         }
                     }
-                    downloaded_zip_path = Some(outcome.part_path);
-                    dl_bytes = outcome.total_bytes;
-                    dl_speed = outcome.avg_speed_bps;
-                    dl_retries = outcome.retries_used;
+
+                    if !used_delta {
+                        let part_path = part_file_path(
+                            &effective_instance_dir,
+                            &m.pack_id,
+                            &m.version,
+                            &m.zip.sha256,
+                        );
+                        let outcome = download_zip_resumable(DownloadSpec {
+                            app: app.as_ref(),
+                            op_id: &op_id,
+                            server_id: &server_id,
+                            server_title: folder_label,
+                            url: &m.zip.url,
+                            part_path: &part_path,
+                            expected_size: Some(m.zip.size),
+                            expected_sha256: Some(&m.zip.sha256),
+                            cancel_flag: &cancel_token,
+                        })
+                        .await?;
+                        log_event(
+                            Some(&op_id),
+                            "STAGE",
+                            "INFO",
+                            "download and verify stage finished",
+                            &[(
+                                "duration_ms",
+                                dl_stage_start.elapsed().as_millis().to_string(),
+                            )],
+                        );
+                        if cancel_token.load(Ordering::SeqCst) {
+                            return Err(Dr3shError::Cancelled {
+                                stage: "verify".to_string(),
+                            });
+                        }
+                        update_op_stage(&op_id, "VERIFY", None);
+                        update_server_state(app.as_ref(), &server_id, |st| {
+                            st.state = ServerInstallState::Verifying;
+                        });
+                        let verify_total = m.files.len() as u64;
+                        if let Some(ref app_handle) = app {
+                            emit_progress_detailed(
+                                app_handle,
+                                &op_id,
+                                &server_id,
+                                "verify",
+                                format!("Verificando archivos (0/{verify_total})..."),
+                                0,
+                                0,
+                                0,
+                                None,
+                                Some(70),
+                                None,
+                                Some(0),
+                                Some(verify_total),
+                            );
+                        }
+                        let resolved_map = {
+                            let p_c = outcome.part_path.clone();
+                            let m_c = m.clone();
+                            let c_c = cancel_token.clone();
+                            let app_c = app.clone();
+                            let op_c = op_id.clone();
+                            let srv_c = server_id.clone();
+                            tokio::task::spawn_blocking(move || {
+                                verify_zip_against_manifest_cancellable(
+                                    &p_c,
+                                    &m_c,
+                                    &c_c,
+                                    |done, total| {
+                                        if let Some(ref app_handle) = app_c {
+                                            let ratio = if total > 0 {
+                                                done as f64 / total as f64
+                                            } else {
+                                                1.0
+                                            };
+                                            let pct = (70.0 + ratio * 2.0).round() as u32;
+                                            emit_progress_detailed(
+                                                app_handle,
+                                                &op_c,
+                                                &srv_c,
+                                                "verify",
+                                                format!("Verificando archivos ({done}/{total})..."),
+                                                0,
+                                                0,
+                                                0,
+                                                None,
+                                                Some(pct),
+                                                None,
+                                                Some(done),
+                                                Some(total),
+                                            );
+                                        }
+                                    },
+                                )
+                            })
+                            .await
+                            .map_err(|e| Dr3shError::unknown(format!("Verify task join error: {e}")))??
+                        };
+                        if let Some(ref app_handle) = app {
+                            emit_progress_detailed(
+                                app_handle,
+                                &op_id,
+                                &server_id,
+                                "verify",
+                                "Paquete verificado.",
+                                0,
+                                0,
+                                0,
+                                None,
+                                Some(72),
+                                None,
+                                Some(verify_total),
+                                Some(verify_total),
+                            );
+                        }
+                        for item in &mut plan.items {
+                            if item.archive_entry_name.is_none()
+                                && let Some(actual) = resolved_map.get(&item.path.to_ascii_lowercase())
+                            {
+                                item.archive_entry_name = Some(actual.clone());
+                            }
+                        }
+                        downloaded_zip_path = Some(outcome.part_path);
+                        dl_bytes = outcome.total_bytes;
+                        dl_speed = outcome.avg_speed_bps;
+                        dl_retries = outcome.retries_used;
+                    }
                 } else {
                     log_event(
                         Some(&op_id),
@@ -1713,31 +1909,126 @@ pub async fn execute_pipeline(
                     )],
                 );
 
+                if cancel_token.load(Ordering::SeqCst) {
+                    return Err(Dr3shError::Cancelled {
+                        stage: "verify".to_string(),
+                    });
+                }
+
                 update_op_stage(&op_id, "VERIFY", None);
                 update_server_state(app.as_ref(), &server_id, |st| {
                     st.state = ServerInstallState::Verifying;
                 });
-                let synth = synthesize_manifest_from_zip(
-                    &outcome.part_path,
-                    &server_id,
-                    &spec.id,
-                    spec.game_version.as_deref().unwrap_or("1.21.1"),
-                    spec.loader.as_deref().unwrap_or("fabric"),
-                    spec.loader_version.as_deref().unwrap_or(""),
-                    &zip_url,
-                )?;
-                let plan = build_reconciliation_plan(
-                    &effective_instance_dir,
-                    baseline.as_ref(),
-                    &synth,
-                    ignore_cache,
-                );
+                if let Some(ref app_handle) = app {
+                    emit_progress_detailed(
+                        app_handle,
+                        &op_id,
+                        &server_id,
+                        "verify",
+                        "Analizando archivos del paquete...",
+                        0,
+                        0,
+                        0,
+                        None,
+                        Some(70),
+                        None,
+                        None,
+                        None,
+                    );
+                }
+                let (synth, plan) = {
+                    let p_c = outcome.part_path.clone();
+                    let eff_c = effective_instance_dir.clone();
+                    let srv_c = server_id.clone();
+                    let spec_id_c = spec.id.clone();
+                    let mc_c = spec
+                        .game_version
+                        .clone()
+                        .unwrap_or_else(|| "1.21.1".to_string());
+                    let ld_c = spec.loader.clone().unwrap_or_else(|| "fabric".to_string());
+                    let ld_ver_c = spec.loader_version.clone().unwrap_or_default();
+                    let url_c = zip_url.clone();
+                    let base_c = baseline.clone();
+                    let c_c = cancel_token.clone();
+                    let app_c = app.clone();
+                    let op_c = op_id.clone();
+                    tokio::task::spawn_blocking(move || -> Result<(Manifest, manifest::ReconciliationPlan), Dr3shError> {
+                        let synth = synthesize_manifest_from_zip_cancellable(
+                            &p_c,
+                            &srv_c,
+                            &spec_id_c,
+                            &mc_c,
+                            &ld_c,
+                            &ld_ver_c,
+                            &url_c,
+                            &c_c,
+                            |done, total| {
+                                if let Some(ref app_handle) = app_c {
+                                    let ratio = if total > 0 {
+                                        done as f64 / total as f64
+                                    } else {
+                                        0.0
+                                    };
+                                    let pct = (70.0 + ratio * 2.0).round() as u32;
+                                    emit_progress_detailed(
+                                        app_handle,
+                                        &op_c,
+                                        &srv_c,
+                                        "verify",
+                                        format!("Analizando archivos ({done}/{total})..."),
+                                        0,
+                                        0,
+                                        0,
+                                        None,
+                                        Some(pct),
+                                        None,
+                                        Some(done),
+                                        Some(total),
+                                    );
+                                }
+                            },
+                        )?;
+                        let plan = build_reconciliation_plan(
+                            &eff_c,
+                            base_c.as_ref(),
+                            &synth,
+                            ignore_cache,
+                        );
+                        Ok((synth, plan))
+                    })
+                    .await
+                    .map_err(|e| Dr3shError::unknown(format!("Synthesize task join error: {e}")))??
+                };
+                let synth_total = synth.files.len() as u64;
+                if let Some(ref app_handle) = app {
+                    emit_progress_detailed(
+                        app_handle,
+                        &op_id,
+                        &server_id,
+                        "verify",
+                        "Paquete verificado.",
+                        0,
+                        0,
+                        0,
+                        None,
+                        Some(72),
+                        None,
+                        Some(synth_total),
+                        Some(synth_total),
+                    );
+                }
                 downloaded_zip_path = Some(outcome.part_path);
                 dl_bytes = outcome.total_bytes;
                 dl_speed = outcome.avg_speed_bps;
                 dl_retries = outcome.retries_used;
                 (synth, plan)
             };
+
+            if cancel_token.load(Ordering::SeqCst) {
+                return Err(Dr3shError::Cancelled {
+                    stage: "extract".to_string(),
+                });
+            }
 
             // Log plan summary and per-file DEBUG entries (Section 8.3)
             log_event(
@@ -1755,28 +2046,37 @@ pub async fn execute_pipeline(
                     ("write_bytes", plan.write_bytes_total.to_string()),
                 ],
             );
-            let mut plan_debug_buf = String::new();
-            for entry in &plan.items {
-                plan_debug_buf.push_str(&logger::format_log_line(
-                    Some(&op_id),
-                    "PLAN",
-                    "DEBUG",
-                    "file action",
-                    &[
-                        ("path", entry.path.clone()),
-                        ("policy", entry.policy.as_str().to_string()),
-                        ("action", format!("{:?}", entry.action)),
-                        ("tag", entry.tag.clone().unwrap_or_default()),
-                    ],
-                ));
+            {
+                let mut plan_debug_buf = String::new();
+                for entry in &plan.items {
+                    plan_debug_buf.push_str(&logger::format_log_line(
+                        Some(&op_id),
+                        "PLAN",
+                        "DEBUG",
+                        "file action",
+                        &[
+                            ("path", entry.path.clone()),
+                            ("policy", entry.policy.as_str().to_string()),
+                            ("action", format!("{:?}", entry.action)),
+                            ("tag", entry.tag.clone().unwrap_or_default()),
+                        ],
+                    ));
+                }
+                let op_c = op_id.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    logger::log_op_debug_batch(Some(&op_c), &plan_debug_buf);
+                })
+                .await;
             }
-            logger::log_op_debug_batch(Some(&op_id), &plan_debug_buf);
-
-            let txn_id = format!("txn_{}", op_id);
 
             // Stage 5: Extract needed files into staging/<txn_id>
             if let Some(ref zip_path) = downloaded_zip_path {
                 if plan.needs_zip() {
+                    if cancel_token.load(Ordering::SeqCst) {
+                        return Err(Dr3shError::Cancelled {
+                            stage: "extract".to_string(),
+                        });
+                    }
                     update_op_stage(&op_id, "EXTRACT", None);
                     update_server_state(app.as_ref(), &server_id, |st| {
                         st.state = ServerInstallState::Extracting;
@@ -1856,8 +2156,26 @@ pub async fn execute_pipeline(
             );
 
             // Remove .part file after commit
-            if let Some(ref zip_path) = downloaded_zip_path {
-                let _ = fs::remove_file(zip_path);
+            if let Some(zip_path) = downloaded_zip_path {
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = fs::remove_file(zip_path);
+                })
+                .await;
+            }
+
+            {
+                let eff_c = effective_instance_dir.clone();
+                let srv_c = server_id.clone();
+                let inst_c = instance_id.clone();
+                let ver_c = manifest.version.clone();
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = write_instance_marker(&eff_c, &srv_c, &inst_c, &ver_c) {
+                        tracing::warn!("No se pudo escribir el marcador de instancia: {e}");
+                    }
+                    ensure_user_deletable_permissions(&eff_c);
+                })
+                .await
+                .map_err(|e| Dr3shError::unknown(format!("Marker/ACL task join error: {e}")))?;
             }
 
             let migration_notice = plan.has_migration_backups();
@@ -1869,6 +2187,7 @@ pub async fn execute_pipeline(
                 st.instance_id = Some(instance_id.clone());
                 st.instance_path = Some(inst_path_str.clone());
                 st.installed_version = Some(manifest.version.clone());
+                st.marker_written = true;
                 st.active_op_id = None;
                 st.last_error = None;
                 if migration_notice {
@@ -2000,6 +2319,266 @@ pub async fn dr3sh_install_or_update(
     Ok(op_id_ret)
 }
 
+pub const INSTANCE_MARKER_REL_PATH: &str = ".dr3sh/instance_marker.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstanceMarker {
+    pub marker: String,
+    pub server_id: String,
+    pub instance_id: String,
+    pub version: String,
+    pub installed_at: String,
+    #[serde(default)]
+    pub vital_dirs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct InstanceHealthStatus {
+    pub healthy: bool,
+    pub needs_repair: bool,
+    pub reason: Option<String>,
+    pub resolved_path: Option<String>,
+}
+
+pub fn write_instance_marker(
+    instance_dir: &PathBuf,
+    server_id: &str,
+    instance_id: &str,
+    version: &str,
+) -> Result<(), Dr3shError> {
+    let dr3sh_dir = instance_dir.join(".dr3sh");
+    fs::create_dir_all(&dr3sh_dir).map_err(|e| Dr3shError::FsPermission {
+        path: dr3sh_dir.to_string_lossy().to_string(),
+        os_code: e.raw_os_error().unwrap_or(-1).to_string(),
+    })?;
+
+    let payload = InstanceMarker {
+        marker: "dr3sh_instance_present".to_string(),
+        server_id: server_id.to_string(),
+        instance_id: instance_id.to_string(),
+        version: version.to_string(),
+        installed_at: Utc::now().to_rfc3339(),
+        vital_dirs: vec!["mods".to_string(), ".dr3sh".to_string()],
+    };
+
+    let final_path = dr3sh_dir.join("instance_marker.json");
+    let tmp_path = dr3sh_dir.join("instance_marker.json.tmp");
+    let bytes = serde_json::to_vec_pretty(&payload).map_err(|e| {
+        Dr3shError::unknown(format!("No se pudo serializar el marcador: {e}"))
+    })?;
+    fs::write(&tmp_path, bytes).map_err(|e| Dr3shError::FsPermission {
+        path: tmp_path.to_string_lossy().to_string(),
+        os_code: e.raw_os_error().unwrap_or(-1).to_string(),
+    })?;
+    fs::rename(&tmp_path, &final_path).map_err(|e| Dr3shError::FsPermission {
+        path: final_path.to_string_lossy().to_string(),
+        os_code: e.raw_os_error().unwrap_or(-1).to_string(),
+    })?;
+    Ok(())
+}
+
+fn dir_has_any_entry(dir: &PathBuf) -> bool {
+    dir.is_dir()
+        && fs::read_dir(dir)
+            .ok()
+            .and_then(|mut rd| rd.next())
+            .is_some()
+}
+
+pub fn evaluate_instance_health(
+    server_id: &str,
+    fallback_instance_path: Option<&str>,
+) -> InstanceHealthStatus {
+    let st = get_server_state(server_id);
+    let state_path = st
+        .instance_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let fallback_path = fallback_instance_path
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let has_install_record = st
+        .installed_version
+        .as_deref()
+        .is_some_and(|v| !v.trim().is_empty())
+        || state_path.is_some()
+        || fallback_path.is_some();
+
+    if !has_install_record {
+        return InstanceHealthStatus {
+            healthy: false,
+            needs_repair: false,
+            reason: None,
+            resolved_path: None,
+        };
+    }
+
+    let Some(dir_str) = state_path.or(fallback_path) else {
+        return InstanceHealthStatus {
+            healthy: false,
+            needs_repair: true,
+            reason: Some(
+                "No se encontró la carpeta configurada para esta instancia."
+                    .to_string(),
+            ),
+            resolved_path: None,
+        };
+    };
+
+    let dir = PathBuf::from(dir_str);
+    let resolved_path = Some(dir_str.to_string());
+
+    if !dir.exists() || !dir.is_dir() {
+        return InstanceHealthStatus {
+            healthy: false,
+            needs_repair: true,
+            reason: Some(
+                "No se encontró la carpeta de la instancia en disco.".to_string(),
+            ),
+            resolved_path,
+        };
+    }
+
+    let marker_path = dir.join(".dr3sh").join("instance_marker.json");
+    if marker_path.is_file() {
+        let parsed = fs::read_to_string(&marker_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<InstanceMarker>(&raw).ok());
+        let valid_marker = parsed.as_ref().is_some_and(|m| {
+            m.marker == "dr3sh_instance_present"
+                && m.server_id.eq_ignore_ascii_case(server_id)
+        });
+        if !valid_marker {
+            return InstanceHealthStatus {
+                healthy: false,
+                needs_repair: true,
+                reason: Some(
+                    "El marcador de verificación (.dr3sh/instance_marker.json) está dañado o no coincide."
+                        .to_string(),
+                ),
+                resolved_path,
+            };
+        }
+    } else if st.marker_written {
+        return InstanceHealthStatus {
+            healthy: false,
+            needs_repair: true,
+            reason: Some(
+                "Falta el archivo marcador (.dr3sh/instance_marker.json)."
+                    .to_string(),
+            ),
+            resolved_path,
+        };
+    } else {
+        let has_legacy_marker = dir.join(".dr3sh").join("baseline.json").is_file()
+            || dir.join(".dr3sh_instance").is_file()
+            || dir.join("profile.json").is_file();
+        if !has_legacy_marker || !dir_has_any_entry(&dir.join("mods")) {
+            return InstanceHealthStatus {
+                healthy: false,
+                needs_repair: true,
+                reason: Some(
+                    "Faltan archivos de integridad de la instancia.".to_string(),
+                ),
+                resolved_path,
+            };
+        }
+        let inst_id = st
+            .instance_id
+            .as_deref()
+            .unwrap_or(server_id);
+        let ver = st.installed_version.as_deref().unwrap_or("1");
+        if write_instance_marker(&dir, server_id, inst_id, ver).is_ok() {
+            update_server_state(None, server_id, |entry| {
+                entry.marker_written = true;
+            });
+        }
+    }
+
+    if let Some(baseline) = load_baseline(&dir) {
+        let mut expected_mod_files = 0usize;
+        for mf in &baseline.files {
+            let lower = mf.path.to_ascii_lowercase();
+            if lower.starts_with("mods/") {
+                expected_mod_files += 1;
+                if mf.policy == "managed" && !dir.join(&mf.path).exists() {
+                    return InstanceHealthStatus {
+                        healthy: false,
+                        needs_repair: true,
+                        reason: Some(format!(
+                            "Falta un archivo vital del modpack: {}",
+                            mf.path
+                        )),
+                        resolved_path,
+                    };
+                }
+            }
+        }
+        if expected_mod_files > 0 && !dir_has_any_entry(&dir.join("mods")) {
+            return InstanceHealthStatus {
+                healthy: false,
+                needs_repair: true,
+                reason: Some("Falta la carpeta mods o está vacía.".to_string()),
+                resolved_path,
+            };
+        }
+    } else if !dir_has_any_entry(&dir.join("mods")) {
+        return InstanceHealthStatus {
+            healthy: false,
+            needs_repair: true,
+            reason: Some(
+                "Falta la carpeta mods o el registro de archivos de la instancia."
+                    .to_string(),
+            ),
+            resolved_path,
+        };
+    }
+
+    InstanceHealthStatus {
+        healthy: true,
+        needs_repair: false,
+        reason: None,
+        resolved_path,
+    }
+}
+
+#[tauri::command]
+pub async fn dr3sh_check_instance_health(
+    server_id: String,
+    fallback_instance_path: Option<String>,
+) -> InstanceHealthStatus {
+    tokio::task::spawn_blocking(move || {
+        evaluate_instance_health(&server_id, fallback_instance_path.as_deref())
+    })
+    .await
+    .unwrap_or_else(|_| InstanceHealthStatus {
+        healthy: true,
+        needs_repair: false,
+        reason: None,
+        resolved_path: None,
+    })
+}
+
+fn preserved_custom_dir_for_repair(saved_path: Option<&str>) -> Option<String> {
+    let raw = saved_path?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let normalized = raw.replace('/', "\\").to_ascii_lowercase();
+    if normalized.contains(r"\com.dr3sh.launcher\profiles\") {
+        return None;
+    }
+    let root = drive_root_for_path(std::path::Path::new(raw));
+    if root.exists() {
+        Some(raw.to_string())
+    } else {
+        None
+    }
+}
+
 #[tauri::command]
 pub async fn dr3sh_repair(
     app: tauri::AppHandle,
@@ -2010,6 +2589,8 @@ pub async fn dr3sh_repair(
     let cancel_token = register_operation(&op_id);
 
     let st = get_server_state(&server_id);
+    let preserved_custom_dir =
+        preserved_custom_dir_for_repair(st.instance_path.as_deref());
     let ver_val = version_ref.unwrap_or_else(|| {
         serde_json::Value::String(
             st.installed_version
@@ -2024,7 +2605,7 @@ pub async fn dr3sh_repair(
             op_id,
             server_id,
             ver_val,
-            None,
+            preserved_custom_dir,
             true,
             st.instance_id,
             None,
@@ -2240,6 +2821,11 @@ pub async fn dr3sh_link_existing_instance(
         let _ = theseus::instance::watch_instance(&instance_id, &instance_folder_name).await;
     }
     junc_res.map_err(|e| anyhow::anyhow!("{}", e.ui_message_es()))?;
+    let existing_for_acl = existing_path.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        ensure_user_deletable_permissions(&existing_for_acl);
+    })
+    .await;
     let _ = app.fs_scope().allow_directory(&existing_path, true);
     Ok(true)
 }
@@ -2270,6 +2856,7 @@ pub fn dr3sh_cleanup_deleted_instance(
             st.installed_version = None;
             st.instance_id = None;
             st.instance_path = None;
+            st.marker_written = false;
             st.last_error = None;
         });
     }
@@ -2820,5 +3407,47 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.contains("No se pudo consultar actualizaciones en GitHub"), "err={err}");
+    }
+
+    #[test]
+    fn test_instance_marker_and_health_detection() {
+        let srv_id = format!("test_srv_{}", uuid::Uuid::new_v4());
+        let base = std::env::temp_dir().join(format!("dr3sh_health_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(base.join("mods")).unwrap();
+        fs::write(base.join("mods").join("example.jar"), b"jar").unwrap();
+        fs::create_dir_all(base.join(".dr3sh")).unwrap();
+        fs::write(
+            base.join(".dr3sh").join("baseline.json"),
+            r#"{"schema":1,"pack_id":"p","version":"1","minecraft_version":"1.21.1","loader":"fabric","loader_version":"0.16.0","zip":{"url":"","size":0,"sha256":""},"rules":[],"files":[{"path":"mods/example.jar","sha256":"abc","size":3,"policy":"managed"}]}"#,
+        )
+        .unwrap();
+        write_instance_marker(&base, &srv_id, "inst_1", "1").unwrap();
+
+        update_server_state(None, &srv_id, |st| {
+            st.state = ServerInstallState::Installed;
+            st.installed_version = Some("1".to_string());
+            st.instance_id = Some("inst_1".to_string());
+            st.instance_path = Some(base.to_string_lossy().to_string());
+            st.marker_written = true;
+        });
+
+        let h1 = evaluate_instance_health(&srv_id, None);
+        assert!(h1.healthy && !h1.needs_repair, "expected healthy: {h1:?}");
+
+        // Delete marker JSON -> needs_repair
+        fs::remove_file(base.join(".dr3sh").join("instance_marker.json")).unwrap();
+        let h2 = evaluate_instance_health(&srv_id, None);
+        assert!(!h2.healthy && h2.needs_repair, "expected needs_repair without marker: {h2:?}");
+
+        // Restore marker, delete vital mod -> needs_repair
+        write_instance_marker(&base, &srv_id, "inst_1", "1").unwrap();
+        fs::remove_file(base.join("mods").join("example.jar")).unwrap();
+        let h3 = evaluate_instance_health(&srv_id, None);
+        assert!(!h3.healthy && h3.needs_repair, "expected needs_repair without vital mod: {h3:?}");
+
+        // Delete entire directory -> needs_repair
+        let _ = fs::remove_dir_all(&base);
+        let h4 = evaluate_instance_health(&srv_id, None);
+        assert!(!h4.healthy && h4.needs_repair, "expected needs_repair without dir: {h4:?}");
     }
 }

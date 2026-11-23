@@ -656,10 +656,13 @@
 }
 
 .developer-status {
+  min-width: 0;
   min-height: 20px;
   color: #a3e635;
   font-size: 12.5px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .developer-toolbar {
@@ -1124,18 +1127,26 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  min-width: 0;
   padding: 14px 24px;
   background: #151925;
   border-top: 1px solid #242b3d;
 }
 
 .developer-footer .developer-status {
-  flex: 1;
+  flex: 1 1 0%;
+  min-width: 0;
+  max-height: 48px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .developer-footer-actions {
   display: flex;
   flex: 0 0 auto;
+  flex-shrink: 0;
+  margin-left: auto;
   gap: 10px;
 }
 

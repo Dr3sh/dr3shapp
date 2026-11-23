@@ -9,12 +9,17 @@ export interface DownloadProgress {
 	phase: 'idle' | 'preparing' | 'downloading' | 'verifying' | 'extracting' | 'applying' | 'finishing'
 	percent: number
 	phaseText: string
+	stageLabel: string
+	stepIndex: number
 	downloadedBytes: number
 	totalBytes: number
 	downloadedFormatted: string
 	totalFormatted: string
 	speedFormatted: string
 	etaSeconds?: number | null
+	etaFormatted: string
+	filesDone: number | null
+	filesTotal: number | null
 	attempt?: number
 }
 
@@ -48,22 +53,69 @@ export interface Dr3shServerStateEntry {
 }
 
 const isDownloading = ref(false)
+const isCancelling = ref(false)
 const currentServerId = ref<string | null>(null)
 const currentOpId = ref<string | null>(null)
 const lastOperationError = ref<Dr3shLastError | null>(null)
 const serverStatesMap = ref<Record<string, Dr3shServerStateEntry>>({})
 export const installedVersionsMap = ref<Record<string, string>>({})
 
+function formatEtaUi(secs?: number | null): string {
+	if (typeof secs !== 'number' || !Number.isFinite(secs) || secs <= 0) return ''
+	const rounded = Math.ceil(secs)
+	if (rounded < 60) return `${rounded}s`
+	const mins = Math.floor(rounded / 60)
+	const remSecs = rounded % 60
+	if (mins < 60) {
+		return remSecs > 0 ? `${mins}m ${remSecs}s` : `${mins}m`
+	}
+	const hrs = Math.floor(mins / 60)
+	const remMins = mins % 60
+	return remMins > 0 ? `${hrs}h ${remMins}m` : `${hrs}h`
+}
+
+function resolveStageMeta(
+	stage: string | undefined,
+	phase: DownloadProgress['phase'],
+): { stageLabel: string; stepIndex: number } {
+	switch (stage || phase) {
+		case 'preflight':
+		case 'base':
+		case 'preparing':
+			return { stageLabel: 'Preparando', stepIndex: 1 }
+		case 'download':
+		case 'downloading':
+			return { stageLabel: 'Descargando', stepIndex: 1 }
+		case 'verify':
+		case 'verifying':
+			return { stageLabel: 'Verificando', stepIndex: 2 }
+		case 'extract':
+		case 'extracting':
+			return { stageLabel: 'Descomprimiendo', stepIndex: 3 }
+		case 'apply':
+		case 'applying':
+		case 'finishing':
+			return { stageLabel: 'Instalando', stepIndex: 4 }
+		default:
+			return { stageLabel: 'Descargando', stepIndex: 1 }
+	}
+}
+
 const downloadProgress = ref<DownloadProgress>({
 	phase: 'idle',
 	percent: 0,
 	phaseText: '',
+	stageLabel: '',
+	stepIndex: 1,
 	downloadedBytes: 0,
 	totalBytes: 0,
 	downloadedFormatted: '',
 	totalFormatted: '',
 	speedFormatted: '',
 	etaSeconds: null,
+	etaFormatted: '',
+	filesDone: null,
+	filesTotal: null,
 	attempt: 0,
 })
 
@@ -250,6 +302,44 @@ export function findMatchingInstance(
 	return null
 }
 
+export function hasServerOrRuntimeUpdate(
+	server: Dr3shServer | null | undefined,
+	latestVersion: Dr3shVersion | null | undefined,
+	matchingInstance: any | null | undefined,
+): boolean {
+	const _map = installedVersionsMap.value
+	if (!server || !matchingInstance) return false
+	const installedVer = getInstalledVersion(server.id)
+	if (!installedVer) return false
+
+	const cleanInstalled = installedVer.replace(/^v/i, '').trim()
+	const cleanLatest = (latestVersion?.version || '').replace(/^v/i, '').trim()
+	if (cleanLatest && cleanInstalled !== cleanLatest) {
+		return true
+	}
+
+	const desiredGameVersion = (latestVersion?.minecraft_version || server.minecraft_version || '').trim()
+	if (desiredGameVersion && String(matchingInstance.game_version || '').trim() !== desiredGameVersion) {
+		return true
+	}
+
+	const desiredLoader = (latestVersion?.mod_loader || server.mod_loader || '').trim().toLowerCase()
+	if (desiredLoader && String(matchingInstance.loader || '').trim().toLowerCase() !== desiredLoader) {
+		return true
+	}
+
+	const desiredLoaderVersion = (latestVersion?.mod_loader_version || server.mod_loader_version || '').trim()
+	if (
+		desiredLoaderVersion &&
+		!['latest', 'stable'].includes(desiredLoaderVersion.toLowerCase()) &&
+		String(matchingInstance.loader_version || '').trim() !== desiredLoaderVersion
+	) {
+		return true
+	}
+
+	return false
+}
+
 export function setInstalledVersion(
 	serverId: string,
 	version: string,
@@ -298,6 +388,13 @@ export function removeInstalledVersion(serverId: string) {
 }
 
 export async function cancelActiveDownload(opId?: string | null) {
+	isCancelling.value = true
+	if (isDownloading.value) {
+		downloadProgress.value = {
+			...downloadProgress.value,
+			phaseText: 'Cancelando operación...',
+		}
+	}
 	try {
 		await invoke('dr3sh_cancel', { opId: opId || currentOpId.value || '*' })
 	} catch (e) {
@@ -410,10 +507,17 @@ export function useDr3shDownloader() {
 		}
 
 		isDownloading.value = true
+		isCancelling.value = false
 		currentServerId.value = server.id
 		lastOperationError.value = null
 
 		const estTotalBytes = Math.round((version.size_mb || 220) * 1024 * 1024)
+		let prevPhase = 'preparing'
+		let phaseStartedAt = Date.now()
+		let lastSpeedUiAt = 0
+		let displayedSpeed = ''
+		let displayedEta = ''
+
 		downloadProgress.value = {
 			phase: 'preparing',
 			percent: 1,
@@ -421,12 +525,17 @@ export function useDr3shDownloader() {
 				mode === 'repair'
 					? `Verificando archivos de ${server.title}...`
 					: `Preparando ${server.title}...`,
+			stageLabel: 'Preparando',
+			stepIndex: 1,
 			downloadedBytes: 0,
 			totalBytes: estTotalBytes,
 			downloadedFormatted: '0 MB',
 			totalFormatted: formatBytesUi(estTotalBytes),
 			speedFormatted: '',
 			etaSeconds: null,
+			etaFormatted: '',
+			filesDone: null,
+			filesTotal: null,
 			attempt: 0,
 		}
 
@@ -492,40 +601,113 @@ export function useDr3shDownloader() {
 					apply: 'applying',
 				}
 				const mappedPhase = stageMap[p.stage] || p.phase || 'downloading'
+				const { stageLabel: baseStageLabel, stepIndex } = resolveStageMeta(p.stage, mappedPhase)
+				const retryAttempt = p.retry?.attempt ?? p.attempt ?? 0
+				const stageLabel = isCancelling.value
+					? 'Cancelando'
+					: mappedPhase === 'downloading' && retryAttempt > 0
+						? 'Reconectando'
+						: baseStageLabel
 				const dlBytes =
 					typeof p.downloadedBytes === 'number'
 						? p.downloadedBytes
 						: typeof p.bytes_done === 'number'
 							? p.bytes_done
 							: 0
-				const totBytes =
+				const rawTotalBytes =
 					typeof p.totalBytes === 'number' && p.totalBytes > 0
 						? p.totalBytes
 						: typeof p.bytes_total === 'number' && p.bytes_total > 0
 							? p.bytes_total
-							: estTotalBytes
+							: 0
+				const totBytes =
+					rawTotalBytes > 0
+						? rawTotalBytes
+						: mappedPhase === 'preparing' || mappedPhase === 'downloading'
+							? estTotalBytes
+							: 0
 				const spdBps =
 					typeof p.speedBps === 'number'
 						? p.speedBps
 						: typeof p.speed_bps === 'number'
 							? p.speed_bps
 							: 0
-				const statusText =
-					p.stageText || p.phaseText || p.status_text || downloadProgress.value.phaseText
+				const rawEta =
+					typeof p.etaSeconds === 'number'
+						? p.etaSeconds
+						: typeof p.eta_seconds === 'number'
+							? p.eta_seconds
+							: typeof p.eta_s === 'number'
+								? p.eta_s
+								: null
+				const filesDone =
+					typeof p.filesDone === 'number'
+						? p.filesDone
+						: typeof p.files_done === 'number'
+							? p.files_done
+							: null
+				const filesTotal =
+					typeof p.filesTotal === 'number'
+						? p.filesTotal
+						: typeof p.files_total === 'number'
+							? p.files_total
+							: null
+				const nextPercent =
+					typeof p.percent === 'number' && Number.isFinite(p.percent)
+						? Math.max(
+								downloadProgress.value.percent,
+								Math.min(100, Math.round(p.percent)),
+							)
+						: downloadProgress.value.percent
+				const statusText = isCancelling.value
+					? 'Cancelando operación...'
+					: p.stageText || p.phaseText || p.status_text || downloadProgress.value.phaseText
+
+				const nowMs = Date.now()
+				if (mappedPhase !== prevPhase) {
+					prevPhase = mappedPhase
+					phaseStartedAt = nowMs
+					lastSpeedUiAt = 0
+					displayedSpeed = ''
+					displayedEta = ''
+				}
+
+				if (retryAttempt > 0 || isCancelling.value) {
+					displayedSpeed = ''
+					displayedEta = ''
+				} else if (mappedPhase === 'downloading' || mappedPhase === 'extracting') {
+					const rawSpeedFmt =
+						p.speedFormatted || (spdBps > 0 ? `${formatBytesUi(spdBps)}/s` : '')
+					const rawEtaFmt = formatEtaUi(rawEta)
+					const shouldSample =
+						(displayedSpeed === '' && spdBps > 0 && nowMs - phaseStartedAt >= 800) ||
+						nowMs - lastSpeedUiAt >= 4000
+					if (shouldSample) {
+						displayedSpeed = rawSpeedFmt
+						displayedEta = rawEtaFmt
+						lastSpeedUiAt = nowMs
+					}
+				} else {
+					displayedSpeed = ''
+					displayedEta = ''
+				}
 
 				downloadProgress.value = {
 					phase: mappedPhase,
-					percent:
-						typeof p.percent === 'number' ? Math.round(p.percent) : downloadProgress.value.percent,
+					percent: nextPercent,
 					phaseText: statusText,
+					stageLabel,
+					stepIndex,
 					downloadedBytes: dlBytes,
 					totalBytes: totBytes,
-					downloadedFormatted: p.downloadedFormatted || formatBytesUi(dlBytes),
-					totalFormatted: p.totalFormatted || formatBytesUi(totBytes),
-					speedFormatted:
-						p.speedFormatted || (spdBps > 0 ? `${formatBytesUi(spdBps)}/s` : ''),
-					etaSeconds: p.eta_s ?? null,
-					attempt: p.retry?.attempt ?? p.attempt ?? 0,
+					downloadedFormatted: totBytes > 0 ? p.downloadedFormatted || formatBytesUi(dlBytes) : '',
+					totalFormatted: totBytes > 0 ? p.totalFormatted || formatBytesUi(totBytes) : '',
+					speedFormatted: displayedSpeed,
+					etaSeconds: rawEta,
+					etaFormatted: displayedEta,
+					filesDone,
+					filesTotal,
+					attempt: retryAttempt,
 				}
 			})
 
@@ -550,7 +732,11 @@ export function useDr3shDownloader() {
 				phase: 'finishing',
 				percent: 100,
 				phaseText: '¡Instalación completada!',
+				stageLabel: 'Completado',
+				stepIndex: 4,
 				speedFormatted: '',
+				etaSeconds: null,
+				etaFormatted: '',
 			}
 
 			await initDr3shBackendState()
@@ -570,6 +756,7 @@ export function useDr3shDownloader() {
 			if (unlistenProgress) unlistenProgress()
 			if (unlistenDone) unlistenDone()
 			isDownloading.value = false
+			isCancelling.value = false
 			currentServerId.value = null
 			currentOpId.value = null
 			setTimeout(() => {
@@ -609,6 +796,7 @@ export function useDr3shDownloader() {
 
 	return {
 		isDownloading,
+		isCancelling,
 		currentServerId,
 		currentOpId,
 		lastOperationError,

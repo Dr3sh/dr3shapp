@@ -68,7 +68,26 @@ import AppTitleBar from '@/app/shell/title-bar/index.vue'
 import Dr3shRail from '@/components/ui/Dr3shRail.vue'
 import Dr3shTopBar from '@/components/ui/Dr3shTopBar.vue'
 import DeveloperMenu from '@/components/ui/DeveloperMenu.vue'
-import { isDeveloper, maintenanceMode, maintenanceMessage } from '@/composables/use-dr3sh-launcher'
+import {
+	activeAccount,
+	currentView,
+	isDeveloper,
+	isOffline,
+	maintenanceMode,
+	maintenanceMessage,
+	refreshAccount,
+	servers,
+	selectedId,
+	fetchVersionsData,
+	deselectModpack,
+} from '@/composables/use-dr3sh-launcher'
+import {
+	initDr3shBackendState,
+	getInstalledVersion,
+	getInstalledFolder,
+	getInstalledInstanceId,
+	findMatchingInstance,
+} from '@/composables/use-dr3sh-downloader'
 import { trackExternalFileDownload } from '@/components/ui/download-manager/external-file-downloads'
 import ErrorModal from '@/components/ui/ErrorModal.vue'
 import HostingUpdateRequired from '@/components/ui/HostingUpdateRequired.vue'
@@ -115,6 +134,8 @@ import { install_create_modpack_instance, install_get_modpack_preview } from '@/
 import {
 	can_current_user_use_shared_instances,
 	get as getInstance,
+	get_full_path,
+	list as listInstances,
 	run,
 	set_global_synced_option,
 } from '@/helpers/instance'
@@ -401,6 +422,10 @@ window.addEventListener('offline', () => {
 })
 window.addEventListener('online', () => {
 	offline.value = false
+	void authServerQuery.refetch()
+	if (!availableUpdate.value) {
+		void checkUpdates()
+	}
 })
 
 const os = ref('')
@@ -453,6 +478,9 @@ const authServerQuery = useQuery({
 })
 
 const authUnreachable = computed(() => {
+	if (offline.value || isOffline.value || !activeAccount.value?.isMicrosoft) {
+		return false
+	}
 	if (authServerQuery.isError.value && !authServerQuery.isLoading.value) {
 		console.warn('Failed to reach auth servers', authServerQuery.error.value)
 		return true
@@ -531,12 +559,12 @@ const messages = defineMessages({
 	},
 	authUnreachableHeader: {
 		id: 'app.auth-servers.unreachable.header',
-		defaultMessage: 'Cannot reach authentication servers',
+		defaultMessage: 'No se puede conectar con los servidores de autenticación de Minecraft',
 	},
 	authUnreachableBody: {
 		id: 'app.auth-servers.unreachable.body',
 		defaultMessage:
-			'Minecraft authentication servers may be down right now. Check your internet connection and try again later.',
+			'Los servidores de Microsoft/Mojang pueden estar temporalmente inaccesibles. Aún puedes jugar en modo sin conexión.',
 	},
 	adsConsentTitle: {
 		id: 'app.ads-consent.title',
@@ -1403,11 +1431,37 @@ onUnmounted(() => {
 const developerMenuOpen = ref(false)
 function handleGlobalKeydown(e) {
 	if (e.shiftKey && (e.key === 'F10' || e.code === 'F10')) {
-		if (import.meta.env.DEV || isDeveloper.value) {
-			e.preventDefault()
-			developerMenuOpen.value = !developerMenuOpen.value
+		e.preventDefault()
+		developerMenuOpen.value = !developerMenuOpen.value
+	} else if (e.key === 'Escape') {
+		if (developerMenuOpen.value) {
+			developerMenuOpen.value = false
+		} else {
+			deselectModpack()
 		}
 	}
+}
+
+const shortcutNotice = ref(null)
+
+function dismissShortcutNotice() {
+	shortcutNotice.value = null
+}
+
+async function handleOpenLauncherToUpdate() {
+	if (!shortcutNotice.value) return
+	const serverId = shortcutNotice.value.serverId
+	shortcutNotice.value = null
+	if (serverId) {
+		selectedId.value = serverId
+		currentView.value = 'home'
+		if (router.currentRoute.value.path !== '/') {
+			await router.push('/').catch(() => {})
+		}
+	}
+	try {
+		await invoke('show_window')
+	} catch {}
 }
 
 const sidebar = ref(null)
@@ -1535,15 +1589,204 @@ async function handleCommand(e) {
 			})
 		}
 	} else if (e.event === 'LaunchInstance') {
-		const instance = await getInstance(e.id).catch(handleError)
-		if (!instance || instance.quarantined) return
+		await Promise.all([
+			fetchVersionsData().catch(() => {}),
+			initDr3shBackendState().catch(() => {}),
+		])
+
+		const rawTargetId = String(e.id || '').trim()
+		const rawTargetLower = rawTargetId.toLowerCase()
+		let instance = rawTargetId ? await getInstance(rawTargetId).catch(() => null) : null
+		const allInstances = await listInstances().catch(() => [])
+		if (!instance && allInstances.length > 0) {
+			instance =
+				allInstances.find(
+					(inst) =>
+						String(inst.id || '').toLowerCase() === rawTargetLower ||
+						String(inst.path || '').toLowerCase() === rawTargetLower ||
+						String(inst.name || '').toLowerCase() === rawTargetLower,
+				) || null
+		}
+
+		// Find matching Dr3sh server for this shortcut (works with instance ID, server ID, or title)
+		const server =
+			servers.value.find((s) => {
+				if (String(s.id || '').toLowerCase() === rawTargetLower) return true
+				if (String(getInstalledInstanceId(s.id) || '').toLowerCase() === rawTargetLower) return true
+				if (String(s.title || '').toLowerCase() === rawTargetLower) return true
+				if (instance && Boolean(findMatchingInstance(s, [instance]))) return true
+				return false
+			}) || null
+
+		if (!instance && server) {
+			instance = findMatchingInstance(server, allInstances)
+		}
+
+		if (server) {
+			selectedId.value = server.id
+			currentView.value = 'home'
+			if (router.currentRoute.value.path !== '/') {
+				await router.push('/').catch(() => {})
+			}
+		}
+
+		// Check maintenance mode
+		if (maintenanceMode.value && !isDeveloper.value) {
+			shortcutNotice.value = {
+				type: 'maintenance',
+				title: 'Launcher en Mantenimiento',
+				message:
+					maintenanceMessage.value ||
+					'Estamos realizando tareas de mantenimiento en nuestros servidores. El acceso se restablecerá automáticamente cuando finalice.',
+				instanceId: instance?.id || e.id,
+				serverId: server?.id,
+			}
+			try {
+				await invoke('show_window')
+			} catch {}
+			return
+		}
+
+		if (server) {
+			// Check if server is disabled
+			if (server.disabled && !isDeveloper.value) {
+				shortcutNotice.value = {
+					type: 'disabled',
+					title: 'Modpack no disponible',
+					message:
+						server.disabled_message ||
+						`El modpack "${server.title}" se encuentra temporalmente inhabilitado.`,
+					instanceId: instance?.id || e.id,
+					serverId: server.id,
+				}
+				try {
+					await invoke('show_window')
+				} catch {}
+				return
+			}
+
+			// Check countdown
+			if (server.release_date && !isDeveloper.value) {
+				const targetTime = new Date(server.release_date).getTime()
+				if (!isNaN(targetTime) && targetTime > Date.now()) {
+					const diffMs = targetTime - Date.now()
+					const totalSec = Math.floor(diffMs / 1000)
+					const days = Math.floor(totalSec / 86400)
+					const hours = Math.floor((totalSec % 86400) / 3600)
+					const mins = Math.floor((totalSec % 3600) / 60)
+					const secs = totalSec % 60
+					const formattedTime =
+						days > 0
+							? `${days}d ${hours}h ${mins}m ${secs}s`
+							: `${hours}h ${mins}m ${secs}s`
+
+					shortcutNotice.value = {
+						type: 'countdown',
+						title: 'Estreno Próximo',
+						message: `El modpack "${server.title}" aún no está disponible. Faltan ${formattedTime} para el estreno (Horario de Venezuela).`,
+						instanceId: instance?.id || e.id,
+						serverId: server.id,
+					}
+					try {
+						await invoke('show_window')
+					} catch {}
+					return
+				}
+			}
+
+			// Check if there is an update available
+			const installedVer = getInstalledVersion(server.id)
+			const latestVer = server.versions?.[0]?.version
+			const cleanInstalled = installedVer ? installedVer.replace(/^v/i, '').trim() : ''
+			const cleanLatest = latestVer ? String(latestVer).replace(/^v/i, '').trim() : ''
+			if (cleanInstalled && cleanLatest && cleanInstalled !== cleanLatest) {
+				shortcutNotice.value = {
+					type: 'update',
+					title: 'Actualización disponible',
+					message: `Hay una nueva versión disponible para "${server.title}" (v${cleanInstalled} → v${cleanLatest}). ¿Deseas abrir el launcher para actualizar o cancelar?`,
+					instanceId: instance?.id || e.id,
+					serverId: server.id,
+					installedVersion: installedVer,
+					latestVersion: latestVer,
+				}
+				try {
+					await invoke('show_window')
+				} catch {}
+				return
+			}
+		}
+
+		if (!instance || instance.quarantined) {
+			if (server) {
+				shortcutNotice.value = {
+					type: 'repair',
+					title: 'Instancia no encontrada',
+					message: `La instancia de "${server.title}" no está lista o fue eliminada del disco. Abre el launcher para descargarla o repararla.`,
+					instanceId: e.id,
+					serverId: server.id,
+				}
+				try {
+					await invoke('show_window')
+				} catch {}
+			}
+			return
+		}
+
+		if (server) {
+			try {
+				let fallbackPath = getInstalledFolder(server.id)
+				if (!fallbackPath && instance.id) {
+					fallbackPath = await get_full_path(instance.id).catch(() => null)
+				}
+				const health = await invoke('dr3sh_check_instance_health', {
+					serverId: server.id,
+					fallbackInstancePath: fallbackPath || null,
+				})
+				if (health?.needs_repair) {
+					shortcutNotice.value = {
+						type: 'repair',
+						title: 'La instancia requiere reparación',
+						message:
+							health.reason ||
+							`Faltan archivos vitales en "${server.title}". Abre el launcher y pulsa "Reparar instancia".`,
+						instanceId: instance.id,
+						serverId: server.id,
+					}
+					try {
+						await invoke('show_window')
+					} catch {}
+					return
+				}
+			} catch {}
+
+			if (!activeAccount.value) {
+				await refreshAccount().catch(() => {})
+			}
+			await invoke('dr3sh_prepare_launch', {
+				serverId: server.id,
+				isOffline: !activeAccount.value?.isMicrosoft,
+				offlineUsername: activeAccount.value?.name || 'Player',
+				bypassGate: Boolean(isDeveloper.value),
+			})
+			const savedFolder = getInstalledFolder(server.id)
+			if (savedFolder) {
+				const instDir = await get_full_path(instance.id).catch(() => null)
+				if (instDir && instDir.toLowerCase() !== savedFolder.toLowerCase()) {
+					await invoke('dr3sh_link_existing_instance', {
+						instanceId: instance.id,
+						instanceDir: instDir,
+						existingFolder: savedFolder,
+					}).catch(() => {})
+				}
+			}
+		}
 
 		if (e.server) {
-			await start_join_server(e.id, e.server).catch(handleError)
+			await start_join_server(instance.id, e.server).catch(handleError)
 		} else if (e.singleplayer_world) {
-			await start_join_singleplayer_world(e.id, e.singleplayer_world).catch(handleError)
+			await start_join_singleplayer_world(instance.id, e.singleplayer_world).catch(handleError)
 		} else {
-			await run(e.id).catch(handleError)
+			await run(instance.id).catch(handleError)
 		}
 	} else if (e.event === 'InstallSharedInstanceInvite') {
 		await sharedInstanceInviteHandler.value?.installFromInviteId(e.invite_id)
@@ -1616,6 +1859,9 @@ async function checkUpdates() {
 	}
 
 	async function performCheck() {
+		if (typeof navigator !== 'undefined' && !navigator.onLine) {
+			return
+		}
 		try {
 			const res = await invoke('dr3sh_check_launcher_update')
 			if (!res || !res.updateAvailable) {
@@ -1825,9 +2071,9 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 					<div
 						class="loading-indicator-container h-8 fixed z-50 pointer-events-none"
 						:style="{
-							top: '54px',
-							left: '268px',
-							width: 'calc(100% - 268px)',
+							top: '50px',
+							left: 'var(--rail-width, 268px)',
+							width: 'calc(100% - var(--rail-width, 268px))',
 						}"
 					>
 						<LoadingBar position="absolute" />
@@ -1943,6 +2189,48 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 	<InstallToPlayModal ref="installToPlayModal" :show-external-warnings="false" />
 	<UpdateToPlayModal ref="updateToPlayModal" :show-external-warnings="false" />
 	<DeveloperMenu v-model="developerMenuOpen" />
+	<!-- Modal de aviso al iniciar desde acceso directo -->
+	<div
+		v-if="shortcutNotice"
+		class="dr3sh-update-backdrop"
+		role="dialog"
+		aria-modal="true"
+		@click="dismissShortcutNotice"
+	>
+		<div class="dr3sh-update-modal" @click.stop>
+			<div class="dr3sh-update-header">
+				<div>
+					<span class="dr3sh-update-pill" :class="{ 'pill-danger': shortcutNotice.type !== 'update' }">
+						{{ shortcutNotice.type === 'update' ? 'Actualización disponible' : 'Aviso de Modpack' }}
+					</span>
+					<h3 class="dr3sh-update-title">{{ shortcutNotice.title }}</h3>
+				</div>
+				<button type="button" class="dr3sh-update-close" aria-label="Cerrar" @click="dismissShortcutNotice">
+					✕
+				</button>
+			</div>
+
+			<p class="dr3sh-shortcut-message">{{ shortcutNotice.message }}</p>
+
+			<div class="dr3sh-update-actions">
+				<button
+					type="button"
+					class="dr3sh-update-btn-secondary"
+					@click="dismissShortcutNotice"
+				>
+					{{ shortcutNotice.type === 'update' ? 'Cancelar' : 'Cerrar' }}
+				</button>
+				<button
+					v-if="shortcutNotice.type === 'update'"
+					type="button"
+					class="dr3sh-update-btn-primary"
+					@click="handleOpenLauncherToUpdate"
+				>
+					Abrir Launcher para actualizar
+				</button>
+			</div>
+		</div>
+	</div>
 	<div
 		v-if="launcherUpdateInfo"
 		class="dr3sh-update-backdrop"
@@ -2053,6 +2341,23 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 	background: rgba(16, 185, 129, 0.14);
 	border: 1px solid rgba(16, 185, 129, 0.35);
 	margin-bottom: 8px;
+
+	&.pill-danger {
+		color: #f87171;
+		background: rgba(239, 68, 68, 0.14);
+		border-color: rgba(239, 68, 68, 0.35);
+	}
+}
+
+.dr3sh-shortcut-message {
+	margin: 0;
+	padding: 12px 14px;
+	border-radius: 10px;
+	background: rgba(0, 0, 0, 0.3);
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	font-size: 13.5px;
+	line-height: 1.5;
+	color: rgba(243, 245, 248, 0.92);
 }
 
 .dr3sh-update-title {
@@ -2157,11 +2462,12 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 
 .launcher {
 	display: grid;
-	grid-template-columns: 268px minmax(0, 1fr);
+	grid-template-columns: var(--rail-width, 268px) minmax(0, 1fr);
+	transition: grid-template-columns 250ms cubic-bezier(0.4, 0, 0.2, 1);
 	width: 100vw;
 	height: 100vh;
 	background:
-		radial-gradient(circle at 82% 8%, color-mix(in srgb, var(--brand, #2f65f6) 14%, transparent), transparent 42%),
+		radial-gradient(circle at 82% 8%, color-mix(in srgb, var(--brand, #1bd96a) 14%, transparent), transparent 42%),
 		var(--ink, #0d1017);
 	color: var(--text, #f3f5f8);
 	overflow: hidden;
@@ -2169,19 +2475,21 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 
 .main-area {
 	display: grid;
-	grid-template-rows: 54px minmax(0, 1fr);
+	grid-template-rows: 50px minmax(0, 1fr);
 	min-width: 0;
 	min-height: 0;
 	height: 100vh;
 	overflow: hidden;
+	border: none;
 }
 
 .content-scroll {
 	height: 100%;
 	overflow-y: auto;
 	overflow-x: hidden;
-	scrollbar-gutter: stable;
 	position: relative;
+	scrollbar-width: thin;
+	scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
 }
 
 [data-tauri-drag-region-exclude] {

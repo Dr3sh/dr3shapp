@@ -31,6 +31,7 @@ pub async fn create_instance_shortcut(
     output_path: PathBuf,
     server: Option<String>,
     singleplayer_world: Option<String>,
+    icon_path: Option<PathBuf>,
 ) -> Result<PathBuf> {
     if server.is_some() && singleplayer_world.is_some() {
         return Err(std::io::Error::other(
@@ -46,8 +47,13 @@ pub async fn create_instance_shortcut(
     let output_path_existed =
         tokio::fs::try_exists(&output_path).await.unwrap_or(false);
 
-    if let Err(error) =
-        create_shortcut(&instance_name, &launch_url, &output_path).await
+    if let Err(error) = create_shortcut(
+        &instance_name,
+        &launch_url,
+        &output_path,
+        icon_path.as_deref(),
+    )
+    .await
     {
         cleanup_shortcut_artifact(&output_path, output_path_existed).await;
         return Err(error);

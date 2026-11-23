@@ -20,8 +20,7 @@ use crate::state::{
     InstanceLink, JavaVersion, MemorySettings, ProcessMetadata, WindowSize,
 };
 use crate::util::io;
-use crate::util::rpc::RpcServerBuilder;
-use crate::{ErrorKind, State, get_resource_file};
+use crate::{ErrorKind, State};
 use anyhow::{Context, bail};
 use chrono::Utc;
 use minecraft_meta_manifest as d;
@@ -32,7 +31,29 @@ use sqlx::SqlitePool;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::process::Command;
+
+static ACTIVE_LAUNCHES: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn active_launch_count() -> usize {
+    ACTIVE_LAUNCHES.load(Ordering::SeqCst)
+}
+
+pub(crate) struct LaunchGuard;
+
+impl LaunchGuard {
+    pub(crate) fn enter() -> Self {
+        ACTIVE_LAUNCHES.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for LaunchGuard {
+    fn drop(&mut self) {
+        ACTIVE_LAUNCHES.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 mod args;
 pub(crate) mod hooks;
@@ -913,6 +934,7 @@ pub async fn launch_minecraft(
     mut quick_play_type: QuickPlayType,
     state: &Arc<State>,
 ) -> crate::Result<ProcessMetadata> {
+    let _launch_guard = LaunchGuard::enter();
     let instance = &context.instance;
     let content_set = &context.applied_content_set;
 
@@ -1004,21 +1026,42 @@ pub async fn launch_minecraft(
         .await
         .context("downloading log config")?;
 
-    let java_version = get_java_version_from_launch_context(
+    let java_major_version = version_info
+        .java_version
+        .as_ref()
+        .map_or(8, |it| it.major_version);
+
+    let java_version = match get_java_version_from_launch_context(
         context,
         &version_info,
         &state.pool,
     )
     .await?
-    .ok_or(ErrorKind::LauncherError(
-        "missing correct java installation".to_string(),
-    ))?;
-
-    // Test jre version
-    let java_version =
-        crate::api::jre::check_jre(java_version.path.clone().into())
-            .await
-            .context(format!("checking Java at {}", java_version.path))?;
+    {
+        Some(jv) => match crate::api::jre::check_jre(jv.path.clone().into()).await {
+            Ok(checked) => checked,
+            Err(err) => {
+                tracing::warn!(
+                    path = %jv.path,
+                    java_version = java_major_version,
+                    "Configured Java check failed ({err}); auto-installing JRE"
+                );
+                drop(runtime_lease);
+                let installed_path =
+                    crate::api::jre::auto_install_java(java_major_version).await?;
+                let checked = crate::api::jre::check_jre(installed_path).await?;
+                checked.upsert(&state.pool).await?;
+                runtime_lease = state.content_store.runtime_cache_lock.read().await;
+                checked
+            }
+        },
+        None => {
+            drop(runtime_lease);
+            let resolved = resolve_java_for_launch(context, state).await?;
+            runtime_lease = state.content_store.runtime_cache_lock.read().await;
+            resolved
+        }
+    };
 
     let client_path = state
         .directories
@@ -1122,10 +1165,22 @@ pub async fn launch_minecraft(
         address.resolve().await?;
     }
 
-    let (main_class_keep_alive, main_class_path) =
-        get_resource_file!(env "JAVA_JARS_DIR" / "theseus.jar")?;
-
-    let rpc_server = RpcServerBuilder::new().launch().await?;
+    let game_args = args::get_minecraft_arguments(
+        args.get(&d::minecraft::ArgumentType::Game)
+            .map(|x| x.as_slice()),
+        version_info.minecraft_arguments.as_deref(),
+        credentials,
+        &version.id,
+        &version_info.asset_index.id,
+        &instance_path,
+        &state.directories.assets_dir(),
+        &version.ty,
+        *resolution,
+        &java_version.architecture,
+        &quick_play_type,
+        quick_play_version,
+    )
+    .await?;
 
     command.args(
         args::get_jvm_arguments(
@@ -1137,11 +1192,11 @@ pub async fn launch_minecraft(
             &args::get_class_paths(
                 &state.directories.libraries_dir(),
                 version_info.libraries.as_slice(),
-                &[&main_class_path, &client_path],
+                &[&client_path],
                 &java_version.architecture,
                 minecraft_updated,
             )?,
-            &main_class_path,
+            None,
             &version_jar,
             *memory,
             Vec::from(java_args),
@@ -1152,44 +1207,36 @@ pub async fn launch_minecraft(
                 .logging
                 .as_ref()
                 .and_then(|x| x.get(&LoggingSide::Client)),
-            rpc_server.address(),
+            None,
         )?
         .into_iter(),
     );
 
-    // The java launcher requires access to java.lang.reflect in order to force access in to
-    // whatever module the main class is in
-    if java_version.parsed_version >= 9 {
-        command.arg("--add-opens=java.base/java.lang.reflect=ALL-UNNAMED");
-    }
-
-    // The java launcher code requires internal JDK code in Java 25+ in order to support JEP 512
-    if java_version.parsed_version >= 25 {
-        command.arg("--add-opens=jdk.internal/jdk.internal.misc=ALL-UNNAMED");
+    let process_start_time = Utc::now().to_rfc3339();
+    let instance_created_time = instance.created.to_rfc3339();
+    let instance_modified_time = instance.modified.to_rfc3339();
+    let (link_project_id, link_version_id) =
+        link_project_and_version(&context.link);
+    let joined_game_args = game_args.join("\u{001f}");
+    let system_properties = [
+        ("modrinth.process.startTime", Some(&process_start_time)),
+        ("modrinth.process.args", Some(&joined_game_args)),
+        ("modrinth.profile.created", Some(&instance_created_time)),
+        ("modrinth.profile.icon", instance.icon_path.as_ref()),
+        ("modrinth.profile.link.project", link_project_id),
+        ("modrinth.profile.link.version", link_version_id),
+        ("modrinth.profile.modified", Some(&instance_modified_time)),
+        ("modrinth.profile.name", Some(&instance.name)),
+    ];
+    for (key, value) in system_properties {
+        if let Some(value) = value {
+            command.arg(format!("-D{key}={value}"));
+        }
     }
 
     command
-        .arg("com.modrinth.theseus.MinecraftLaunch")
         .arg(version_info.main_class.clone())
-        .args(
-            args::get_minecraft_arguments(
-                args.get(&d::minecraft::ArgumentType::Game)
-                    .map(|x| x.as_slice()),
-                version_info.minecraft_arguments.as_deref(),
-                credentials,
-                &version.id,
-                &version_info.asset_index.id,
-                &instance_path,
-                &state.directories.assets_dir(),
-                &version.ty,
-                *resolution,
-                &java_version.architecture,
-                &quick_play_type,
-                quick_play_version,
-            )
-            .await?
-            .into_iter(),
-        )
+        .args(game_args)
         .current_dir(instance_path.clone());
 
     // CARGO-set DYLD_LIBRARY_PATH breaks Minecraft on macOS during testing on playground
@@ -1296,8 +1343,7 @@ pub async fn launch_minecraft(
         .update_status(Some(instance.name.clone()))
         .await;
 
-    // Create Minecraft child by inserting it into the state
-    // This also spawns the process and prepares the subsequent processes
+    // Create detached external Java process and track it in ProcessManager
     state
         .process_manager
         .insert_new_process(
@@ -1309,38 +1355,10 @@ pub async fn launch_minecraft(
             env_args,
             state.directories.instance_logs_dir(&instance.path),
             version_info.logging.is_some(),
-            main_class_keep_alive,
-            rpc_server,
+            None,
+            None,
             state,
-            async |process: &ProcessMetadata, rpc_server| {
-                let process_start_time = process.start_time.to_rfc3339();
-                let instance_created_time = instance.created.to_rfc3339();
-                let instance_modified_time = instance.modified.to_rfc3339();
-                let (link_project_id, link_version_id) =
-                    link_project_and_version(&context.link);
-                let system_properties = [
-                    ("modrinth.process.startTime", Some(&process_start_time)),
-                    ("modrinth.profile.created", Some(&instance_created_time)),
-                    ("modrinth.profile.icon", instance.icon_path.as_ref()),
-                    ("modrinth.profile.link.project", link_project_id),
-                    ("modrinth.profile.link.version", link_version_id),
-                    (
-                        "modrinth.profile.modified",
-                        Some(&instance_modified_time),
-                    ),
-                    ("modrinth.profile.name", Some(&instance.name)),
-                ];
-                for (key, value) in system_properties {
-                    let Some(value) = value else {
-                        continue;
-                    };
-                    rpc_server
-                        .call_method_2::<()>("set_system_property", key, value)
-                        .await?;
-                }
-                rpc_server.call_method::<()>("launch").await?;
-                Ok(())
-            },
+            async |_, _| Ok(()),
         )
         .await
 }

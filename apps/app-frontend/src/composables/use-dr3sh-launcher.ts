@@ -41,6 +41,9 @@ export interface Dr3shServer {
 	screenshots?: ScreenshotEntry[]
 	server_address?: string
 	versions?: Dr3shVersion[]
+	disabled?: boolean
+	disabled_message?: string
+	release_date?: string
 }
 
 export interface Dr3shVersion {
@@ -75,11 +78,35 @@ export const DESGRACIAMON2_SCREENSHOTS = [
 	'https://raw.githubusercontent.com/Dr3sh/Dr3sh.github.io/4fc7f15191920824c38f09b2761ec2a641b5d941/assets/screenshots/desgraciamon2.%20(5).jpg',
 ]
 
-const servers = ref<Dr3shServer[]>([])
-const versions = ref<Dr3shVersion[]>([])
-const allCatalogServers = ref<Dr3shServer[]>([])
-const allCatalogVersions = ref<Dr3shVersion[]>([])
+export const servers = ref<Dr3shServer[]>([])
+export const versions = ref<Dr3shVersion[]>([])
+export const allCatalogServers = ref<Dr3shServer[]>([])
+export const allCatalogVersions = ref<Dr3shVersion[]>([])
 const loading = ref(true)
+export const isOffline = ref<boolean>(typeof navigator !== 'undefined' ? !navigator.onLine : false)
+export const catalogError = ref<string | null>(null)
+export const retryingCatalog = ref<boolean>(false)
+
+const DEFAULT_AVATAR_SVG = `data:image/svg+xml;utf8,${encodeURIComponent(
+	'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#131824"/><rect x="8" y="8" width="16" height="16" rx="3" fill="#283246"/><rect x="11" y="13" width="3" height="3" rx="0.5" fill="#94a3b8"/><rect x="18" y="13" width="3" height="3" rx="0.5" fill="#94a3b8"/><rect x="13" y="19" width="6" height="2" rx="0.5" fill="#64748b"/></svg>',
+)}`
+
+export function handleAvatarError(event: Event) {
+	const img = event.target as HTMLImageElement | null
+	if (!img || img.dataset.avatarFallback) return
+	img.dataset.avatarFallback = '1'
+	img.src = DEFAULT_AVATAR_SVG
+}
+
+if (typeof window !== 'undefined') {
+	window.addEventListener('offline', () => {
+		isOffline.value = true
+	})
+	window.addEventListener('online', () => {
+		isOffline.value = false
+		void fetchVersionsData()
+	})
+}
 
 export const maintenanceMode = ref(false)
 export const maintenanceMessage = ref('')
@@ -133,16 +160,24 @@ export const isDeveloper = computed(() => {
 	}
 })
 
-// Persisted owned servers - default to the 4 instances from original Electron launcher
+// Persisted owned servers - default to empty (0 servers) so user explores to add
 function loadInitialOwned(): Set<string> {
 	try {
+		// Migrate older users who were forced into the 4 hardcoded servers
+		const migrationDone = localStorage.getItem('dr3sh.owned_migrated_v2')
+		if (!migrationDone) {
+			localStorage.setItem('dr3sh.owned_migrated_v2', 'true')
+			localStorage.removeItem('dr3sh_owned_servers')
+			localStorage.removeItem('dr3sh.owned')
+			return new Set<string>([])
+		}
 		const raw = localStorage.getItem('dr3sh_owned_servers') || localStorage.getItem('dr3sh.owned')
 		if (raw) {
 			const arr = JSON.parse(raw)
-			if (Array.isArray(arr) && arr.length > 0) return new Set(arr)
+			if (Array.isArray(arr)) return new Set(arr)
 		}
 	} catch {}
-	return new Set(['opus', 'cobbleverse', 'desgraciamon2', 'desgraciamon3'])
+	return new Set<string>([])
 }
 
 export const owned = ref<Set<string>>(loadInitialOwned())
@@ -163,14 +198,83 @@ watch(
 	{ deep: true },
 )
 
-export const selectedId = ref<string>(localStorage.getItem('dr3sh_selected_server') || 'desgraciamon3')
+export const isSidebarCollapsed = ref<boolean>(
+	typeof localStorage !== 'undefined' && localStorage.getItem('dr3sh.sidebar_collapsed') === 'true',
+)
+export const railWidth = ref<number>(
+	isSidebarCollapsed.value
+		? 72
+		: typeof localStorage !== 'undefined' && localStorage.getItem('dr3sh.sidebar_width')
+		? Number(localStorage.getItem('dr3sh.sidebar_width')) || 268
+		: 268,
+)
+
+export function setRailWidth(widthPx: number, isDragging = false) {
+	if (widthPx < 140) {
+		isSidebarCollapsed.value = true
+		railWidth.value = 72
+		if (typeof localStorage !== 'undefined') {
+			localStorage.setItem('dr3sh.sidebar_collapsed', 'true')
+		}
+	} else {
+		isSidebarCollapsed.value = false
+		railWidth.value = Math.min(420, Math.max(200, widthPx))
+		if (typeof localStorage !== 'undefined') {
+			localStorage.setItem('dr3sh.sidebar_collapsed', 'false')
+			localStorage.setItem('dr3sh.sidebar_width', String(railWidth.value))
+		}
+	}
+	if (typeof document !== 'undefined') {
+		document.documentElement.style.setProperty('--rail-width', `${railWidth.value}px`)
+		if (isDragging) {
+			document.body.classList.add('is-resizing-rail')
+		} else {
+			document.body.classList.remove('is-resizing-rail')
+		}
+	}
+}
+
+export function toggleSidebarCollapse() {
+	if (isSidebarCollapsed.value) {
+		const savedWidth =
+			typeof localStorage !== 'undefined' && localStorage.getItem('dr3sh.sidebar_width')
+				? Number(localStorage.getItem('dr3sh.sidebar_width')) || 268
+				: 268
+		setRailWidth(savedWidth, false)
+	} else {
+		setRailWidth(72, false)
+	}
+}
+
+if (typeof document !== 'undefined') {
+	document.documentElement.style.setProperty(
+		'--rail-width',
+		`${railWidth.value}px`,
+	)
+}
+
+export const selectedId = ref<string>(localStorage.getItem('dr3sh_selected_server') ?? 'desgraciamon3')
 
 watch(selectedId, (val) => {
 	if (val) localStorage.setItem('dr3sh_selected_server', val)
+	else localStorage.removeItem('dr3sh_selected_server')
 })
 
-export const currentView = ref<'home' | 'market' | 'settings'>('home')
-export const activeSettingsTab = ref<'memory' | 'account' | 'game' | 'storage'>('memory')
+export const currentView = ref<'home' | 'market' | 'settings'>((localStorage.getItem('dr3sh_current_view') as 'home' | 'market' | 'settings') || 'home')
+export const activeSettingsTab = ref<'memory' | 'account' | 'game' | 'storage'>((localStorage.getItem('dr3sh_settings_tab') as 'memory' | 'account' | 'game' | 'storage') || 'memory')
+
+watch(currentView, (val) => {
+	if (val) localStorage.setItem('dr3sh_current_view', val)
+})
+
+watch(activeSettingsTab, (val) => {
+	if (val) localStorage.setItem('dr3sh_settings_tab', val)
+})
+
+watch([selectedId, currentView], () => {
+	const currentServer = servers.value.find((s) => s.id === selectedId.value)
+	updateThemePalette(currentView.value === 'home' ? currentServer : null)
+})
 
 export const activeAccount = ref<Dr3shAccount | null>(null)
 export const allAccounts = ref<Dr3shAccount[]>([])
@@ -325,28 +429,26 @@ function hslToHex(h: number, s: number, l: number): string {
 }
 
 export function getRawServerColor(server?: Dr3shServer | null): string {
-	if (!server) return '#2f65f6'
+	if (!server) return '#1bd96a'
 	const raw = (server as any).theme_color || (server as any).color
-	if (raw && /^#[\da-f]{6}$/i.test(String(raw).trim())) return String(raw).trim()
-	if (server.id === 'desgraciamon3') return '#2f65f6'
-	if (server.id === 'opus') return '#b01212'
-	if (server.id === 'cobbleverse') return '#4b5563'
-	if (server.id === 'desgraciamon2') return '#ec4899'
-	return '#2f65f6'
+	if (raw && /^#[\da-f]{6}$/i.test(String(raw).trim())) {
+		return String(raw).trim()
+	}
+	return '#1bd96a'
+}
+
+export function getSubduedColor(hex: string): string {
+	const [h, s, l] = hexToHsl(hex)
+	// Desaturar moderadamente para evitar saturaciones fluorescentes
+	const newS = Math.max(0.18, Math.min(0.62, s * 0.70))
+	// Oscurecer moderadamente para evitar brillos excesivos en la interfaz
+	const newL = Math.max(0.22, Math.min(0.44, l * 0.82))
+	return hslToHex(h, newS, newL)
 }
 
 export function getAccentColor(server?: Dr3shServer | null): string {
-	const raw = getRawServerColor(server)
-	const [h, s, l] = hexToHsl(raw)
-	// Harmonize modpack color with launcher's dark-slate aesthetic so neither ultra-dark (#0c1645),
-	// neutral gray (#383838), nor pastel (#f6a0d3) clashes with the UI.
-	if (s < 0.12) {
-		return mixHex(raw, '#4f7df3', 0.55)
-	}
-	const clampedS = Math.max(0.48, Math.min(0.76, s))
-	const clampedL = Math.max(0.48, Math.min(0.6, l))
-	const normalized = hslToHex(h, clampedS, clampedL)
-	return mixHex(normalized, '#3b6df6', 0.16)
+	if (!server) return '#1bd96a'
+	return getSubduedColor(getRawServerColor(server))
 }
 
 const INITIAL_COLORS = {
@@ -356,19 +458,77 @@ const INITIAL_COLORS = {
 	'--line': '#283246',
 }
 
+try {
+	if (typeof document !== 'undefined') {
+		const initialView = localStorage.getItem('dr3sh_current_view') || 'home'
+		const initialServer = localStorage.getItem('dr3sh_selected_server')
+		const initialAccent = localStorage.getItem('dr3sh_active_accent')
+		const root = document.documentElement
+		if (initialView === 'home' && initialServer && initialAccent) {
+			const subduedAccent = getSubduedColor(initialAccent)
+			root.style.setProperty('--ink', mixHex(INITIAL_COLORS['--ink'], subduedAccent, 0.22))
+			root.style.setProperty('--panel', mixHex(INITIAL_COLORS['--panel'], subduedAccent, 0.28))
+			root.style.setProperty('--panel-2', mixHex(INITIAL_COLORS['--panel-2'], subduedAccent, 0.32))
+			root.style.setProperty('--line', mixHex(INITIAL_COLORS['--line'], subduedAccent, 0.28))
+			root.style.setProperty('--brand', subduedAccent)
+			root.style.setProperty('--brand-hover', mixHex(subduedAccent, '#ffffff', 0.15))
+			root.style.setProperty('--brand-soft', mixHex('#0c1018', subduedAccent, 0.25))
+			root.style.setProperty('--current-accent', subduedAccent)
+			root.style.setProperty('--current-glow', `color-mix(in srgb, ${subduedAccent} 35%, transparent)`)
+			root.style.setProperty('--current-border', `color-mix(in srgb, ${subduedAccent} 30%, transparent)`)
+			root.style.setProperty('--current-soft', `color-mix(in srgb, ${subduedAccent} 16%, transparent)`)
+		} else {
+			root.style.setProperty('--brand', '#1bd96a')
+			root.style.setProperty('--brand-hover', '#16bd5a')
+			root.style.setProperty('--brand-soft', 'rgba(27, 217, 106, 0.18)')
+			root.style.setProperty('--current-accent', '#1bd96a')
+			root.style.setProperty('--current-glow', 'rgba(27, 217, 106, 0.45)')
+			root.style.setProperty('--current-border', 'rgba(27, 217, 106, 0.35)')
+			root.style.setProperty('--current-soft', 'rgba(27, 217, 106, 0.15)')
+		}
+	}
+} catch {}
+
 export function updateThemePalette(server?: Dr3shServer | null) {
 	if (typeof document === 'undefined') return
-	const rawColor = getRawServerColor(server)
-	const brandAccent = getAccentColor(server)
-	const surfaceTint = mixHex(rawColor, brandAccent, 0.5)
 	const root = document.documentElement
-	root.style.setProperty('--ink', mixHex(INITIAL_COLORS['--ink'], surfaceTint, 0.12))
-	root.style.setProperty('--panel', mixHex(INITIAL_COLORS['--panel'], surfaceTint, 0.18))
-	root.style.setProperty('--panel-2', mixHex(INITIAL_COLORS['--panel-2'], surfaceTint, 0.24))
-	root.style.setProperty('--line', mixHex(INITIAL_COLORS['--line'], brandAccent, 0.36))
+	if (!server || currentView.value !== 'home') {
+		localStorage.removeItem('dr3sh_active_accent')
+		// Reset to Verde Base (#1bd96a)
+		root.style.setProperty('--brand', '#1bd96a')
+		root.style.setProperty('--brand-hover', '#16bd5a')
+		root.style.setProperty('--brand-soft', 'rgba(27, 217, 106, 0.18)')
+		root.style.setProperty('--current-accent', '#1bd96a')
+		root.style.setProperty('--current-glow', 'rgba(27, 217, 106, 0.45)')
+		root.style.setProperty('--current-border', 'rgba(27, 217, 106, 0.35)')
+		root.style.setProperty('--current-soft', 'rgba(27, 217, 106, 0.15)')
+		root.style.setProperty('--ink', INITIAL_COLORS['--ink'])
+		root.style.setProperty('--panel', INITIAL_COLORS['--panel'])
+		root.style.setProperty('--panel-2', INITIAL_COLORS['--panel-2'])
+		root.style.setProperty('--line', INITIAL_COLORS['--line'])
+		return
+	}
+	const brandAccent = getAccentColor(server)
+	localStorage.setItem('dr3sh_active_accent', brandAccent)
+
+	// Mezcla con versión desaturada y oscurecida del color oficial para evitar saturaciones chillonas
+	root.style.setProperty('--ink', mixHex(INITIAL_COLORS['--ink'], brandAccent, 0.22))
+	root.style.setProperty('--panel', mixHex(INITIAL_COLORS['--panel'], brandAccent, 0.28))
+	root.style.setProperty('--panel-2', mixHex(INITIAL_COLORS['--panel-2'], brandAccent, 0.32))
+	root.style.setProperty('--line', mixHex(INITIAL_COLORS['--line'], brandAccent, 0.28))
 	root.style.setProperty('--brand', brandAccent)
-	root.style.setProperty('--brand-hover', mixHex(brandAccent, '#ffffff', 0.16))
-	root.style.setProperty('--brand-soft', mixHex('#0c1018', brandAccent, 0.38))
+	root.style.setProperty('--brand-hover', mixHex(brandAccent, '#ffffff', 0.15))
+	root.style.setProperty('--brand-soft', mixHex('#0c1018', brandAccent, 0.25))
+	root.style.setProperty('--current-accent', brandAccent)
+	root.style.setProperty('--current-glow', `color-mix(in srgb, ${brandAccent} 35%, transparent)`)
+	root.style.setProperty('--current-border', `color-mix(in srgb, ${brandAccent} 30%, transparent)`)
+	root.style.setProperty('--current-soft', `color-mix(in srgb, ${brandAccent} 16%, transparent)`)
+}
+
+export function deselectModpack() {
+	selectedId.value = ''
+	localStorage.removeItem('dr3sh_selected_server')
+	updateThemePalette(null)
 }
 
 export function resolveImageUrl(img?: string | null): string {
@@ -435,10 +595,12 @@ export function getServerPreviewImages(server?: Dr3shServer | null): string[] {
 
 	if (fromServer.length > 0) return fromServer
 	if (server.id === 'desgraciamon2') return DESGRACIAMON2_SCREENSHOTS
+
 	const fallback = [server.image, server.logo, server.logo_square]
 		.filter((url): url is string => Boolean(url && String(url).trim()))
 		.map((url) => resolveImageUrl(url))
-	return fallback.length > 0 ? [fallback[0]] : ['/logo.png']
+
+	return fallback.length > 0 ? fallback : (server.id === 'desgraciamon2' ? DESGRACIAMON2_SCREENSHOTS : [])
 }
 
 export function hasCustomScreenshots(server?: Dr3shServer | null): boolean {
@@ -651,9 +813,11 @@ export function applyCatalogData(data: any, persistCache = true, forceApply = fa
 	servers.value = visibleServers
 	versions.value = rawTopVersions.filter((v) => String(v.status || 'active') !== 'hidden')
 
-	if (servers.value.length > 0 && !servers.value.some((s) => s.id === selectedId.value)) {
-		const defaultFound = servers.value.find((s) => s.id === 'desgraciamon3')
-		selectedId.value = defaultFound ? defaultFound.id : servers.value[0].id
+	if (selectedId.value && owned.value.size > 0 && servers.value.length > 0 && !servers.value.some((s) => s.id === selectedId.value && owned.value.has(s.id))) {
+		const firstOwned = servers.value.find((s) => owned.value.has(s.id))
+		if (firstOwned) {
+			selectedId.value = firstOwned.id
+		}
 	}
 	updateThemePalette(servers.value.find((s) => s.id === selectedId.value))
 	preloadCatalogImages(visibleServers)
@@ -677,25 +841,76 @@ try {
 	}
 } catch {}
 
-export async function fetchVersionsData() {
+async function fetchJsonWithTimeout(
+	url: string,
+	headers: Record<string, string>,
+	timeoutMs = 8000,
+): Promise<any | null> {
+	const controller = new AbortController()
+	const timer = setTimeout(() => controller.abort(), timeoutMs)
+	try {
+		const res = await tauriFetch(url, {
+			headers,
+			signal: controller.signal,
+		})
+		if (!res || !res.ok) return null
+		return await res.json().catch(() => null)
+	} catch {
+		return null
+	} finally {
+		clearTimeout(timer)
+	}
+}
+
+export async function fetchVersionsData(forceLive = false) {
+	retryingCatalog.value = true
 	try {
 		if (servers.value.length === 0) {
 			loading.value = true
 		}
-		const url = `https://raw.githubusercontent.com/Dr3sh/Dr3sh.github.io/main/versions.json?t=${Date.now()}`
-		const res = await tauriFetch(url, {
-			headers: {
+		// Fetch both live release asset (instant, 0 CDN delay) and raw repository in parallel
+		const liveUrl = `https://github.com/Dr3sh/modpack-versions/releases/download/catalog-live/versions.json?t=${Date.now()}`
+		const fallbackUrl = `https://raw.githubusercontent.com/Dr3sh/Dr3sh.github.io/main/versions.json?t=${Date.now()}`
+
+		const [liveData, repoData] = await Promise.all([
+			fetchJsonWithTimeout(liveUrl, {
+				'Cache-Control': 'no-cache, no-store, must-revalidate',
+			}),
+			fetchJsonWithTimeout(fallbackUrl, {
 				'Cache-Control': 'no-cache',
-			},
-		})
-		if (res.ok) {
-			const data = await res.json()
-			applyCatalogData(data, true)
+			}),
+		])
+
+		let chosenData = liveData || repoData
+		if (liveData && repoData) {
+			const liveTime = new Date(liveData.launcher_refresh_id || 0).getTime()
+			const repoTime = new Date(repoData.launcher_refresh_id || 0).getTime()
+			// If manual edit in github repo is newer, respect it; otherwise use fast live release asset
+			if (repoTime > liveTime) {
+				chosenData = repoData
+			} else {
+				chosenData = liveData
+			}
+		}
+
+		if (chosenData) {
+			catalogError.value = null
+			isOffline.value = false
+			applyCatalogData(chosenData, true, forceLive)
+		} else {
+			catalogError.value =
+				'No se pudo conectar con los servidores de Dr3sh. Comprueba tu conexión a internet.'
+			if (typeof navigator !== 'undefined' && !navigator.onLine) {
+				isOffline.value = true
+			}
 		}
 	} catch (err) {
 		console.error('Failed to load Dr3sh versions:', err)
+		catalogError.value =
+			'No se pudo conectar con los servidores de Dr3sh. Comprueba tu conexión a internet.'
 	} finally {
 		loading.value = false
+		retryingCatalog.value = false
 	}
 }
 
@@ -743,7 +958,8 @@ export function closeDeleteConfirm() {
 
 export function useDr3shLauncher() {
 	const selectedServer = computed(() => {
-		return servers.value.find((s) => s.id === selectedId.value) || servers.value[0] || null
+		if (!selectedId.value || owned.value.size === 0) return null
+		return servers.value.find((s) => s.id === selectedId.value && owned.value.has(s.id)) || null
 	})
 
 	const selectedVersion = computed(() => {
@@ -809,6 +1025,9 @@ export function useDr3shLauncher() {
 		testingMode,
 		testingHours,
 		isDeveloper,
+		isOffline,
+		catalogError,
+		retryingCatalog,
 		launcherRefreshMode,
 		launcherRefreshId,
 		deleteConfirmModal,
@@ -826,6 +1045,7 @@ export function useDr3shLauncher() {
 		addOwned,
 		removeOwned,
 		resolveImageUrl,
+		handleAvatarError,
 		getStageImageUrl,
 		getThumbnailUrl,
 		handleImageError,
@@ -836,5 +1056,10 @@ export function useDr3shLauncher() {
 		updateThemePalette,
 		getAccentColor,
 		mixHex,
+		isSidebarCollapsed,
+		railWidth,
+		setRailWidth,
+		toggleSidebarCollapse,
+		deselectModpack,
 	}
 }

@@ -30,6 +30,10 @@ pub use logger::start_logger;
 pub use state::State;
 pub use util::fetch::DownloadReason;
 
+pub fn active_launch_count() -> usize {
+    launcher::active_launch_count()
+}
+
 pub fn launcher_user_agent() -> String {
     const LAUNCHER_BASE_USER_AGENT: &str =
         concat!("modrinth/theseus/", env!("CARGO_PKG_VERSION"),);

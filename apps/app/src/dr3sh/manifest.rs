@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::UNIX_EPOCH;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -698,6 +699,36 @@ pub fn file_mtime_secs(meta: &fs::Metadata) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
+pub fn hash_local_file_cancellable(
+    path: &Path,
+    cancel_token: &AtomicBool,
+) -> Result<String, Dr3shError> {
+    let f = File::open(path).map_err(|e| Dr3shError::ZipCorrupt {
+        entry: "<archive>".to_string(),
+        error: e.to_string(),
+    })?;
+    let mut reader = BufReader::with_capacity(512 * 1024, f);
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        if cancel_token.load(Ordering::Relaxed) {
+            return Err(Dr3shError::Cancelled {
+                stage: "verify".to_string(),
+            });
+        }
+        let n = reader.read(&mut buf).map_err(|e| Dr3shError::ZipCorrupt {
+            entry: "<archive>".to_string(),
+            error: e.to_string(),
+        })?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 pub fn hash_local_file(path: &Path) -> Result<String, std::io::Error> {
     let f = File::open(path)?;
     let mut reader = BufReader::with_capacity(256 * 1024, f);
@@ -900,11 +931,31 @@ pub fn verify_zip_against_manifest(
     zip_path: &Path,
     manifest: &Manifest,
 ) -> Result<HashMap<String, String>, Dr3shError> {
+    let cancel = AtomicBool::new(false);
+    verify_zip_against_manifest_cancellable(zip_path, manifest, &cancel, |_, _| {})
+}
+
+pub fn verify_zip_against_manifest_cancellable<F>(
+    zip_path: &Path,
+    manifest: &Manifest,
+    cancel_token: &AtomicBool,
+    on_progress: F,
+) -> Result<HashMap<String, String>, Dr3shError>
+where
+    F: Fn(u64, u64),
+{
+    if cancel_token.load(Ordering::Relaxed) {
+        return Err(Dr3shError::Cancelled {
+            stage: "verify".to_string(),
+        });
+    }
+
+    // Pass File directly (no BufReader) because ZipArchive performs random seeks across the Central Directory.
     let file = File::open(zip_path).map_err(|e| Dr3shError::ZipCorrupt {
         entry: "<archive>".to_string(),
         error: e.to_string(),
     })?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| Dr3shError::ZipCorrupt {
+    let archive = zip::ZipArchive::new(file).map_err(|e| Dr3shError::ZipCorrupt {
         entry: "<archive>".to_string(),
         error: e.to_string(),
     })?;
@@ -913,21 +964,20 @@ pub fn verify_zip_against_manifest(
     let mut raw_norm_pairs: Vec<(String, String)> = Vec::new();
     let mut common_prefix: Option<String> = None;
 
-    for i in 0..archive.len() {
-        let entry = archive.by_index_raw(i).map_err(|e| Dr3shError::ZipCorrupt {
-            entry: format!("index {i}"),
+    for name_res in archive.file_names() {
+        if cancel_token.load(Ordering::Relaxed) {
+            return Err(Dr3shError::Cancelled {
+                stage: "verify".to_string(),
+            });
+        }
+        let raw_name_ref = name_res.map_err(|e| Dr3shError::ZipCorrupt {
+            entry: "<archive>".to_string(),
             error: e.to_string(),
         })?;
-        if entry.is_dir() {
+        if raw_name_ref.ends_with('/') || raw_name_ref.ends_with('\\') {
             continue;
         }
-        let raw_name = entry
-            .name()
-            .map_err(|e| Dr3shError::ZipCorrupt {
-                entry: format!("index {i}"),
-                error: e.to_string(),
-            })?
-            .to_string();
+        let raw_name = raw_name_ref.into_owned();
         let norm = raw_name.replace('\\', "/");
         if !is_safe_relative_path(&norm) {
             return Err(Dr3shError::ZipUnsafePath { entry: raw_name });
@@ -971,9 +1021,15 @@ pub fn verify_zip_against_manifest(
         }
     }
 
+    let total_files = manifest.files.len() as u64;
     let mut missing = Vec::new();
-    let mut resolved_map: HashMap<String, String> = HashMap::new();
-    for mf in &manifest.files {
+    let mut resolved_map: HashMap<String, String> = HashMap::with_capacity(manifest.files.len());
+    for (idx, mf) in manifest.files.iter().enumerate() {
+        if cancel_token.load(Ordering::Relaxed) {
+            return Err(Dr3shError::Cancelled {
+                stage: "verify".to_string(),
+            });
+        }
         let lookup = mf
             .archive_path
             .as_deref()
@@ -988,6 +1044,10 @@ pub fn verify_zip_against_manifest(
             resolved_map.insert(mf.path.to_ascii_lowercase(), actual_name.clone());
         } else {
             missing.push(mf.path.clone());
+        }
+        let done = (idx + 1) as u64;
+        if done % 128 == 0 || done == total_files {
+            on_progress(done, total_files);
         }
     }
 
@@ -1009,17 +1069,50 @@ pub fn synthesize_manifest_from_zip(
     loader_version: &str,
     zip_url: &str,
 ) -> Result<Manifest, Dr3shError> {
+    let cancel = AtomicBool::new(false);
+    synthesize_manifest_from_zip_cancellable(
+        zip_path,
+        pack_id,
+        version,
+        mc_version,
+        loader,
+        loader_version,
+        zip_url,
+        &cancel,
+        |_, _| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn synthesize_manifest_from_zip_cancellable<F>(
+    zip_path: &Path,
+    pack_id: &str,
+    version: &str,
+    mc_version: &str,
+    loader: &str,
+    loader_version: &str,
+    zip_url: &str,
+    cancel_token: &AtomicBool,
+    on_progress: F,
+) -> Result<Manifest, Dr3shError>
+where
+    F: Fn(u64, u64),
+{
+    if cancel_token.load(Ordering::Relaxed) {
+        return Err(Dr3shError::Cancelled {
+            stage: "verify".to_string(),
+        });
+    }
+
     let zip_size = fs::metadata(zip_path)
         .map(|m| m.len())
         .map_err(|e| Dr3shError::ZipCorrupt {
             entry: "<archive>".to_string(),
             error: e.to_string(),
         })?;
-    let zip_sha256 = hash_local_file(zip_path).map_err(|e| Dr3shError::ZipCorrupt {
-        entry: "<archive>".to_string(),
-        error: e.to_string(),
-    })?;
+    let zip_sha256 = hash_local_file_cancellable(zip_path, cancel_token)?;
 
+    // Open File directly without BufReader for ZipArchive Central Directory navigation.
     let file = File::open(zip_path).map_err(|e| Dr3shError::ZipCorrupt {
         entry: "<archive>".to_string(),
         error: e.to_string(),
@@ -1031,30 +1124,37 @@ pub fn synthesize_manifest_from_zip(
 
     let total_entries = archive.len();
     let mut common_prefix: Option<String> = None;
-    for i in 0..total_entries {
-        if let Ok(entry) = archive.by_index_raw(i)
-            && !entry.is_dir()
-            && let Ok(raw_n) = entry.name()
-        {
-            let name = raw_n.replace('\\', "/");
-            let trimmed = name.trim_start_matches('/');
-            if trimmed.is_empty() {
-                continue;
-            }
-            if let Some((first_seg, _)) = trimmed.split_once('/') {
-                let candidate = format!("{first_seg}/");
-                match &common_prefix {
-                    None => common_prefix = Some(candidate),
-                    Some(existing) if !existing.eq_ignore_ascii_case(&candidate) => {
-                        common_prefix = None;
-                        break;
-                    }
-                    _ => {}
+    for name_res in archive.file_names() {
+        if cancel_token.load(Ordering::Relaxed) {
+            return Err(Dr3shError::Cancelled {
+                stage: "verify".to_string(),
+            });
+        }
+        let raw_n = name_res.map_err(|e| Dr3shError::ZipCorrupt {
+            entry: "<archive>".to_string(),
+            error: e.to_string(),
+        })?;
+        if raw_n.ends_with('/') || raw_n.ends_with('\\') {
+            continue;
+        }
+        let name = raw_n.replace('\\', "/");
+        let trimmed = name.trim_start_matches('/');
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((first_seg, _)) = trimmed.split_once('/') {
+            let candidate = format!("{first_seg}/");
+            match &common_prefix {
+                None => common_prefix = Some(candidate),
+                Some(existing) if !existing.eq_ignore_ascii_case(&candidate) => {
+                    common_prefix = None;
+                    break;
                 }
-            } else {
-                common_prefix = None;
-                break;
+                _ => {}
             }
+        } else {
+            common_prefix = None;
+            break;
         }
     }
     if let Some(ref prefix) = common_prefix {
@@ -1077,8 +1177,14 @@ pub fn synthesize_manifest_from_zip(
     let rules = default_rules();
     let mut files = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
+    let mut buf = vec![0u8; 256 * 1024];
 
     for i in 0..total_entries {
+        if cancel_token.load(Ordering::Relaxed) {
+            return Err(Dr3shError::Cancelled {
+                stage: "verify".to_string(),
+            });
+        }
         let mut entry = archive.by_index(i).map_err(|e| Dr3shError::ZipCorrupt {
             entry: format!("index {i}"),
             error: e.to_string(),
@@ -1116,9 +1222,13 @@ pub fn synthesize_manifest_from_zip(
         }
 
         let mut hasher = Sha256::new();
-        let mut buf = [0u8; 64 * 1024];
         let mut size: u64 = 0;
         loop {
+            if cancel_token.load(Ordering::Relaxed) {
+                return Err(Dr3shError::Cancelled {
+                    stage: "verify".to_string(),
+                });
+            }
             let n = entry.read(&mut buf).map_err(|e| Dr3shError::ZipCorrupt {
                 entry: raw_name.clone(),
                 error: e.to_string(),
@@ -1144,6 +1254,10 @@ pub fn synthesize_manifest_from_zip(
             },
             mtime: None,
         });
+        let done = (i + 1) as u64;
+        if done % 64 == 0 || done == total_entries as u64 {
+            on_progress(done, total_entries as u64);
+        }
     }
 
     let safe_url = if zip_url.starts_with("https://") {

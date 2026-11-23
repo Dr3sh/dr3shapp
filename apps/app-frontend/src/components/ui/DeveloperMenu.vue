@@ -6,6 +6,7 @@ import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { readFile } from '@tauri-apps/plugin-fs'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { Octokit } from '@octokit/rest'
 import { listenNativeDragDrop } from '@/helpers/native-drag-drop'
 import {
 	useDr3shLauncher,
@@ -146,9 +147,17 @@ const newVersionLoaderVersion = ref('')
 const newVersionLink = ref('')
 const newVersionManifest = ref('')
 const newVersionDescription = ref('')
+interface LocalSourceItem {
+	path: string
+	name: string
+	isDirectory: boolean
+	sizeMb?: number
+}
+
 const newVersionSizeMb = ref<number | undefined>(undefined)
 const newVersionArchivePath = ref('')
 const newVersionZipFile = ref<File | null>(null)
+const selectedLocalSources = ref<LocalSourceItem[]>([])
 const isDraggingZip = ref(false)
 const zipFileInputRef = ref<HTMLInputElement | null>(null)
 
@@ -507,11 +516,8 @@ async function startNativeDropListener() {
 			}
 			if (ev.type === 'drop') {
 				isDraggingZip.value = false
-				const zipPath = ev.paths.find((p) => /\.(zip|mrpack)$/i.test(p))
-				if (zipPath) {
-					await applyZipPath(zipPath)
-				} else if (ev.paths.length > 0) {
-					status.value = 'Arrastra un archivo .zip o .mrpack válido.'
+				if (ev.paths && ev.paths.length > 0) {
+					void addLocalSourcesFromPaths(ev.paths)
 				}
 			}
 		})
@@ -832,36 +838,43 @@ function handleZipSelectedFile(file: File) {
 	status.value = `¡ZIP listo (${sizeMb} MB)! Pulsa el botón para subir la release y actualizar versions.json.`
 }
 
-function handleZipDrop(event: DragEvent) {
-	isDraggingZip.value = false
-	const file = event.dataTransfer?.files?.[0]
-	if (file) {
-		handleZipSelectedFile(file)
-	}
-}
-
-function handleZipInputSelected(event: Event) {
-	const input = event.target as HTMLInputElement
-	const file = input.files?.[0]
-	if (file) {
-		handleZipSelectedFile(file)
-	}
-	input.value = ''
-}
-
-async function applyZipPath(pathStr: string) {
-	newVersionArchivePath.value = pathStr
-	newVersionZipFile.value = null
-	newVersionSizeMb.value = undefined
-	const fileName = getFileName(pathStr)
-
-	try {
-		const sizeMb = await invoke<number | null>('dr3sh_get_file_size', { path: pathStr })
-		if (typeof sizeMb === 'number' && sizeMb > 0) {
-			newVersionSizeMb.value = sizeMb
+async function addLocalSourcesFromPaths(paths: string[]) {
+	for (const raw of paths) {
+		const p = String(raw).trim()
+		if (!p) continue
+		if (selectedLocalSources.value.some((s) => s.path.toLowerCase() === p.toLowerCase())) {
+			continue
 		}
-	} catch (e) {
-		console.warn('Native get_file_size error:', e)
+		const name = getFileName(p)
+		let isDir = true
+		let sizeMb: number | undefined
+		try {
+			const size = await invoke<number | null>('dr3sh_get_file_size', { path: p })
+			if (typeof size === 'number') {
+				isDir = false
+				sizeMb = size
+			} else {
+				isDir = !/\.(zip|mrpack|jar|json|toml|txt|png|ogg|cfg|yml|yaml|properties|dat)$/i.test(p)
+			}
+		} catch {
+			isDir = !/\.(zip|mrpack|jar|json|toml|txt|png|ogg|cfg|yml|yaml|properties|dat)$/i.test(p)
+		}
+
+		selectedLocalSources.value.push({
+			path: p,
+			name,
+			isDirectory: isDir,
+			sizeMb,
+		})
+	}
+
+	newVersionArchivePath.value = selectedLocalSources.value.map((s) => s.path).join('|')
+	newVersionZipFile.value = null
+
+	if (selectedLocalSources.value.length === 1 && !selectedLocalSources.value[0].isDirectory) {
+		newVersionSizeMb.value = selectedLocalSources.value[0].sizeMb
+	} else {
+		newVersionSizeMb.value = undefined
 	}
 
 	if (!newVersionTitle.value.trim() && selectedServer.value) {
@@ -869,7 +882,71 @@ async function applyZipPath(pathStr: string) {
 		newVersionTitle.value = verStr ? `${selectedServer.value.title} ${verStr}` : selectedServer.value.title
 	}
 
-	status.value = `ZIP seleccionado: ${fileName}${newVersionSizeMb.value ? ` (${newVersionSizeMb.value} MB)` : ''}. Pulsa el botón para subirlo a GitHub.`
+	const totalCount = selectedLocalSources.value.length
+	const dirCount = selectedLocalSources.value.filter((s) => s.isDirectory).length
+	const fileCount = totalCount - dirCount
+	status.value = `Orígenes listos: ${totalCount} (${dirCount} carpeta${dirCount !== 1 ? 's' : ''}, ${fileCount} archivo${fileCount !== 1 ? 's' : ''}). Puedes seguir añadiendo o publicar.`
+}
+
+function removeLocalSource(index: number) {
+	selectedLocalSources.value.splice(index, 1)
+	newVersionArchivePath.value = selectedLocalSources.value.map((s) => s.path).join('|')
+	if (selectedLocalSources.value.length === 0) {
+		newVersionArchivePath.value = ''
+		newVersionZipFile.value = null
+		newVersionSizeMb.value = undefined
+	} else if (selectedLocalSources.value.length === 1 && !selectedLocalSources.value[0].isDirectory) {
+		newVersionSizeMb.value = selectedLocalSources.value[0].sizeMb
+	}
+}
+
+function clearLocalSources() {
+	selectedLocalSources.value = []
+	newVersionArchivePath.value = ''
+	newVersionZipFile.value = null
+	newVersionSizeMb.value = undefined
+}
+
+function handleZipDrop(event: DragEvent) {
+	isDraggingZip.value = false
+	const files = event.dataTransfer?.files
+	if (files && files.length > 0) {
+		const paths: string[] = []
+		for (let i = 0; i < files.length; i++) {
+			const p = (files[i] as any).path
+			if (p) paths.push(p)
+		}
+		if (paths.length > 0) {
+			void addLocalSourcesFromPaths(paths)
+			return
+		}
+		const first = files[0]
+		if (first && isZipFile(first)) {
+			handleZipSelectedFile(first)
+		}
+	}
+}
+
+function handleZipInputSelected(event: Event) {
+	const input = event.target as HTMLInputElement
+	const files = input.files
+	if (files && files.length > 0) {
+		const paths: string[] = []
+		for (let i = 0; i < files.length; i++) {
+			const p = (files[i] as any).path
+			if (p) paths.push(p)
+		}
+		if (paths.length > 0) {
+			void addLocalSourcesFromPaths(paths)
+		} else {
+			handleZipSelectedFile(files[0])
+		}
+	}
+	input.value = ''
+}
+
+async function applyZipPath(pathStr: string) {
+	await addLocalSourcesFromPaths([pathStr])
 }
 
 async function cancelUpload() {
@@ -888,20 +965,42 @@ async function cancelUpload() {
 }
 
 async function triggerChooseZip() {
+	await triggerChooseFiles()
+}
+
+async function triggerChooseFiles() {
 	try {
 		const selected = await openDialog({
-			multiple: false,
+			multiple: true,
 			directory: false,
-			filters: [{ name: 'Modpack ZIP', extensions: ['zip', 'mrpack'] }],
+			title: 'Seleccionar archivo(s) o paquete ZIP',
 		})
 		if (selected) {
-			await applyZipPath(String(selected))
+			const paths = Array.isArray(selected) ? selected : [selected]
+			await addLocalSourcesFromPaths(paths)
 			return
 		}
 	} catch (e) {
 		console.warn('Native dialog error, falling back to file input:', e)
 	}
 	zipFileInputRef.value?.click()
+}
+
+async function triggerChooseFolder() {
+	try {
+		const selected = await openDialog({
+			multiple: true,
+			directory: true,
+			title: 'Seleccionar carpeta(s) de la instancia o modpack',
+		})
+		if (selected) {
+			const paths = Array.isArray(selected) ? selected : [selected]
+			await addLocalSourcesFromPaths(paths)
+		}
+	} catch (e) {
+		console.warn('Error choosing folder:', e)
+		status.value = `Error seleccionando carpeta: ${sanitizeError(e)}`
+	}
 }
 
 interface PublishReleaseResponse {
@@ -1056,6 +1155,27 @@ async function handleAddVersion() {
 			if (typeof result.size_mb === 'number' && result.size_mb > 0) {
 				newVersionSizeMb.value = result.size_mb
 			}
+			const uploadedTarget = extractGithubReleaseTarget({
+				id: '',
+				server: selectedServer.value.id,
+				title,
+				version: verNum,
+				link: result.archive_url,
+				manifest: result.manifest_url,
+				description: '',
+				published_at: '',
+			})
+			const uploadedRepoLower = (uploadedTarget?.repo || 'Dr3sh/modpack-versions').trim().toLowerCase()
+			const uploadedTagLower = (uploadedTarget?.tag || result.tag_name || '').trim().toLowerCase()
+			if (uploadedTagLower) {
+				pendingReleaseDeletions.value = pendingReleaseDeletions.value.filter(
+					(item) =>
+						!(
+							item.repo.trim().toLowerCase() === uploadedRepoLower &&
+							item.tag.trim().toLowerCase() === uploadedTagLower
+						),
+				)
+			}
 			status.value = `¡Release ${result.tag_name} subida exitosamente con ZIP y manifest.json! Actualizando versions.json...`
 		} catch (e: any) {
 			const errStr = sanitizeError(e)
@@ -1087,6 +1207,19 @@ async function handleAddVersion() {
 		status: 'active',
 	}
 
+	const newVerTarget = extractGithubReleaseTarget(newVer)
+	if (newVerTarget) {
+		const newRepoLower = newVerTarget.repo.trim().toLowerCase()
+		const newTagLower = newVerTarget.tag.trim().toLowerCase()
+		pendingReleaseDeletions.value = pendingReleaseDeletions.value.filter(
+			(item) =>
+				!(
+					item.repo.trim().toLowerCase() === newRepoLower &&
+					item.tag.trim().toLowerCase() === newTagLower
+				),
+		)
+	}
+
 	catalog.value.versions = [newVer, ...catalog.value.versions]
 	newVersionNumber.value = ''
 	newVersionTitle.value = ''
@@ -1095,6 +1228,7 @@ async function handleAddVersion() {
 	newVersionDescription.value = ''
 	newVersionArchivePath.value = ''
 	newVersionZipFile.value = null
+	selectedLocalSources.value = []
 	newVersionSizeMb.value = undefined
 	if (uploadedRelease) {
 		uploadProgress.value = {
@@ -1162,41 +1296,50 @@ function queueReleaseDeletionForVersion(version: Dr3shVersion): boolean {
 	return true
 }
 
+function getOctokit(token: string) {
+	return new Octokit({
+		auth: token,
+		request: {
+			fetch: tauriFetch as any,
+		},
+	})
+}
+
 async function deleteGithubReleaseAndTag(repo: string, tag: string, token: string): Promise<void> {
-	const headers = {
-		Authorization: `token ${token}`,
-		Accept: 'application/vnd.github.v3+json',
-	}
-	const encodedTag = encodeURIComponent(tag)
-	const relRes = await tauriFetch(
-		`https://api.github.com/repos/${repo}/releases/tags/${encodedTag}`,
-		{ headers },
-	)
+	const parts = repo.split('/')
+	const owner = parts[0] || 'Dr3sh'
+	const repoName = parts[1] || 'modpack-versions'
+	const octokit = getOctokit(token)
 
-	if (relRes.ok) {
-		const relData = await relRes.json()
-		if (relData?.id) {
-			const delRelRes = await tauriFetch(
-				`https://api.github.com/repos/${repo}/releases/${relData.id}`,
-				{ method: 'DELETE', headers },
-			)
-			if (!delRelRes.ok && delRelRes.status !== 404) {
-				const errData = await delRelRes.json().catch(() => ({}))
-				throw new Error(errData.message || `No se pudo borrar release ${tag} (HTTP ${delRelRes.status})`)
-			}
+	try {
+		const rel = await octokit.rest.repos.getReleaseByTag({
+			owner,
+			repo: repoName,
+			tag,
+		})
+		if (rel?.data?.id) {
+			await octokit.rest.repos.deleteRelease({
+				owner,
+				repo: repoName,
+				release_id: rel.data.id,
+			})
 		}
-	} else if (relRes.status !== 404) {
-		const errData = await relRes.json().catch(() => ({}))
-		throw new Error(errData.message || `No se pudo consultar release ${tag} (HTTP ${relRes.status})`)
+	} catch (err: any) {
+		if (err.status !== 404) {
+			console.warn('Error deleting release with Octokit:', err)
+		}
 	}
 
-	const delTagRes = await tauriFetch(
-		`https://api.github.com/repos/${repo}/git/refs/tags/${encodedTag}`,
-		{ method: 'DELETE', headers },
-	)
-	if (!delTagRes.ok && delTagRes.status !== 404 && delTagRes.status !== 422) {
-		const errData = await delTagRes.json().catch(() => ({}))
-		throw new Error(errData.message || `No se pudo borrar tag ${tag} (HTTP ${delTagRes.status})`)
+	try {
+		await octokit.rest.git.deleteRef({
+			owner,
+			repo: repoName,
+			ref: `tags/${tag}`,
+		})
+	} catch (err: any) {
+		if (err.status !== 404 && err.status !== 422) {
+			console.warn('Error deleting tag ref with Octokit:', err)
+		}
 	}
 }
 
@@ -1228,6 +1371,82 @@ function applyRawJsonEditor() {
 	}
 }
 
+async function uploadCatalogLiveReleaseAsset(token: string, contentJson: string) {
+	const octokit = getOctokit(token)
+	const owner = 'Dr3sh'
+	const repo = 'modpack-versions'
+	const tag = 'catalog-live'
+
+	let releaseUploadUrl: string | null = null
+
+	try {
+		const rel = await octokit.rest.repos.getReleaseByTag({ owner, repo, tag })
+		if (rel?.data?.upload_url) {
+			releaseUploadUrl = rel.data.upload_url
+			if (Array.isArray(rel.data.assets)) {
+				const oldAsset = rel.data.assets.find((a: any) => a.name === 'versions.json')
+				if (oldAsset?.id) {
+					await octokit.rest.repos.deleteReleaseAsset({
+						owner,
+						repo,
+						asset_id: oldAsset.id,
+					}).catch(() => {})
+				}
+			}
+		}
+	} catch (e: any) {
+		if (e.status === 404) {
+			const newRel = await octokit.rest.repos.createRelease({
+				owner,
+				repo,
+				tag_name: tag,
+				name: 'Catalog Live Assets',
+				body: 'Automated live catalog asset release for instant updates without CDN delay.',
+				draft: false,
+				prerelease: false,
+			}).catch(() => null)
+			if (newRel?.data?.upload_url) {
+				releaseUploadUrl = newRel.data.upload_url
+			}
+		}
+	}
+
+	if (releaseUploadUrl) {
+		const uploadEndpoint = releaseUploadUrl.replace(/\{(\?name,label)?\}/, '') + '?name=versions.json'
+		await tauriFetch(uploadEndpoint, {
+			method: 'POST',
+			headers: {
+				Authorization: `token ${token}`,
+				'Content-Type': 'application/json',
+			},
+			body: contentJson,
+		}).catch((e) => console.warn('Error uploading live release asset:', e))
+	}
+}
+
+async function applyEmergencyMaintenanceDirectly(enable: boolean) {
+	if (!githubToken.value) {
+		status.value = 'Inicia sesión con GitHub antes de aplicar el modo de emergencia.'
+		return
+	}
+	try {
+		busy.value = true
+		status.value = enable
+			? '🚨 Publicando Modo Mantenimiento de Emergencia en GitHub...'
+			: 'Publicando desactivación de mantenimiento en GitHub...'
+
+		catalog.value.maintenance_mode = enable
+		await publishCatalogToGithub(true)
+		status.value = enable
+			? '🚨 Modo Mantenimiento de Emergencia publicado y activo en vivo.'
+			: '✅ Mantenimiento desactivado correctamente.'
+	} catch (e) {
+		status.value = `Error aplicando mantenimiento: ${sanitizeError(e)}`
+	} finally {
+		busy.value = false
+	}
+}
+
 // Publish catalog to GitHub
 async function publishCatalogToGithub(triggerGlobalRefresh = false) {
 	if (!githubToken.value) {
@@ -1240,20 +1459,25 @@ async function publishCatalogToGithub(triggerGlobalRefresh = false) {
 			? 'Publicando y enviando señal global a todos los launchers...'
 			: 'Publicando cambios en GitHub...'
 
-		const getRes = await tauriFetch(
-			'https://api.github.com/repos/Dr3sh/Dr3sh.github.io/contents/versions.json',
-			{
-				headers: {
-					Authorization: `token ${githubToken.value.trim()}`,
-					Accept: 'application/vnd.github.v3+json',
-				},
-			},
-		)
+		const octokit = getOctokit(githubToken.value.trim())
+		const owner = 'Dr3sh'
+		const repo = 'Dr3sh.github.io'
+		const path = 'versions.json'
 
-		let sha = ''
-		if (getRes.ok) {
-			const info = await getRes.json()
-			sha = info.sha
+		let sha: string | undefined
+		try {
+			const getRes = await octokit.rest.repos.getContent({
+				owner,
+				repo,
+				path,
+			})
+			if (getRes.data && 'sha' in getRes.data) {
+				sha = getRes.data.sha
+			}
+		} catch (err: any) {
+			if (err.status !== 404) {
+				console.warn('Octokit getContent status:', err.status)
+			}
 		}
 
 		const publishedCatalog: CatalogDocument = {
@@ -1263,6 +1487,12 @@ async function publishCatalogToGithub(triggerGlobalRefresh = false) {
 		}
 
 		const contentJson = JSON.stringify(publishedCatalog, null, 2)
+
+		// Also upload live release asset to catalog-live for zero-delay instant updates
+		await uploadCatalogLiveReleaseAsset(githubToken.value.trim(), contentJson).catch((err) => {
+			console.warn('Could not update catalog-live asset:', err)
+		})
+
 		const utf8Bytes = new TextEncoder().encode(contentJson)
 		let binary = ''
 		for (let i = 0; i < utf8Bytes.length; i++) {
@@ -1270,33 +1500,31 @@ async function publishCatalogToGithub(triggerGlobalRefresh = false) {
 		}
 		const contentBase64 = btoa(binary)
 
-		const putRes = await tauriFetch(
-			'https://api.github.com/repos/Dr3sh/Dr3sh.github.io/contents/versions.json',
-			{
-				method: 'PUT',
-				headers: {
-					Authorization: `token ${githubToken.value.trim()}`,
-					Accept: 'application/vnd.github.v3+json',
-					'Content-Type': 'application/json',
-				},
-				body: JSON.stringify({
-					message: 'Update versions.json from Dr3sh Launcher Studio',
-					content: contentBase64,
-					sha: sha || undefined,
-				}),
-			},
-		)
-
-		if (!putRes.ok) {
-			const errData = await putRes.json().catch(() => ({}))
-			throw new Error(errData.message || `HTTP ${putRes.status}`)
-		}
+		await octokit.rest.repos.createOrUpdateFileContents({
+			owner,
+			repo,
+			path,
+			message: 'Update versions.json from Dr3sh Launcher Studio (v2.1.0 Octokit)',
+			content: contentBase64,
+			sha,
+		})
 
 		catalog.value = publishedCatalog
 		clearSpecialModesOverride()
 		applyCatalogData(publishedCatalog, true, true)
 
-		const toDelete = [...pendingReleaseDeletions.value]
+		const activeReleaseKeys = new Set<string>()
+		for (const ver of publishedCatalog.versions) {
+			const target = extractGithubReleaseTarget(ver)
+			if (target) {
+				activeReleaseKeys.add(`${target.repo.trim().toLowerCase()}#${target.tag.trim().toLowerCase()}`)
+			}
+		}
+
+		const toDelete = pendingReleaseDeletions.value.filter((item) => {
+			const key = `${item.repo.trim().toLowerCase()}#${item.tag.trim().toLowerCase()}`
+			return !activeReleaseKeys.has(key)
+		})
 		const failedDeletions: Array<{ repo: string; tag: string; label: string }> = []
 		let deletedCount = 0
 		for (const item of toDelete) {
@@ -1824,17 +2052,112 @@ function close() {
 											"
 										/>
 									</label>
-									<!-- Modpack ZIP Dropzone & Picker -->
+									<!-- Modpack ZIP Dropzone & Picker (Permite múltiples carpetas y archivos locales) -->
 									<div class="wide-field developer-archive-field">
-										<span>Paquete ZIP del modpack (arrastra directamente el archivo o examina tu PC)</span>
+										<span>Orígenes del modpack (carpetas y/o archivos locales, o paquete ZIP)</span>
 										<div
 											class="developer-archive-dropzone"
-											:class="{ 'is-over': isDraggingZip, 'has-file': Boolean(newVersionArchivePath) }"
+											:class="{ 'is-over': isDraggingZip, 'has-file': selectedLocalSources.length > 0 || Boolean(newVersionArchivePath) }"
 											@dragover.prevent="isDraggingZip = true"
 											@dragleave="isDraggingZip = false"
 											@drop.prevent="handleZipDrop"
 										>
-											<div v-if="newVersionArchivePath" class="developer-archive-selected">
+											<!-- Modo Lista Múltiple de Carpetas y Archivos -->
+											<div v-if="selectedLocalSources.length > 0" class="developer-sources-box" @click.stop>
+												<div class="developer-sources-top-bar">
+													<div class="developer-sources-title-badge">
+														<strong>Orígenes seleccionados</strong>
+														<span class="developer-sources-count-pill">{{ selectedLocalSources.length }}</span>
+													</div>
+													<div class="developer-sources-top-actions">
+														<button
+															type="button"
+															class="developer-mini-btn highlight"
+															title="Añadir más carpetas"
+															@click.stop="triggerChooseFolder"
+														>
+															+ Añadir carpeta(s)
+														</button>
+														<button
+															type="button"
+															class="developer-mini-btn"
+															title="Añadir más archivos"
+															@click.stop="triggerChooseFiles"
+														>
+															+ Añadir archivo(s)
+														</button>
+														<button
+															type="button"
+															class="developer-mini-btn danger"
+															title="Quitar todos los orígenes"
+															@click.stop="clearLocalSources"
+														>
+															Limpiar todo
+														</button>
+													</div>
+												</div>
+
+												<div class="developer-sources-list">
+													<div
+														v-for="(sourceItem, idx) in selectedLocalSources"
+														:key="`${sourceItem.path}-${idx}`"
+														class="developer-source-row"
+													>
+														<div class="source-row-icon">
+															<!-- Folder Icon -->
+															<svg
+																v-if="sourceItem.isDirectory"
+																viewBox="0 0 24 24"
+																width="18"
+																height="18"
+																fill="none"
+																stroke="currentColor"
+																stroke-width="2"
+															>
+																<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+															</svg>
+															<!-- File Icon -->
+															<svg
+																v-else
+																viewBox="0 0 24 24"
+																width="18"
+																height="18"
+																fill="none"
+																stroke="currentColor"
+																stroke-width="2"
+															>
+																<path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
+																<polyline points="13 2 13 9 20 9" />
+															</svg>
+														</div>
+														<div class="source-row-details">
+															<span class="source-row-name">{{ sourceItem.name }}</span>
+															<span class="source-row-path" :title="sourceItem.path">{{ sourceItem.path }}</span>
+														</div>
+														<span class="source-row-badge" :class="{ 'is-dir': sourceItem.isDirectory }">
+															{{ sourceItem.isDirectory ? 'Carpeta' : (sourceItem.sizeMb ? `${sourceItem.sizeMb} MB` : 'Archivo') }}
+														</span>
+														<button
+															type="button"
+															class="source-row-remove-btn"
+															title="Quitar este elemento"
+															@click.stop="removeLocalSource(idx)"
+														>
+															<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2">
+																<line x1="5" y1="5" x2="15" y2="15" />
+																<line x1="15" y1="5" x2="5" y2="15" />
+															</svg>
+														</button>
+													</div>
+												</div>
+
+												<div class="developer-sources-footer-hint">
+													Al publicar, el launcher empaquetará todas las carpetas y archivos en un único ZIP optimizado con su manifest.json.
+												</div>
+											</div>
+
+											<!-- Origen único previo (compatibilidad si se fijó una sola ruta directa) -->
+											<div v-else-if="newVersionArchivePath" class="developer-archive-selected">
 												<div class="archive-icon">
 													<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
 														<path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4" />
@@ -1843,33 +2166,59 @@ function close() {
 												<div class="archive-info">
 													<strong>{{ getFileName(newVersionArchivePath) }}</strong>
 													<small v-if="newVersionSizeMb">
-														{{ newVersionSizeMb }} MB (calculado del archivo) • Listo para subir
+														{{ newVersionSizeMb }} MB • Archivo ZIP listo
+													</small>
+													<small v-else>
+														Carpeta local seleccionada • Se empaquetará automáticamente al publicar
 													</small>
 												</div>
-												<button
-													type="button"
-													class="developer-pill-btn danger"
-													title="Quitar ZIP seleccionado"
-													@click.stop="
-														newVersionArchivePath = '';
-														newVersionZipFile = null;
-														newVersionSizeMb = undefined
-													"
-												>
-													Quitar
-												</button>
+												<div class="developer-archive-actions-row">
+													<button
+														type="button"
+														class="developer-mini-btn highlight"
+														title="Añadir más orígenes"
+														@click.stop="triggerChooseFolder"
+													>
+														+ Añadir carpetas
+													</button>
+													<button
+														type="button"
+														class="developer-pill-btn danger"
+														title="Quitar origen seleccionado"
+														@click.stop="
+															newVersionArchivePath = '';
+															newVersionZipFile = null;
+															newVersionSizeMb = undefined
+														"
+													>
+														Quitar
+													</button>
+												</div>
 											</div>
-											<div v-else class="developer-archive-empty" @click="triggerChooseZip">
+
+											<!-- Estado Vacío -->
+											<div v-else class="developer-archive-empty">
 												<svg class="dropzone-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8">
 													<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
 												</svg>
-												<strong>Arrastra el archivo ZIP del modpack aquí</strong>
-												<span>o haz clic para buscar en tu ordenador (.zip o .mrpack)</span>
+												<strong>Arrastra carpetas/archivos o elige desde tu PC</strong>
+												<small style="color: var(--muted, #9ca3af); font-size: 11.5px; margin-top: 2px;">
+													Puedes elegir varias carpetas y archivos a la vez o irlos agregando paso a paso
+												</small>
+												<div class="developer-archive-buttons" @click.stop>
+													<button type="button" class="developer-pill-btn highlight" @click.stop="triggerChooseFolder">
+														Elegir carpeta(s) local(es)
+													</button>
+													<button type="button" class="developer-pill-btn" @click.stop="triggerChooseFiles">
+														Elegir archivo(s) / ZIP
+													</button>
+												</div>
 											</div>
 											<input
 												ref="zipFileInputRef"
 												type="file"
-												accept=".zip,.mrpack"
+												multiple
+												accept=".zip,.mrpack,*"
 												hidden
 												@change="handleZipInputSelected"
 											/>
@@ -2088,6 +2437,33 @@ function close() {
 											rows="3"
 											:value="selectedServer.description || ''"
 											@input="updateSelectedServer({ description: ($event.target as HTMLTextAreaElement).value })"
+										/>
+									</label>
+
+									<label class="wide-field developer-checkbox-label">
+										<input
+											type="checkbox"
+											:checked="Boolean(selectedServer.disabled)"
+											@change="updateSelectedServer({ disabled: ($event.target as HTMLInputElement).checked })"
+										/>
+										<span>Inhabilitar modpack (El botón de jugar saldrá gris con "Modpack no disponible")</span>
+									</label>
+
+									<label v-if="selectedServer.disabled" class="wide-field">
+										Mensaje de inhabilitación (opcional)
+										<input
+											placeholder="Ej: El modpack está en mantenimiento de temporada y volverá pronto."
+											:value="selectedServer.disabled_message || ''"
+											@input="updateSelectedServer({ disabled_message: ($event.target as HTMLInputElement).value || undefined })"
+										/>
+									</label>
+
+									<label class="wide-field">
+										Estreno programado (Cuenta regresiva - Horario de Venezuela UTC-4)
+										<input
+											type="datetime-local"
+											:value="selectedServer.release_date || ''"
+											@change="updateSelectedServer({ release_date: ($event.target as HTMLInputElement).value || undefined })"
 										/>
 									</label>
 
@@ -2377,6 +2753,19 @@ function close() {
 												/>
 											</label>
 										</div>
+
+										<div class="developer-emergency-actions">
+											<button
+												type="button"
+												class="developer-emergency-btn"
+												:class="{ active: catalog.maintenance_mode }"
+												:disabled="busy"
+												@click="applyEmergencyMaintenanceDirectly(!catalog.maintenance_mode)"
+											>
+												<span v-if="!catalog.maintenance_mode">🚨 Aplicar Mantenimiento de Emergencia Ya en GitHub</span>
+												<span v-else>✅ Desactivar Mantenimiento y Restaurar Acceso Ya</span>
+											</button>
+										</div>
 									</div>
 
 									<div
@@ -2417,14 +2806,6 @@ function close() {
 						{{ status || 'Los cambios en el borrador se aplican al pulsar "Guardar en GitHub".' }}
 					</div>
 					<div class="developer-footer-actions">
-						<button
-							type="button"
-							class="developer-secondary"
-							:disabled="busy || !selectedServer"
-							@click="publishCatalogToGithub(true)"
-						>
-							Guardar y forzar señal global
-						</button>
 						<button
 							type="button"
 							class="developer-primary"
@@ -2509,5 +2890,244 @@ function close() {
 	border-radius: 999px;
 	background: linear-gradient(90deg, #10b981, #34d399);
 	transition: width 180ms ease-out;
+}
+
+.developer-archive-buttons {
+	display: flex;
+	gap: 0.6rem;
+	margin-top: 0.5rem;
+	flex-wrap: wrap;
+	justify-content: center;
+}
+
+.developer-archive-actions-row {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.developer-sources-box {
+	display: flex;
+	flex-direction: column;
+	gap: 0.65rem;
+	width: 100%;
+	padding: 0.85rem;
+	background: rgba(15, 23, 42, 0.7);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 10px;
+}
+
+.developer-sources-top-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem;
+	flex-wrap: wrap;
+}
+
+.developer-sources-title-badge {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	font-size: 0.86rem;
+	color: #f3f4f6;
+}
+
+.developer-sources-count-pill {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0.1rem 0.45rem;
+	font-size: 0.72rem;
+	font-weight: 700;
+	border-radius: 999px;
+	background: rgba(27, 217, 106, 0.2);
+	color: #34d399;
+	border: 1px solid rgba(27, 217, 106, 0.4);
+}
+
+.developer-sources-top-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	flex-wrap: wrap;
+}
+
+.developer-mini-btn {
+	appearance: none;
+	background: rgba(255, 255, 255, 0.08);
+	border: 1px solid rgba(255, 255, 255, 0.16);
+	color: #f3f4f6;
+	font-size: 0.72rem;
+	font-weight: 600;
+	padding: 0.25rem 0.6rem;
+	border-radius: 6px;
+	cursor: pointer;
+	transition: all 140ms ease;
+}
+
+.developer-mini-btn:hover {
+	background: rgba(255, 255, 255, 0.15);
+	border-color: rgba(255, 255, 255, 0.3);
+}
+
+.developer-mini-btn.highlight {
+	background: rgba(27, 217, 106, 0.18);
+	border-color: rgba(27, 217, 106, 0.45);
+	color: #6ee7b7;
+}
+
+.developer-mini-btn.highlight:hover {
+	background: rgba(27, 217, 106, 0.32);
+	border-color: #10b981;
+	color: #ffffff;
+}
+
+.developer-mini-btn.danger {
+	background: rgba(239, 68, 68, 0.12);
+	border-color: rgba(239, 68, 68, 0.3);
+	color: #fca5a5;
+}
+
+.developer-mini-btn.danger:hover {
+	background: rgba(239, 68, 68, 0.25);
+	border-color: rgba(239, 68, 68, 0.6);
+	color: #ffffff;
+}
+
+.developer-sources-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+	max-height: 200px;
+	overflow-y: auto;
+	padding-right: 0.25rem;
+}
+
+.developer-source-row {
+	display: flex;
+	align-items: center;
+	gap: 0.65rem;
+	padding: 0.4rem 0.6rem;
+	background: rgba(255, 255, 255, 0.04);
+	border: 1px solid rgba(255, 255, 255, 0.06);
+	border-radius: 7px;
+	transition: background 140ms ease;
+}
+
+.developer-source-row:hover {
+	background: rgba(255, 255, 255, 0.07);
+}
+
+.source-row-icon {
+	color: #34d399;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+}
+
+.source-row-details {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	flex: 1;
+}
+
+.source-row-name {
+	font-size: 0.8rem;
+	font-weight: 700;
+	color: #ffffff;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.source-row-path {
+	font-size: 0.68rem;
+	color: #94a3b8;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.source-row-badge {
+	font-size: 0.68rem;
+	padding: 0.1rem 0.4rem;
+	border-radius: 4px;
+	background: rgba(255, 255, 255, 0.08);
+	color: #cbd5e1;
+	flex-shrink: 0;
+}
+
+.source-row-badge.is-dir {
+	background: rgba(59, 130, 246, 0.16);
+	color: #93c5fd;
+	border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.source-row-remove-btn {
+	appearance: none;
+	background: transparent;
+	border: none;
+	color: #94a3b8;
+	padding: 0.2rem;
+	border-radius: 4px;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: all 140ms ease;
+	flex-shrink: 0;
+}
+
+.source-row-remove-btn:hover {
+	background: rgba(239, 68, 68, 0.2);
+	color: #ef4444;
+}
+
+.developer-sources-footer-hint {
+	font-size: 0.72rem;
+	color: #94a3b8;
+	line-height: 1.3;
+}
+
+.developer-emergency-actions {
+	margin-top: 0.85rem;
+	display: flex;
+}
+
+.developer-emergency-btn {
+	appearance: none;
+	border: 1px solid rgba(239, 68, 68, 0.45);
+	background: rgba(239, 68, 68, 0.16);
+	color: #fca5a5;
+	font-size: 0.82rem;
+	font-weight: 700;
+	padding: 0.5rem 1.1rem;
+	border-radius: 8px;
+	cursor: pointer;
+	transition: all 160ms ease;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.developer-emergency-btn:hover:not(:disabled) {
+	background: rgba(239, 68, 68, 0.32);
+	border-color: #ef4444;
+	color: #ffffff;
+}
+
+.developer-emergency-btn.active {
+	background: rgba(16, 185, 129, 0.16);
+	border-color: rgba(16, 185, 129, 0.45);
+	color: #6ee7b7;
+}
+
+.developer-emergency-btn.active:hover:not(:disabled) {
+	background: rgba(16, 185, 129, 0.3);
+	border-color: #10b981;
+	color: #ffffff;
 }
 </style>
