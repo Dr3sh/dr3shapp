@@ -3555,7 +3555,49 @@ select.settings-input option {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 0 4px;
+}
+
+.image-zoom-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.image-zoom-tool-btn {
+  height: 34px;
+  min-width: 34px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  color: #f1f5f9;
+  font-size: 12.5px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.image-zoom-tool-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+}
+
+.image-zoom-tool-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.image-zoom-scale-pill {
+  min-width: 50px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #cbd5e1;
 }
 
 .image-zoom-title {
@@ -3600,19 +3642,54 @@ select.settings-input option {
 .image-zoom-content {
   position: relative;
   width: 100%;
+  height: 78vh;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(5, 7, 12, 0.65);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.8), 0 4px 20px rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
+  user-select: none;
 }
 
 .image-zoom-full {
   max-width: 100%;
-  max-height: 80vh;
+  max-height: 100%;
   object-fit: contain;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.8), 0 4px 20px rgba(0, 0, 0, 0.5);
+  user-select: none;
+  -webkit-user-drag: none;
+  transform-origin: center center;
+  will-change: transform;
   animation: zoomPopIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.batch-zoom-btn {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  cursor: pointer;
+  margin-left: 2px;
+  transition: all 150ms ease;
+}
+
+.batch-zoom-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.obsidian-home.is-power-saving .slide-fade-image,
+.obsidian-home.is-power-saving .scrolling-desc-track,
+.obsidian-home.is-power-saving .running-dot-indicator {
+  animation: none !important;
+  transition: none !important;
 }
 
 @keyframes zoomPopIn {

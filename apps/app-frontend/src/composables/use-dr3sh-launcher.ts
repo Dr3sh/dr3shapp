@@ -650,46 +650,38 @@ const preloadedImageUrls = new Set<string>()
 export function preloadCatalogImages(serverList: Dr3shServer[]) {
 	if (typeof window === 'undefined') return
 	const priorityUrls: string[] = []
-	const secondaryUrls: string[] = []
 
 	for (const srv of serverList) {
 		const logos = [srv.logo_square, srv.logo, srv.image]
 			.map((u) => resolveImageUrl(u))
 			.filter(Boolean)
-		const shots = getServerPreviewImages(srv)
 		for (const u of logos) {
 			if (u && !preloadedImageUrls.has(u)) {
 				preloadedImageUrls.add(u)
 				priorityUrls.push(u)
 			}
 		}
-		shots.forEach((rawShot, idx) => {
-			const stageUrl = getStageImageUrl(rawShot)
-			const thumbUrl = getThumbnailUrl(rawShot)
-			const list = srv.id === selectedId.value || idx === 0 ? priorityUrls : secondaryUrls
-			for (const u of [stageUrl, thumbUrl]) {
-				if (u && !preloadedImageUrls.has(u)) {
-					preloadedImageUrls.add(u)
-					list.push(u)
+		if (srv.id === selectedId.value) {
+			const shots = getServerPreviewImages(srv)
+			if (shots.length > 0) {
+				const stageUrl = getStageImageUrl(shots[0])
+				const thumbUrl = getThumbnailUrl(shots[0])
+				for (const u of [stageUrl, thumbUrl]) {
+					if (u && !preloadedImageUrls.has(u)) {
+						preloadedImageUrls.add(u)
+						priorityUrls.push(u)
+					}
 				}
 			}
-		})
+		}
 	}
 
-	// Preload priority assets (logos + selected server screenshots) first, then background assets gently
 	priorityUrls.forEach((url, idx) => {
 		setTimeout(() => {
 			const img = new Image()
 			img.decoding = 'async'
 			img.src = url
-		}, idx * 35)
-	})
-	secondaryUrls.forEach((url, idx) => {
-		setTimeout(() => {
-			const img = new Image()
-			img.decoding = 'async'
-			img.src = url
-		}, 600 + idx * 120)
+		}, idx * 45)
 	})
 }
 

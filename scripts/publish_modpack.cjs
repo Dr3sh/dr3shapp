@@ -560,7 +560,7 @@ function writeZipDeterministic(entries, outputZipPath) {
 				continue
 			}
 
-			const deflated = zlib.deflateRawSync(rawData, { level: 6 })
+			const deflated = zlib.deflateRawSync(rawData, { level: 1 })
 			const useDeflate = deflated.length < uncompressedSize
 			writer.writeEntry({
 				path: item.path,

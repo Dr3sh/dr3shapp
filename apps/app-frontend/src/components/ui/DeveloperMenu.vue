@@ -1504,7 +1504,7 @@ async function publishCatalogToGithub(triggerGlobalRefresh = false) {
 			owner,
 			repo,
 			path,
-			message: 'Update versions.json from Dr3sh Launcher Studio (v2.1.0 Octokit)',
+			message: 'Update versions.json from Dr3sh Launcher Studio (v2.2.0 Octokit)',
 			content: contentBase64,
 			sha,
 		})

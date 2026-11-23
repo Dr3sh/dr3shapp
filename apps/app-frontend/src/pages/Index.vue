@@ -246,9 +246,22 @@ async function handleOpenLogsFolder() {
 const activeScreenshotIndex = ref(0)
 const isHoveringGallery = ref(false)
 const zoomedScreenshot = ref<string | null>(null)
+const isDocumentHidden = ref(typeof document !== 'undefined' ? document.hidden : false)
+const zoomScale = ref(1)
+const zoomPanX = ref(0)
+const zoomPanY = ref(0)
+const isDraggingZoom = ref(false)
+let zoomDragStartX = 0
+let zoomDragStartY = 0
+let zoomOriginPanX = 0
+let zoomOriginPanY = 0
+const SCREENSHOT_COOLDOWN_MS = 450
+let lastSlideSwitchAt = 0
 let galleryAutoTimer: ReturnType<typeof setInterval> | null = null
 let catalogAutoRefreshTimer: ReturnType<typeof setInterval> | null = null
 let runningPollTimer: ReturnType<typeof setInterval> | null = null
+
+const isPowerSaving = computed(() => isDocumentHidden.value || isSelectedRunning.value)
 
 const slideBatchStart = computed(() => {
 	const total = previewImages.value.length
@@ -256,10 +269,81 @@ const slideBatchStart = computed(() => {
 	return Math.max(0, Math.min(total - 3, activeScreenshotIndex.value - 1))
 })
 
+function resetZoomView() {
+	zoomScale.value = 1
+	zoomPanX.value = 0
+	zoomPanY.value = 0
+	isDraggingZoom.value = false
+}
+
+function openZoomedScreenshot(idx?: number) {
+	const imgs = previewImages.value
+	if (!imgs.length) return
+	if (typeof idx === 'number' && idx >= 0 && idx < imgs.length) {
+		activeScreenshotIndex.value = idx
+	}
+	const safeIdx = Math.min(activeScreenshotIndex.value, imgs.length - 1)
+	resetZoomView()
+	zoomedScreenshot.value = getStageImageUrl(imgs[safeIdx])
+}
+
+function closeZoomedScreenshot() {
+	zoomedScreenshot.value = null
+	resetZoomView()
+}
+
+function adjustZoom(delta: number) {
+	const next = Math.min(4, Math.max(1, Math.round((zoomScale.value + delta) * 100) / 100))
+	zoomScale.value = next
+	if (next <= 1) {
+		zoomPanX.value = 0
+		zoomPanY.value = 0
+	}
+}
+
+function handleZoomWheel(e: WheelEvent) {
+	adjustZoom(e.deltaY < 0 ? 0.25 : -0.25)
+}
+
+function handleZoomMouseDown(e: MouseEvent) {
+	if (zoomScale.value <= 1 || e.button !== 0) return
+	isDraggingZoom.value = true
+	zoomDragStartX = e.clientX
+	zoomDragStartY = e.clientY
+	zoomOriginPanX = zoomPanX.value
+	zoomOriginPanY = zoomPanY.value
+}
+
+function handleZoomMouseMove(e: MouseEvent) {
+	if (!isDraggingZoom.value) return
+	zoomPanX.value = zoomOriginPanX + (e.clientX - zoomDragStartX)
+	zoomPanY.value = zoomOriginPanY + (e.clientY - zoomDragStartY)
+}
+
+function handleZoomMouseUp() {
+	isDraggingZoom.value = false
+}
+
+function navigateZoomedScreenshot(step: number) {
+	const imgs = previewImages.value
+	if (imgs.length <= 1) return
+	const now = Date.now()
+	if (now - lastSlideSwitchAt < SCREENSHOT_COOLDOWN_MS) return
+	lastSlideSwitchAt = now
+	activeScreenshotIndex.value = (activeScreenshotIndex.value + step + imgs.length) % imgs.length
+	resetZoomView()
+	zoomedScreenshot.value = getStageImageUrl(imgs[activeScreenshotIndex.value])
+}
+
 function restartGalleryTimer() {
 	if (galleryAutoTimer) clearInterval(galleryAutoTimer)
 	galleryAutoTimer = setInterval(() => {
-		if (currentView.value === 'home' && !isHoveringGallery.value && !zoomedScreenshot.value) {
+		if (
+			currentView.value === 'home' &&
+			!isHoveringGallery.value &&
+			!zoomedScreenshot.value &&
+			!isPowerSaving.value
+		) {
 			const total = previewImages.value.length
 			if (total > 1) {
 				activeScreenshotIndex.value = (activeScreenshotIndex.value + 1) % total
@@ -269,6 +353,13 @@ function restartGalleryTimer() {
 }
 
 function selectScreenshot(idx: number) {
+	if (idx === activeScreenshotIndex.value) {
+		openZoomedScreenshot(idx)
+		return
+	}
+	const now = Date.now()
+	if (now - lastSlideSwitchAt < SCREENSHOT_COOLDOWN_MS) return
+	lastSlideSwitchAt = now
 	activeScreenshotIndex.value = idx
 	restartGalleryTimer()
 }
@@ -276,6 +367,9 @@ function selectScreenshot(idx: number) {
 function prevSlide() {
 	const total = previewImages.value.length
 	if (total <= 1) return
+	const now = Date.now()
+	if (now - lastSlideSwitchAt < SCREENSHOT_COOLDOWN_MS) return
+	lastSlideSwitchAt = now
 	activeScreenshotIndex.value = (activeScreenshotIndex.value - 1 + total) % total
 	restartGalleryTimer()
 }
@@ -283,6 +377,9 @@ function prevSlide() {
 function nextSlide() {
 	const total = previewImages.value.length
 	if (total <= 1) return
+	const now = Date.now()
+	if (now - lastSlideSwitchAt < SCREENSHOT_COOLDOWN_MS) return
+	lastSlideSwitchAt = now
 	activeScreenshotIndex.value = (activeScreenshotIndex.value + 1) % total
 	restartGalleryTimer()
 }
@@ -816,7 +913,9 @@ let countdownInterval: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
 	countdownInterval = setInterval(() => {
-		countdownNow.value = Date.now()
+		if (!isPowerSaving.value && selectedServer.value?.release_date) {
+			countdownNow.value = Date.now()
+		}
 	}, 1000)
 })
 
@@ -865,7 +964,7 @@ const buttonLabel = computed(() => {
 		return 'MANTENIMIENTO'
 	}
 	if (buttonAction.value === 'disabled') {
-		return 'Modpack no disponible'
+		return selectedServer.value?.disabled_message?.trim() || 'Modpack no disponible'
 	}
 	if (buttonAction.value === 'countdown') {
 		return countdownLabel.value || 'Próximamente'
@@ -1323,10 +1422,32 @@ function handleBeforeUnload() {
 	}
 }
 
+let lastFocusCatalogRefreshAt = 0
+let lastAutoCatalogRefreshAt = 0
+
+function handleVisibilityChange() {
+	isDocumentHidden.value = typeof document !== 'undefined' ? document.hidden : false
+	if (!isDocumentHidden.value && !isDownloading.value) {
+		void checkSelectedInstanceHealth()
+		void checkRunningState()
+		const now = Date.now()
+		if (launcherRefreshMode.value === 'automatic' && now - lastFocusCatalogRefreshAt >= 3000) {
+			lastFocusCatalogRefreshAt = now
+			void fetchVersionsData(true)
+		}
+	}
+}
+
 function handleWindowFocus() {
+	isDocumentHidden.value = typeof document !== 'undefined' ? document.hidden : false
 	if (!isDownloading.value) {
 		void checkSelectedInstanceHealth()
 		void checkRunningState()
+		const now = Date.now()
+		if (launcherRefreshMode.value === 'automatic' && now - lastFocusCatalogRefreshAt >= 3000) {
+			lastFocusCatalogRefreshAt = now
+			void fetchVersionsData(true)
+		}
 	}
 }
 
@@ -1349,12 +1470,16 @@ onMounted(async () => {
 	// Gallery auto-advance every 3.8s unless hovered or zoomed (resettable on manual interaction)
 	restartGalleryTimer()
 
-	// Poll catalog every 15s when automatic refresh mode is enabled
+	// Poll catalog every 5s during maintenance (so unlock applies fast), or 15s normally
 	catalogAutoRefreshTimer = setInterval(() => {
-		if (launcherRefreshMode.value === 'automatic' && !isDownloading.value) {
-			void fetchVersionsData()
-		}
-	}, 15000)
+		if (launcherRefreshMode.value !== 'automatic' || isDownloading.value) return
+		const now = Date.now()
+		const minInterval = maintenanceMode.value ? 5000 : 15000
+		if (isDocumentHidden.value && !maintenanceMode.value) return
+		if (now - lastAutoCatalogRefreshAt < minInterval) return
+		lastAutoCatalogRefreshAt = now
+		void fetchVersionsData(maintenanceMode.value)
+	}, 5000)
 
 	// Poll running process state every 3s
 	runningPollTimer = setInterval(() => {
@@ -1438,6 +1563,8 @@ onMounted(async () => {
 
 	window.addEventListener('beforeunload', handleBeforeUnload)
 	window.addEventListener('focus', handleWindowFocus)
+	window.addEventListener('mouseup', handleZoomMouseUp)
+	document.addEventListener('visibilitychange', handleVisibilityChange)
 	void checkRunningState()
 	void checkSelectedInstanceHealth()
 })
@@ -1446,6 +1573,8 @@ onUnmounted(() => {
 	window.removeEventListener('click', closeInstanceMenu)
 	window.removeEventListener('beforeunload', handleBeforeUnload)
 	window.removeEventListener('focus', handleWindowFocus)
+	window.removeEventListener('mouseup', handleZoomMouseUp)
+	document.removeEventListener('visibilitychange', handleVisibilityChange)
 	if (toastTimer) {
 		clearTimeout(toastTimer)
 		toastTimer = null
@@ -1863,7 +1992,11 @@ const filteredMarketServers = computed(() => {
 	<!-- =========================================================
 	     VIEW 1: HOME (BIBLIOTECA DE INSTANCIAS)
 	     ========================================================= -->
-	<div v-if="currentView === 'home' && selectedServer" class="home-layout obsidian-home">
+	<div
+		v-if="currentView === 'home' && selectedServer"
+		class="home-layout obsidian-home"
+		:class="{ 'is-power-saving': isPowerSaving }"
+	>
 		<!-- 1. CAPTURA PANORÁMICA DE FONDO CON FADE -->
 		<div
 			class="hero-slideshow-stack"
@@ -2069,6 +2202,17 @@ const filteredMarketServers = computed(() => {
 				>
 					<svg viewBox="0 0 20 20" aria-hidden="true" class="w-4 h-4 fill-none stroke-current" stroke-width="2">
 						<path d="M7.5 5l5 5-5 5" stroke-linecap="round" stroke-linejoin="round" />
+					</svg>
+				</button>
+
+				<button
+					type="button"
+					class="batch-zoom-btn"
+					title="Ver captura en grande (con zoom)"
+					@click="openZoomedScreenshot()"
+				>
+					<svg viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5 fill-none stroke-current" stroke-width="1.8">
+						<path d="M12.5 3.5h4v4M7.5 16.5h-4v-4M16.5 3.5l-4.8 4.8M3.5 16.5l4.8-4.8" stroke-linecap="round" stroke-linejoin="round" />
 					</svg>
 				</button>
 			</div>
@@ -3437,42 +3581,82 @@ const filteredMarketServers = computed(() => {
 		</div>
 	</div>
 
-	<!-- 3. Zoomed Screenshot Modal with Prev/Next Navigation -->
+	<!-- 3. Zoomed Screenshot Modal with Prev/Next Navigation, Wheel Zoom & Drag Pan -->
 	<div
 		v-if="zoomedScreenshot"
 		class="image-zoom-modal-backdrop"
 		role="dialog"
 		aria-modal="true"
 		aria-label="Captura ampliada"
-		@click="zoomedScreenshot = null"
+		@click="closeZoomedScreenshot"
 	>
 		<div class="image-zoom-modal-container" @click.stop>
 			<div class="image-zoom-toolbar">
 				<span class="image-zoom-title">
 					{{ selectedServer?.title }} - {{ activeScreenshotIndex + 1 }} / {{ previewImages.length }}
 				</span>
-				<button
-					type="button"
-					class="image-zoom-close-btn"
-					aria-label="Cerrar vista ampliada"
-					@click="zoomedScreenshot = null"
-				>
-					<svg viewBox="0 0 20 20" aria-hidden="true">
-						<path d="M5 5l10 10M15 5 5 15" />
-					</svg>
-				</button>
+
+				<div class="image-zoom-toolbar-actions">
+					<button
+						type="button"
+						class="image-zoom-tool-btn"
+						title="Alejar"
+						:disabled="zoomScale <= 1"
+						@click="adjustZoom(-0.25)"
+					>
+						-
+					</button>
+					<span class="image-zoom-scale-pill">{{ Math.round(zoomScale * 100) }}%</span>
+					<button
+						type="button"
+						class="image-zoom-tool-btn"
+						title="Acercar"
+						:disabled="zoomScale >= 4"
+						@click="adjustZoom(0.25)"
+					>
+						+
+					</button>
+					<button
+						type="button"
+						class="image-zoom-tool-btn"
+						title="Restablecer vista"
+						:disabled="zoomScale === 1 && zoomPanX === 0 && zoomPanY === 0"
+						@click="resetZoomView"
+					>
+						Restablecer
+					</button>
+					<button
+						type="button"
+						class="image-zoom-close-btn"
+						aria-label="Cerrar vista ampliada"
+						@click="closeZoomedScreenshot"
+					>
+						<svg viewBox="0 0 20 20" aria-hidden="true">
+							<path d="M5 5l10 10M15 5 5 15" />
+						</svg>
+					</button>
+				</div>
 			</div>
 
-			<div class="image-zoom-content">
+			<div
+				class="image-zoom-content"
+				:style="{
+					cursor: zoomScale > 1 ? (isDraggingZoom ? 'grabbing' : 'grab') : 'zoom-in',
+				}"
+				@wheel.prevent="handleZoomWheel"
+				@mousedown.prevent="handleZoomMouseDown"
+				@mousemove="handleZoomMouseMove"
+				@mouseup="handleZoomMouseUp"
+				@mouseleave="handleZoomMouseUp"
+				@dblclick="zoomScale > 1 ? resetZoomView() : adjustZoom(1)"
+			>
 				<button
 					v-if="previewImages.length > 1"
 					type="button"
 					class="image-zoom-nav-btn prev"
 					aria-label="Captura anterior"
-					@click.stop="
-						activeScreenshotIndex = (activeScreenshotIndex - 1 + previewImages.length) % previewImages.length;
-						zoomedScreenshot = previewImages[activeScreenshotIndex]
-					"
+					@click.stop="navigateZoomedScreenshot(-1)"
+					@mousedown.stop
 				>
 					<svg viewBox="0 0 20 20" aria-hidden="true">
 						<path d="M12.5 15l-5-5 5-5" />
@@ -3483,6 +3667,11 @@ const filteredMarketServers = computed(() => {
 					:src="zoomedScreenshot"
 					:alt="selectedServer?.title || 'Captura ampliada'"
 					class="image-zoom-full"
+					draggable="false"
+					:style="{
+						transform: `translate(${zoomPanX}px, ${zoomPanY}px) scale(${zoomScale})`,
+						transition: isDraggingZoom ? 'none' : 'transform 120ms ease-out',
+					}"
 				/>
 
 				<button
@@ -3490,10 +3679,8 @@ const filteredMarketServers = computed(() => {
 					type="button"
 					class="image-zoom-nav-btn next"
 					aria-label="Siguiente captura"
-					@click.stop="
-						activeScreenshotIndex = (activeScreenshotIndex + 1) % previewImages.length;
-						zoomedScreenshot = previewImages[activeScreenshotIndex]
-					"
+					@click.stop="navigateZoomedScreenshot(1)"
+					@mousedown.stop
 				>
 					<svg viewBox="0 0 20 20" aria-hidden="true">
 						<path d="M7.5 5l5 5-5 5" />

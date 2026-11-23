@@ -2,8 +2,6 @@ use crate::ErrorKind;
 use crate::State;
 use crate::event::emit::{emit_instance, emit_process};
 use crate::event::{InstancePayloadType, ProcessPayloadType};
-#[cfg(feature = "tauri")]
-use crate::event::{LogEvent, LogPayload};
 use crate::util::io::IOError;
 use crate::util::rpc::RpcServer;
 use chrono::{DateTime, TimeZone, Utc};
@@ -648,28 +646,13 @@ impl Process {
                     break;
                 }
             } else if !read_any {
-                tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
             }
         }
     }
 
     fn emit_legacy_log(instance_id: &str, message: &str) {
         push_log_line(instance_id, message.to_string());
-
-        #[cfg(feature = "tauri")]
-        {
-            let event_state = crate::EventState::get();
-            let _ = event_state.send(crate::event::AppEvent::Log(LogPayload {
-                instance_id: instance_id.to_string(),
-                event: LogEvent::Legacy {
-                    message: message.to_string(),
-                },
-            }));
-        }
-        #[cfg(not(feature = "tauri"))]
-        {
-            let _ = (instance_id, message);
-        }
     }
 
     fn append_to_log_file(

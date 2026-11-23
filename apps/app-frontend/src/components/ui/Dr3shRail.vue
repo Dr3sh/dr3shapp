@@ -15,13 +15,14 @@ import {
 	requestDeleteConfirm,
 } from '@/composables/use-dr3sh-launcher'
 import {
+	useDr3shDownloader,
 	installedVersionsMap,
 	getInstalledVersion,
+	getInstalledFolder,
 	hasServerOrRuntimeUpdate,
 	findMatchingInstance as findMatchingInstanceHelper,
 } from '@/composables/use-dr3sh-downloader'
-import { run } from '@/helpers/instance'
-import { install_existing_instance } from '@/helpers/install'
+import { run, get_full_path } from '@/helpers/instance'
 import { showInstanceInFolder } from '@/helpers/utils.js'
 
 const DR3SH_LOGO_DATA_URI = '/logo.png'
@@ -139,21 +140,60 @@ const userAvatarUrl = computed(() => {
 	return 'https://mc-heads.net/avatar/Player/64'
 })
 
+const { isDownloading, downloadAndInstallModpack, repairModpack } = useDr3shDownloader()
+
 // Right-click context menu
 const contextMenu = ref<{ server: Dr3shServer; x: number; y: number } | null>(null)
-function openSidebarContextMenu(event: MouseEvent, server: Dr3shServer) {
+const contextMenuNeedsRepair = ref(false)
+
+function getLatestVersionForServer(server: Dr3shServer) {
+	return Array.isArray(server.versions) && server.versions.length > 0
+		? server.versions[0]
+		: versions.value.find((v) => v.server === server.id) || null
+}
+
+const contextPrimaryAction = computed<'repair' | 'update' | 'open'>(() => {
+	if (!contextMenu.value) return 'open'
+	if (contextMenuNeedsRepair.value) return 'repair'
+	if (hasServerUpdate(contextMenu.value.server)) return 'update'
+	return 'open'
+})
+
+async function openSidebarContextMenu(event: MouseEvent, server: Dr3shServer) {
 	event.preventDefault()
 	event.stopPropagation()
 	selectedId.value = server.id
+	contextMenuNeedsRepair.value = false
 	contextMenu.value = {
 		server,
 		x: Math.min(event.clientX, window.innerWidth - 264),
 		y: Math.min(event.clientY, window.innerHeight - 230),
 	}
+
+	const inst = findMatchingInstance(server)
+	const expectsInstalled = Boolean(getInstalledVersion(server.id) || inst)
+	if (!expectsInstalled || isDownloading.value) return
+
+	try {
+		let fallbackPath = getInstalledFolder(server.id)
+		if (!fallbackPath && inst?.id) {
+			fallbackPath = await get_full_path(inst.id).catch(() => null)
+		}
+		const health = await invoke<{ needs_repair?: boolean }>('dr3sh_check_instance_health', {
+			serverId: server.id,
+			fallbackInstancePath: fallbackPath || null,
+		})
+		if (contextMenu.value?.server.id === server.id) {
+			contextMenuNeedsRepair.value = Boolean(health?.needs_repair)
+		}
+	} catch {}
 }
+
 function closeContextMenu() {
 	contextMenu.value = null
+	contextMenuNeedsRepair.value = false
 }
+
 async function handleContextOpenFolder(server: Dr3shServer) {
 	closeContextMenu()
 	const inst = findMatchingInstance(server)
@@ -165,16 +205,40 @@ async function handleContextOpenFolder(server: Dr3shServer) {
 		}
 	}
 }
-async function handleContextRepair(server: Dr3shServer) {
+
+async function handleContextPrimaryAction(server: Dr3shServer) {
+	const action = contextPrimaryAction.value
 	closeContextMenu()
-	const inst = findMatchingInstance(server)
-	if (inst) {
-		try {
-			await install_existing_instance(inst.id, true)
-			await instancesQuery.refetch()
-		} catch (e) {
-			console.warn('Error repairing instance:', e)
+	selectServer(server.id)
+	if (action === 'open' || isDownloading.value) return
+
+	const ver = getLatestVersionForServer(server)
+	if (!ver) return
+
+	try {
+		if (action === 'repair') {
+			await repairModpack({
+				server,
+				version: ver,
+				onSuccess: async () => {
+					await instancesQuery.refetch()
+				},
+			})
+		} else if (action === 'update') {
+			const inst = findMatchingInstance(server)
+			await downloadAndInstallModpack({
+				server,
+				version: ver,
+				matchingInstanceId: inst?.id,
+				customFolder: getInstalledFolder(server.id),
+				bypassGate: Boolean(isDeveloper.value),
+				onSuccess: async () => {
+					await instancesQuery.refetch()
+				},
+			})
 		}
+	} catch (e) {
+		console.warn('Error executing sidebar primary action:', e)
 	}
 }
 function handleContextDeleteLocal(server: Dr3shServer) {
@@ -494,26 +558,38 @@ onUnmounted(() => {
 				<button
 					type="button"
 					class="instance-menu-item primary-item"
-					@click="selectServer(contextMenu.server.id); closeContextMenu()"
+					:disabled="contextPrimaryAction !== 'open' && isDownloading"
+					@click="handleContextPrimaryAction(contextMenu.server)"
 				>
-					<svg viewBox="0 0 20 20" aria-hidden="true">
-						<path d="M6.5 4.5v11l9-5.5-9-5.5Z" fill="currentColor" stroke="none" />
-					</svg>
-					<span>Abrir instancia</span>
-				</button>
-				<div class="instance-menu-divider" />
-				<button
-					type="button"
-					class="instance-menu-item"
-					@click="handleContextRepair(contextMenu.server)"
-				>
-					<svg viewBox="0 0 20 20" aria-hidden="true">
+					<svg v-if="contextPrimaryAction === 'repair'" viewBox="0 0 20 20" aria-hidden="true">
 						<path
 							d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2-2a5.5 5.5 0 0 1-7.4 7.4l-6.2 6.2a1.8 1.8 0 0 1-2.6-2.6l6.2-6.2a5.5 5.5 0 0 1 7.4-7.4l-2.4 1.6Z"
 						/>
 					</svg>
-					<span>Verificar y reparar instalación</span>
+					<svg v-else-if="contextPrimaryAction === 'update'" viewBox="0 0 20 20" aria-hidden="true">
+						<path
+							d="M10 15V5m0 0-4 4m4-4 4 4"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						/>
+					</svg>
+					<svg v-else viewBox="0 0 20 20" aria-hidden="true">
+						<path d="M6.5 4.5v11l9-5.5-9-5.5Z" fill="currentColor" stroke="none" />
+					</svg>
+					<span>
+						{{
+							contextPrimaryAction === 'repair'
+								? 'Reparar instancia'
+								: contextPrimaryAction === 'update'
+									? 'Actualizar modpack'
+									: 'Abrir instancia'
+						}}
+					</span>
 				</button>
+				<div class="instance-menu-divider" />
 				<button
 					type="button"
 					class="instance-menu-item"
