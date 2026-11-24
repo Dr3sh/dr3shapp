@@ -5,6 +5,7 @@ const os = require('os')
 const crypto = require('crypto')
 const zlib = require('zlib')
 const https = require('https')
+const http = require('http')
 
 const DEFAULT_RULES = [
 	{ pattern: 'mods/**', policy: 'managed' },
@@ -1074,8 +1075,8 @@ function resolveGithubToken(explicitToken) {
 	return ''
 }
 
-const UPLOAD_HIGH_WATER_MARK = 4 * 1024 * 1024
-const FILE_READ_CHUNK_SIZE = 256 * 1024
+const UPLOAD_HIGH_WATER_MARK = 8 * 1024 * 1024
+const FILE_READ_CHUNK_SIZE = 512 * 1024
 const UPLOAD_TIMEOUT_MS = 300000
 const UPLOAD_HTTPS_AGENT = new https.Agent({ keepAlive: true, maxSockets: 4 })
 
@@ -1211,8 +1212,8 @@ function githubApiRequest(endpoint, token, options = {}) {
 		})
 		if (options.body) {
 			if (typeof options.body.pipe === 'function') {
-				const pauseThreshold = 2 * 1024 * 1024
-				const resumeThreshold = 1024 * 1024
+				const pauseThreshold = 8 * 1024 * 1024
+				const resumeThreshold = 4 * 1024 * 1024
 				let bodyPaused = false
 
 				const getQueuedBytes = () =>
@@ -1389,12 +1390,395 @@ async function uploadReleaseAsset(uploadUrlTemplate, token, filePath, fileName, 
 	})
 }
 
+async function downloadJsonWithRedirects(url, maxRedirects = 5) {
+	return new Promise((resolve, reject) => {
+		const visit = (currentUrl, remaining) => {
+			let parsed
+			try {
+				parsed = new URL(currentUrl)
+			} catch (err) {
+				reject(new Error(`URL inválida para descargar JSON: ${currentUrl}`))
+				return
+			}
+			const client = parsed.protocol === 'http:' ? http : https
+			const req = client.get(
+				{
+					hostname: parsed.hostname,
+					port: parsed.port || undefined,
+					path: parsed.pathname + parsed.search,
+					headers: {
+						'User-Agent': 'Dr3sh-Launcher-Publisher/1.0',
+						Accept: 'application/json, text/plain, */*',
+					},
+				},
+				(res) => {
+					const status = res.statusCode || 0
+					if ([301, 302, 303, 307, 308].includes(status) && res.headers.location) {
+						res.resume()
+						if (remaining <= 0) {
+							reject(new Error(`Demasiadas redirecciones al descargar ${url}`))
+							return
+						}
+						const nextUrl = new URL(res.headers.location, currentUrl).toString()
+						visit(nextUrl, remaining - 1)
+						return
+					}
+					const chunks = []
+					res.on('data', (chunk) => chunks.push(chunk))
+					res.on('end', () => {
+						const body = Buffer.concat(chunks).toString('utf8')
+						if (status < 200 || status >= 300) {
+							const err = new Error(`HTTP ${status} al descargar ${currentUrl}`)
+							err.statusCode = status
+							reject(err)
+							return
+						}
+						try {
+							resolve(JSON.parse(body))
+						} catch (parseErr) {
+							reject(new Error(`JSON inválido recibido desde ${currentUrl}: ${parseErr.message}`))
+						}
+					})
+				},
+			)
+			req.setTimeout(30000, () => {
+				req.destroy(new Error(`Tiempo de espera agotado descargando ${currentUrl}`))
+			})
+			req.on('error', reject)
+		}
+		visit(url, maxRedirects)
+	})
+}
+
+async function publishModpackViaPatchAction({
+	cleanPackId,
+	cleanVersion,
+	tagName,
+	zipFileName,
+	zipDownloadUrl,
+	manifestDownloadUrl,
+	repo,
+	minecraftVersion,
+	loader,
+	loaderVersion,
+	title,
+	description,
+	versionsFile,
+	explicitToken,
+	workDir,
+	collectedFiles,
+	baseManifestUrl,
+	baseTag,
+	emitProgress,
+}) {
+	emitProgress('pack', 10, 'Descargando manifest.json de la versión anterior...')
+	let baseManifest
+	try {
+		baseManifest = await downloadJsonWithRedirects(baseManifestUrl)
+	} catch (err) {
+		console.warn(`[fast-patch] No se pudo descargar manifest base (${baseManifestUrl}): ${err.message}`)
+		return null
+	}
+	if (!baseManifest || !Array.isArray(baseManifest.files)) {
+		console.warn('[fast-patch] El manifest base no tiene lista de archivos válida; usando subida completa.')
+		return null
+	}
+
+	const baseMap = new Map()
+	for (const entry of baseManifest.files) {
+		if (entry && entry.path) {
+			baseMap.set(String(entry.path), {
+				sha256: String(entry.sha256 || '').toLowerCase(),
+				size: Number(entry.size || 0),
+			})
+		}
+	}
+
+	const currentMap = new Map()
+	const changedOrAdded = []
+	for (const file of collectedFiles) {
+		currentMap.set(file.path, file)
+		const prev = baseMap.get(file.path)
+		if (
+			!prev ||
+			prev.sha256 !== String(file.sha256 || '').toLowerCase() ||
+			prev.size !== Number(file.size || 0)
+		) {
+			changedOrAdded.push(file)
+		}
+	}
+
+	const removedPaths = []
+	for (const prevPath of baseMap.keys()) {
+		if (!currentMap.has(prevPath)) {
+			removedPaths.push(prevPath)
+		}
+	}
+
+	const changedBytes = changedOrAdded.reduce((sum, f) => sum + (Number(f.size) || 0), 0)
+	const baseZipSize =
+		Number(baseManifest?.zip?.size) ||
+		baseManifest.files.reduce((sum, f) => sum + (Number(f.size) || 0), 0)
+
+	if (baseZipSize > 0 && changedBytes >= baseZipSize * 0.75) {
+		emitProgress(
+			'pack',
+			12,
+			'Más del 75% del modpack cambió respecto a la versión anterior; usando subida completa...',
+		)
+		return null
+	}
+
+	const token = resolveGithubToken(explicitToken)
+	if (!token) {
+		throw new Error(
+			'GitHub token not found. Set GITHUB_TOKEN env var or place token in active_token.txt.',
+		)
+	}
+
+	const changedMb = (changedBytes / (1024 * 1024)).toFixed(1)
+	emitProgress(
+		'pack',
+		14,
+		`Parche detectado: ${changedOrAdded.length} archivo(s) (${changedMb} MB) y ${removedPaths.length} eliminado(s). Empaquetando parche...`,
+	)
+
+	const patchZipPath = path.join(workDir, 'patch.zip')
+	const removedJsonPath = path.join(workDir, 'removed.json')
+	writeZipDeterministic(changedOrAdded, patchZipPath)
+	fs.writeFileSync(removedJsonPath, `${JSON.stringify(removedPaths, null, 2)}\n`, 'utf8')
+
+	const stagingTag = `patch-staging-${tagName}-${Date.now()}`
+	let stagingRelease = null
+	let dispatchedToActions = false
+
+	const cleanupStaging = async () => {
+		if (!stagingRelease) return
+		try {
+			await githubApiRequest(`/repos/${repo}/releases/${stagingRelease.id}`, token, {
+				method: 'DELETE',
+			})
+		} catch {}
+		try {
+			await githubApiRequest(
+				`/repos/${repo}/git/refs/tags/${encodeURIComponent(stagingTag)}`,
+				token,
+				{ method: 'DELETE' },
+			)
+		} catch {}
+	}
+
+	try {
+		emitProgress('release', 18, `Creando release temporal de parche (${stagingTag})...`)
+		stagingRelease = await githubApiRequest(`/repos/${repo}/releases`, token, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				tag_name: stagingTag,
+				name: `Staging ${tagName}`,
+				body: 'Temporary patch staging release (auto-deleted by GitHub Actions)',
+				draft: false,
+				prerelease: true,
+			}),
+		})
+
+		await uploadReleaseAsset(stagingRelease.upload_url, token, patchZipPath, 'patch.zip', (progress) => {
+			const { uploadedBytes, totalBytes, speedBps, etaSeconds, waitingAck } = progress
+			const ratio = totalBytes > 0 ? uploadedBytes / totalBytes : 0
+			const percent = waitingAck ? 62 : Math.min(61, 20 + Math.round(ratio * 41))
+			const msg = waitingAck
+				? 'Subiendo patch.zip (esperando confirmación de GitHub...)'
+				: `Subiendo parche ligero (${changedOrAdded.length} archivos)...`
+			emitProgress('upload_zip', percent, msg, {
+				uploadedBytes,
+				totalBytes,
+				speedBps,
+				etaSeconds,
+			})
+		})
+
+		emitProgress('upload_zip', 64, 'Subiendo lista de archivos eliminados (removed.json)...')
+		await uploadReleaseAsset(stagingRelease.upload_url, token, removedJsonPath, 'removed.json')
+
+		const jobId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+		emitProgress('release', 66, 'Iniciando ensamblado rápido en GitHub Actions...')
+
+		const baseRepoMatch = String(baseManifestUrl).match(
+			/github\.com\/([^/]+\/[^/]+)\/releases\/download\//i,
+		)
+		const baseRepo = baseRepoMatch ? baseRepoMatch[1] : repo
+
+		try {
+			await githubApiRequest(
+				`/repos/${repo}/actions/workflows/build-patch-release.yml/dispatches`,
+				token,
+				{
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						ref: 'main',
+						inputs: {
+							pack_id: cleanPackId,
+							version: cleanVersion,
+							title: title || `${cleanPackId} v${cleanVersion}`,
+							description: description || '',
+							minecraft_version: minecraftVersion || '1.21.1',
+							loader: loader || 'fabric',
+							loader_version: loaderVersion || '',
+							base_repo: baseRepo,
+							base_tag: baseTag,
+							patch_tag: stagingTag,
+							job_id: jobId,
+						},
+					}),
+				},
+			)
+			dispatchedToActions = true
+		} catch (dispatchErr) {
+			if (dispatchErr && dispatchErr.statusCode === 404) {
+				await cleanupStaging()
+				emitProgress(
+					'pack',
+					12,
+					'Workflow build-patch-release.yml no encontrado en el repo; usando subida completa...',
+				)
+				return null
+			}
+			throw dispatchErr
+		}
+
+		const startedAt = Date.now()
+		const maxWaitMs = 20 * 60 * 1000
+		let matchedRun = null
+		let pollCount = 0
+
+		while (Date.now() - startedAt < maxWaitMs) {
+			await new Promise((r) => setTimeout(r, 3000))
+			pollCount++
+
+			const runsData = await githubApiRequest(
+				`/repos/${repo}/actions/runs?event=workflow_dispatch&per_page=15`,
+				token,
+			)
+			const runs = Array.isArray(runsData?.workflow_runs) ? runsData.workflow_runs : []
+			matchedRun = runs.find(
+				(r) =>
+					r &&
+					((typeof r.name === 'string' && r.name.includes(`[${jobId}]`)) ||
+						(typeof r.display_title === 'string' && r.display_title.includes(`[${jobId}]`))),
+			)
+
+			if (!matchedRun) {
+				emitProgress('release', 68, 'Esperando a que GitHub Actions inicie el ensamblado...')
+				continue
+			}
+
+			if (matchedRun.status !== 'completed') {
+				const simulatedPercent = Math.min(91, 70 + Math.floor(pollCount * 1.2))
+				const phaseMsg =
+					matchedRun.status === 'queued'
+						? 'En cola de GitHub Actions esperando runner...'
+						: 'GitHub Actions está aplicando el parche y generando el ZIP completo...'
+				emitProgress('release', simulatedPercent, phaseMsg)
+				continue
+			}
+
+			if (matchedRun.conclusion !== 'success') {
+				await cleanupStaging()
+				throw new Error(
+					`GitHub Actions falló al ensamblar el parche (${matchedRun.conclusion || 'error'}). Revisa: ${matchedRun.html_url || `https://github.com/${repo}/actions`}`,
+				)
+			}
+			break
+		}
+
+		if (!matchedRun || matchedRun.status !== 'completed') {
+			throw new Error('Tiempo de espera agotado esperando a que GitHub Actions termine de ensamblar el parche.')
+		}
+
+		emitProgress('upload_manifest', 94, 'Verificando release y manifest.json generados en GitHub...')
+		const verifiedRelease = await githubApiRequest(
+			`/repos/${repo}/releases/tags/${encodeURIComponent(tagName)}`,
+			token,
+		)
+		const verifiedAssets = Array.isArray(verifiedRelease?.assets) ? verifiedRelease.assets : []
+		const zipAsset = verifiedAssets.find((a) => a && a.name === zipFileName)
+		const manifestAsset = verifiedAssets.find((a) => a && a.name === 'manifest.json')
+		if (!zipAsset || zipAsset.state !== 'uploaded') {
+			throw new Error(
+				`GitHub Actions terminó, pero no confirmó ${zipFileName} en la release ${tagName}.`,
+			)
+		}
+		if (!manifestAsset || manifestAsset.state !== 'uploaded') {
+			throw new Error(
+				`GitHub Actions terminó, pero no confirmó manifest.json en la release ${tagName}.`,
+			)
+		}
+
+		const finalManifest = await downloadJsonWithRedirects(manifestDownloadUrl)
+		const finalZipSize = Number(finalManifest?.zip?.size || zipAsset.size || 0)
+		const finalZipSha256 = String(finalManifest?.zip?.sha256 || '')
+		const finalFilesCount = Array.isArray(finalManifest?.files)
+			? finalManifest.files.length
+			: collectedFiles.length
+		const sizeMb =
+			finalZipSize > 0 ? Math.max(0.1, Math.round((finalZipSize / (1024 * 1024)) * 10) / 10) : 0
+
+		const versionFragment = {
+			id: `v${cleanVersion}`,
+			name: title || `${cleanPackId} v${cleanVersion}`,
+			game_version: minecraftVersion,
+			loader,
+			...(loaderVersion ? { loader_version: loaderVersion } : {}),
+			modpack: zipDownloadUrl,
+			manifest: manifestDownloadUrl,
+			size: finalZipSize,
+			size_mb: sizeMb,
+			sha256: finalZipSha256,
+			date: new Date().toISOString().slice(0, 10),
+		}
+
+		if (versionsFile && fs.existsSync(versionsFile)) {
+			const verDoc = JSON.parse(fs.readFileSync(versionsFile, 'utf8'))
+			if (verDoc.servers && verDoc.servers[cleanPackId]) {
+				const srv = verDoc.servers[cleanPackId]
+				srv.versions = Array.isArray(srv.versions) ? srv.versions : []
+				srv.versions = srv.versions.filter((v) => v.id !== versionFragment.id)
+				srv.versions.unshift(versionFragment)
+				fs.writeFileSync(versionsFile, `${JSON.stringify(verDoc, null, '\t')}\n`, 'utf8')
+			}
+		}
+
+		emitProgress('done', 95, 'Parche ensamblado y verificado en GitHub. Publicando versions.json...')
+
+		return {
+			tag_name: tagName,
+			archive_name: zipFileName,
+			release_url: verifiedRelease.html_url || `https://github.com/${repo}/releases/tag/${tagName}`,
+			archive_url: zipDownloadUrl,
+			manifest_url: manifestDownloadUrl,
+			size: finalZipSize,
+			size_mb: sizeMb,
+			sha256: finalZipSha256,
+			files_count: finalFilesCount,
+			output_zip_path: null,
+			output_manifest_path: null,
+			version_fragment: versionFragment,
+		}
+	} catch (err) {
+		if (!dispatchedToActions) {
+			await cleanupStaging()
+		}
+		throw err
+	}
+}
+
 async function publishModpack(options) {
 	const {
 		packId,
 		version,
 		srcPath,
-		repo = 'Dr3sh/modpack-versions',
+		repo = 'ramirezjeider28-alt/modpack-versions',
 		rulesPath = null,
 		dryRun = false,
 		minecraftVersion = '1.21.1',
@@ -1406,6 +1790,9 @@ async function publishModpack(options) {
 		token: explicitToken = null,
 		outDir = null,
 		onProgress = null,
+		baseManifestUrl = null,
+		baseTag = null,
+		fastPatch = true,
 	} = options
 
 	const emitProgress = (stage, percent, message, extra = {}) => {
@@ -1484,6 +1871,40 @@ async function publishModpack(options) {
 			if (!collectedFiles || collectedFiles.length === 0) {
 				throw new Error('No se encontraron archivos válidos para empaquetar en los orígenes seleccionados.')
 			}
+
+			if (
+				!dryRun &&
+				fastPatch !== false &&
+				baseManifestUrl &&
+				baseTag &&
+				String(baseTag).trim() !== tagName
+			) {
+				const patchResult = await publishModpackViaPatchAction({
+					cleanPackId,
+					cleanVersion,
+					tagName,
+					zipFileName,
+					zipDownloadUrl,
+					manifestDownloadUrl,
+					repo,
+					minecraftVersion,
+					loader,
+					loaderVersion,
+					title,
+					description,
+					versionsFile,
+					explicitToken,
+					workDir,
+					collectedFiles,
+					baseManifestUrl: String(baseManifestUrl).trim(),
+					baseTag: String(baseTag).trim(),
+					emitProgress,
+				})
+				if (patchResult) {
+					return patchResult
+				}
+			}
+
 			let packed = null
 			if (archiver) {
 				emitProgress('pack', 15, 'Empaquetando con archiver (streaming)...')
@@ -1748,7 +2169,7 @@ if (require.main === module) {
 	const packId = getArg('--pack') || getArg('--server')
 	const version = getArg('--version')
 	const srcPath = getArg('--src') || getArg('--source') || getArg('--zip')
-	const repo = getArg('--repo') || 'Dr3sh/modpack-versions'
+	const repo = getArg('--repo') || 'ramirezjeider28-alt/modpack-versions'
 	const rulesPath = getArg('--rules')
 	const versionsFile = getArg('--versions-file')
 	const outDir = getArg('--out-dir') || getArg('--out')
@@ -1757,6 +2178,9 @@ if (require.main === module) {
 	const loaderVersion = getArg('--loader-version')
 	const title = getArg('--title')
 	const description = getArg('--description') || ''
+	const baseManifestUrl = getArg('--base-manifest')
+	const baseTag = getArg('--base-tag')
+	const fastPatch = !hasFlag('--no-fast-patch')
 	const dryRun = hasFlag('--dry-run')
 
 	publishModpack({
@@ -1773,6 +2197,9 @@ if (require.main === module) {
 		description,
 		versionsFile,
 		outDir,
+		baseManifestUrl,
+		baseTag,
+		fastPatch,
 	})
 		.then((res) => {
 			console.log(`ZIP URL:      ${res.archive_url}`)

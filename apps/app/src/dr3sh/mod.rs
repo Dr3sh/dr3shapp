@@ -2893,6 +2893,351 @@ pub fn dr3sh_cleanup_deleted_instance(
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreloadLockManifest {
+    pub server_id: String,
+    pub version: String,
+    pub release_date: Option<String>,
+    pub original_folder_name: String,
+    pub locked_mods: HashMap<String, String>,
+    pub locked_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PreloadStatus {
+    pub preloaded: bool,
+    pub version: Option<String>,
+    pub release_date: Option<String>,
+    pub locked_mods_count: usize,
+}
+
+fn preload_root_dir() -> PathBuf {
+    let dir = launcher_data_dir().join(".dr3sh-preload");
+    if !dir.exists() {
+        let _ = fs::create_dir_all(&dir);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("attrib")
+                .arg("+h")
+                .arg(&dir)
+                .creation_flags(0x08000000)
+                .status();
+        }
+    }
+    dir
+}
+
+fn parse_release_timestamp_ms(raw: &str) -> Option<i64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(trimmed) {
+        return Some(dt.timestamp_millis());
+    }
+    let naive = chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M:%S")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M"))
+        .ok()?;
+    let ve_offset = chrono::FixedOffset::west_opt(4 * 3600)?;
+    naive
+        .and_local_timezone(ve_offset)
+        .single()
+        .map(|dt| dt.timestamp_millis())
+}
+
+#[tauri::command]
+pub async fn dr3sh_get_network_time() -> Option<i64> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .user_agent("Dr3sh-Launcher/1.0")
+        .build()
+        .ok()?;
+    for url in ["https://api.github.com", "https://github.com"] {
+        if let Ok(resp) = client.head(url).send().await {
+            if let Some(date_hdr) = resp.headers().get(reqwest::header::DATE) {
+                if let Ok(date_str) = date_hdr.to_str() {
+                    if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(date_str) {
+                        return Some(dt.timestamp_millis());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+#[tauri::command]
+pub fn dr3sh_get_preload_state(server_id: String) -> PreloadStatus {
+    let lock_path = preload_root_dir()
+        .join(&server_id)
+        .join(".dr3sh")
+        .join("preload_lock.json");
+    if let Ok(raw) = fs::read_to_string(&lock_path) {
+        if let Ok(parsed) = serde_json::from_str::<PreloadLockManifest>(&raw) {
+            return PreloadStatus {
+                preloaded: true,
+                version: Some(parsed.version),
+                release_date: parsed.release_date,
+                locked_mods_count: parsed.locked_mods.len(),
+            };
+        }
+    }
+    PreloadStatus {
+        preloaded: false,
+        version: None,
+        release_date: None,
+        locked_mods_count: 0,
+    }
+}
+
+#[tauri::command]
+pub async fn dr3sh_lock_preload(
+    app: tauri::AppHandle,
+    server_id: String,
+    instance_id: String,
+    instance_dir: String,
+    version: String,
+    release_date: Option<String>,
+) -> Result<PreloadStatus, Dr3shErrorPayload> {
+    let op_id = new_op_id();
+    let src_dir = PathBuf::from(instance_dir.trim());
+    if !src_dir.exists() {
+        return Err(
+            Dr3shError::unknown("No se encontró la carpeta descargada para bloquear la precarga.")
+                .to_payload(&op_id, "PRELOAD"),
+        );
+    }
+
+    let original_folder_name = src_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&server_id)
+        .to_string();
+
+    let _ = theseus::instance::unwatch_instance(&original_folder_name).await;
+
+    let dest_dir = preload_root_dir().join(&server_id);
+    if dest_dir.exists() {
+        let _ = fs::remove_dir_all(&dest_dir);
+    }
+
+    fs::rename(&src_dir, &dest_dir).map_err(|e| {
+        Dr3shError::unknown(format!("No se pudo mover la precarga a la zona protegida: {e}"))
+            .to_payload(&op_id, "PRELOAD")
+    })?;
+
+    let _ = theseus::instance::remove(&instance_id).await;
+
+    let mods_dir = dest_dir.join("mods");
+    let mut locked_mods: HashMap<String, String> = HashMap::new();
+    if mods_dir.exists() {
+        if let Ok(entries) = fs::read_dir(&mods_dir) {
+            let mut idx: usize = 0;
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() {
+                    if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                        if name.to_ascii_lowercase().ends_with(".jar") {
+                            let locked_name = format!("{idx:04}.dr3shlock");
+                            let locked_path = mods_dir.join(&locked_name);
+                            if fs::rename(&p, &locked_path).is_ok() {
+                                locked_mods.insert(locked_name, name.to_string());
+                                idx += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let dr3sh_meta_dir = dest_dir.join(".dr3sh");
+    let _ = fs::create_dir_all(&dr3sh_meta_dir);
+    let manifest = PreloadLockManifest {
+        server_id: server_id.clone(),
+        version: version.clone(),
+        release_date: release_date.clone(),
+        original_folder_name,
+        locked_mods: locked_mods.clone(),
+        locked_at: Utc::now().to_rfc3339(),
+    };
+    let lock_json = serde_json::to_vec_pretty(&manifest).map_err(|e| {
+        Dr3shError::unknown(format!("Error serializando preload_lock.json: {e}"))
+            .to_payload(&op_id, "PRELOAD")
+    })?;
+    fs::write(dr3sh_meta_dir.join("preload_lock.json"), lock_json).map_err(|e| {
+        Dr3shError::unknown(format!("No se pudo escribir preload_lock.json: {e}"))
+            .to_payload(&op_id, "PRELOAD")
+    })?;
+
+    update_server_state(Some(&app), &server_id, |st| {
+        st.state = ServerInstallState::NotInstalled;
+        st.installed_version = None;
+        st.instance_id = None;
+        st.instance_path = None;
+        st.marker_written = false;
+        st.last_error = None;
+    });
+
+    Ok(PreloadStatus {
+        preloaded: true,
+        version: Some(version),
+        release_date,
+        locked_mods_count: locked_mods.len(),
+    })
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let p = entry.path();
+        let target = dst.join(entry.file_name());
+        if p.is_dir() {
+            copy_dir_recursive(&p, &target)?;
+        } else {
+            fs::copy(&p, &target)?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn dr3sh_activate_preload(
+    app: tauri::AppHandle,
+    server_id: String,
+    version_ref: serde_json::Value,
+    expected_release_date: Option<String>,
+    bypass_gate: Option<bool>,
+) -> Result<DoneEventPayload, Dr3shErrorPayload> {
+    let op_id = new_op_id();
+    if !bypass_gate.unwrap_or(false) {
+        if let Some(ref rd) = expected_release_date {
+            if let Some(release_ms) = parse_release_timestamp_ms(rd) {
+                let net_now = dr3sh_get_network_time().await.ok_or_else(|| {
+                    Dr3shError::unknown(
+                        "Se requiere conexión a internet para verificar la hora oficial de estreno.",
+                    )
+                    .to_payload(&op_id, "PRELOAD")
+                })?;
+                if net_now < release_ms {
+                    return Err(Dr3shError::unknown(
+                        "Aún no es la hora oficial de estreno (verificado por red).",
+                    )
+                    .to_payload(&op_id, "PRELOAD"));
+                }
+            }
+        }
+    }
+
+    let preload_dir = preload_root_dir().join(&server_id);
+    let lock_path = preload_dir.join(".dr3sh").join("preload_lock.json");
+    let raw = fs::read_to_string(&lock_path).map_err(|_| {
+        Dr3shError::unknown("No se encontró ninguna precarga activa para este modpack.")
+            .to_payload(&op_id, "PRELOAD")
+    })?;
+    let lock_manifest: PreloadLockManifest = serde_json::from_str(&raw).map_err(|e| {
+        Dr3shError::unknown(format!("Manifiesto de precarga inválido: {e}"))
+            .to_payload(&op_id, "PRELOAD")
+    })?;
+
+    let mods_dir = preload_dir.join("mods");
+    if mods_dir.exists() {
+        for (locked_name, orig_name) in &lock_manifest.locked_mods {
+            let locked_path = mods_dir.join(locked_name);
+            let orig_path = mods_dir.join(orig_name);
+            if locked_path.exists() {
+                let _ = fs::rename(&locked_path, &orig_path);
+            }
+        }
+    }
+    let _ = fs::remove_file(&lock_path);
+
+    let spec: VersionRefSpec = serde_json::from_value::<VersionRefSpec>(version_ref).map_err(|e| {
+        Dr3shError::ManifestInvalid {
+            reason: format!("Invalid version_ref payload: {e}"),
+        }
+        .to_payload(&op_id, "PRELOAD")
+    })?;
+
+    let cancel_token = Arc::new(AtomicBool::new(false));
+    let (instance_id, default_instance_dir) =
+        ensure_theseus_instance_and_base(Some(&app), &op_id, &server_id, &spec, &cancel_token)
+            .await
+            .map_err(|e| e.to_payload(&op_id, "PRELOAD"))?;
+
+    let inst_folder_name = default_instance_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    if !inst_folder_name.is_empty() {
+        let _ = theseus::instance::unwatch_instance(&inst_folder_name).await;
+    }
+
+    if let Ok(entries) = fs::read_dir(&preload_dir) {
+        for entry in entries.flatten() {
+            let src_entry = entry.path();
+            if let Some(name) = src_entry.file_name() {
+                let dst_entry = default_instance_dir.join(name);
+                if dst_entry.exists() {
+                    if dst_entry.is_dir() {
+                        let _ = fs::remove_dir_all(&dst_entry);
+                    } else {
+                        let _ = fs::remove_file(&dst_entry);
+                    }
+                }
+                if fs::rename(&src_entry, &dst_entry).is_err() {
+                    let _ = fs::create_dir_all(&default_instance_dir);
+                    if src_entry.is_dir() {
+                        let _ = copy_dir_recursive(&src_entry, &dst_entry);
+                        let _ = fs::remove_dir_all(&src_entry);
+                    } else {
+                        let _ = fs::copy(&src_entry, &dst_entry);
+                        let _ = fs::remove_file(&src_entry);
+                    }
+                }
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(&preload_dir);
+
+    let _ = write_instance_marker(
+        &default_instance_dir,
+        &server_id,
+        &instance_id,
+        &lock_manifest.version,
+    );
+    if !inst_folder_name.is_empty() {
+        let _ = theseus::instance::watch_instance(&instance_id, &inst_folder_name).await;
+    }
+
+    let inst_path_str = default_instance_dir.to_string_lossy().to_string();
+    update_server_state(Some(&app), &server_id, |st| {
+        st.state = ServerInstallState::Installed;
+        st.installed_version = Some(lock_manifest.version.clone());
+        st.instance_id = Some(instance_id.clone());
+        st.instance_path = Some(inst_path_str.clone());
+        st.marker_written = true;
+        st.last_error = None;
+    });
+
+    Ok(DoneEventPayload {
+        op_id,
+        server_id,
+        ok: true,
+        version: Some(lock_manifest.version),
+        instance_id: Some(instance_id),
+        instance_path: Some(inst_path_str),
+        migration_notice: false,
+        summary: None,
+        error: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

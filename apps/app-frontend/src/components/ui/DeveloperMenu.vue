@@ -172,6 +172,8 @@ const screenshotInputRef = ref<HTMLInputElement | null>(null)
 const bannerInputRef = ref<HTMLInputElement | null>(null)
 const logoInputRef = ref<HTMLInputElement | null>(null)
 const logoSquareInputRef = ref<HTMLInputElement | null>(null)
+const titleLogoInputRef = ref<HTMLInputElement | null>(null)
+const exploreImageInputRef = ref<HTMLInputElement | null>(null)
 
 const selectedServer = computed<Dr3shServer | null>(() => {
 	return catalog.value.servers.find((s) => s.id === selectedServerId.value) || null
@@ -622,6 +624,69 @@ function handleDeleteSelectedServer() {
 }
 
 // Image upload to GitHub repo
+const assetGalleryOpen = ref(false)
+const assetGalleryLoading = ref(false)
+const assetGalleryError = ref('')
+const assetGalleryItems = ref<Array<{ name: string; url: string; path: string; size: number }>>([])
+let assetGalleryOnSelect: ((url: string) => void) | null = null
+
+async function openAssetGallery(onSelect: (url: string) => void) {
+	assetGalleryOnSelect = onSelect
+	assetGalleryOpen.value = true
+	assetGalleryError.value = ''
+	if (!githubToken.value) {
+		assetGalleryError.value = 'Inicia sesión con GitHub primero para ver los assets subidos.'
+		return
+	}
+	try {
+		assetGalleryLoading.value = true
+		const octokit = getOctokit(githubToken.value.trim())
+		const res = await octokit.rest.repos.getContent({
+			owner: 'Dr3sh',
+			repo: 'Dr3sh.github.io',
+			path: 'assets/uploads',
+			ref: 'main',
+		})
+		const list = Array.isArray(res.data) ? res.data : []
+		const items = list
+			.filter(
+				(item: any) =>
+					item &&
+					item.type === 'file' &&
+					/\.(png|apng|gif|webp|jpe?g|svg|bmp)$/i.test(String(item.name || '')),
+			)
+			.map((item: any) => ({
+				name: String(item.name),
+				path: String(item.path),
+				size: Number(item.size || 0),
+				url: `https://raw.githubusercontent.com/Dr3sh/Dr3sh.github.io/main/${item.path}`,
+			}))
+			.sort((a, b) => b.name.localeCompare(a.name))
+		assetGalleryItems.value = items
+	} catch (e: any) {
+		assetGalleryError.value = `No se pudieron cargar los assets: ${sanitizeError(e)}`
+	} finally {
+		assetGalleryLoading.value = false
+	}
+}
+
+function selectAssetFromGallery(url: string) {
+	if (assetGalleryOnSelect) {
+		assetGalleryOnSelect(url)
+	}
+	assetGalleryOpen.value = false
+}
+
+async function arrayBufferToBase64(buffer: ArrayBuffer): Promise<string> {
+	const bytes = new Uint8Array(buffer)
+	const chunkSize = 0x8000
+	const parts: string[] = []
+	for (let i = 0; i < bytes.length; i += chunkSize) {
+		parts.push(String.fromCharCode(...bytes.subarray(i, i + chunkSize)))
+	}
+	return btoa(parts.join(''))
+}
+
 async function uploadImageToGithub(file: File, onUploaded: (url: string) => void) {
 	if (!githubToken.value) {
 		status.value = 'Inicia sesión con GitHub primero para subir imágenes.'
@@ -630,37 +695,71 @@ async function uploadImageToGithub(file: File, onUploaded: (url: string) => void
 	try {
 		busy.value = true
 		status.value = `Subiendo ${file.name} al repositorio...`
-		const base64Data = await new Promise<string>((resolve, reject) => {
-			const reader = new FileReader()
-			reader.onload = () => {
-				const res = String(reader.result || '')
-				const comma = res.indexOf(',')
-				resolve(comma >= 0 ? res.slice(comma + 1) : res)
-			}
-			reader.onerror = () => reject(new Error('No se pudo leer la imagen'))
-			reader.readAsDataURL(file)
-		})
-
+		const token = githubToken.value.trim()
+		const octokit = getOctokit(token)
 		const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
-		const repoPath = `assets/uploads/${Date.now()}-${safeName}`
-		const apiUrl = `https://api.github.com/repos/Dr3sh/Dr3sh.github.io/contents/${repoPath}`
+		const uniqueName = `${Date.now()}-${safeName}`
 
-		const putRes = await tauriFetch(apiUrl, {
-			method: 'PUT',
-			headers: {
-				Authorization: `token ${githubToken.value.trim()}`,
-				Accept: 'application/vnd.github.v3+json',
-				'Content-Type': 'application/json',
-			},
-			body: JSON.stringify({
-				message: `Upload asset ${safeName}`,
-				content: base64Data,
-			}),
+		// For large animated APNG/GIF files (> 20 MB), upload as release asset on catalog-assets
+		if (file.size > 20 * 1024 * 1024) {
+			const tag = 'catalog-assets'
+			let uploadUrl = ''
+			try {
+				const rel = await octokit.rest.repos.getReleaseByTag({
+					owner: 'Dr3sh',
+					repo: 'Dr3sh.github.io',
+					tag,
+				})
+				uploadUrl = rel.data.upload_url
+			} catch (e: any) {
+				if (e.status === 404) {
+					const created = await octokit.rest.repos.createRelease({
+						owner: 'Dr3sh',
+						repo: 'Dr3sh.github.io',
+						tag_name: tag,
+						name: 'Catalog Visual Assets',
+						body: 'Heavy animated logos & visual assets for Dr3sh Launcher.',
+						draft: false,
+						prerelease: false,
+					})
+					uploadUrl = created.data.upload_url
+				} else {
+					throw e
+				}
+			}
+			const endpoint = `${uploadUrl.replace(/\{(\?name,label)?\}/, '')}?name=${encodeURIComponent(uniqueName)}`
+			const upRes = await tauriFetch(endpoint, {
+				method: 'POST',
+				headers: {
+					Authorization: `token ${token}`,
+					'Content-Type': 'application/octet-stream',
+				},
+				body: new Uint8Array(await file.arrayBuffer()),
+			})
+			if (!upRes.ok) {
+				const errTxt = await upRes.text().catch(() => '')
+				throw new Error(`HTTP ${upRes.status}${errTxt ? `: ${errTxt}` : ''}`)
+			}
+			const assetJson = (await upRes.json()) as { browser_download_url?: string }
+			const publicUrl =
+				assetJson.browser_download_url ||
+				`https://github.com/Dr3sh/Dr3sh.github.io/releases/download/${tag}/${uniqueName}`
+			onUploaded(publicUrl)
+			status.value = `Imagen pesada subida correctamente: ${safeName}`
+			return
+		}
+
+		const base64Data = await arrayBufferToBase64(await file.arrayBuffer())
+		const repoPath = `assets/uploads/${uniqueName}`
+		await octokit.rest.repos.createOrUpdateFileContents({
+			owner: 'Dr3sh',
+			repo: 'Dr3sh.github.io',
+			path: repoPath,
+			message: `Upload asset ${safeName}`,
+			content: base64Data,
+			branch: 'main',
 		})
 
-		if (!putRes.ok) {
-			throw new Error(`HTTP ${putRes.status}`)
-		}
 		const publicUrl = `https://raw.githubusercontent.com/Dr3sh/Dr3sh.github.io/main/${repoPath}`
 		onUploaded(publicUrl)
 		status.value = `Imagen subida correctamente: ${safeName}`
@@ -673,7 +772,7 @@ async function uploadImageToGithub(file: File, onUploaded: (url: string) => void
 
 function isImageFile(file: File): boolean {
 	const ext = file.name.split('.').pop()?.toLowerCase() || ''
-	const validExts = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg']
+	const validExts = ['png', 'apng', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg']
 	return validExts.includes(ext) || file.type.startsWith('image/')
 }
 
@@ -686,7 +785,7 @@ async function handleImageDrop(
 	const file = event.dataTransfer?.files?.[0]
 	if (!file) return
 	if (!isImageFile(file)) {
-		status.value = 'Selecciona una imagen válida (PNG, JPG, WEBP o GIF).'
+		status.value = 'Selecciona una imagen válida (PNG, APNG, GIF, WEBP o JPG).'
 		return
 	}
 	await uploadImageToGithub(file, onUploaded)
@@ -1013,6 +1112,36 @@ interface PublishReleaseResponse {
 	sha256: string
 }
 
+const fastPatchMode = ref(true)
+
+const latestFastPatchBase = computed(() => {
+	if (!selectedServer.value) return null
+	const serverVersions = catalog.value.versions.filter(
+		(v) => v.server === selectedServer.value!.id && v.status !== 'inactive' && v.manifest && v.link,
+	)
+	for (const ver of serverVersions) {
+		const target = extractGithubReleaseTarget(ver)
+		if (target?.tag && ver.manifest) {
+			return {
+				version: ver.version,
+				tag: target.tag,
+				manifestUrl: ver.manifest,
+			}
+		}
+	}
+	return null
+})
+
+const isSingleZipSource = computed(() => {
+	const raw = newVersionArchivePath.value?.trim() || ''
+	if (!raw) return Boolean(newVersionZipFile.value)
+	const parts = raw
+		.split('|')
+		.map((s) => s.trim())
+		.filter(Boolean)
+	return parts.length === 1 && /\.(zip|mrpack)$/i.test(parts[0])
+})
+
 async function publishZipReleaseToGithub(
 	fileOrPath: File | string,
 	serverId: string,
@@ -1098,6 +1227,15 @@ async function publishZipReleaseToGithub(
 			minecraftVersion: minecraftVersion || undefined,
 			loader: loader || undefined,
 			loaderVersion: loaderVersion || undefined,
+			baseManifestUrl:
+				fastPatchMode.value && !isSingleZipSource.value
+					? latestFastPatchBase.value?.manifestUrl || undefined
+					: undefined,
+			baseTag:
+				fastPatchMode.value && !isSingleZipSource.value
+					? latestFastPatchBase.value?.tag || undefined
+					: undefined,
+			fastPatch: fastPatchMode.value && !isSingleZipSource.value,
 		})
 		return result
 	} finally {
@@ -1165,7 +1303,7 @@ async function handleAddVersion() {
 				description: '',
 				published_at: '',
 			})
-			const uploadedRepoLower = (uploadedTarget?.repo || 'Dr3sh/modpack-versions').trim().toLowerCase()
+			const uploadedRepoLower = (uploadedTarget?.repo || 'ramirezjeider28-alt/modpack-versions').trim().toLowerCase()
 			const uploadedTagLower = (uploadedTarget?.tag || result.tag_name || '').trim().toLowerCase()
 			if (uploadedTagLower) {
 				pendingReleaseDeletions.value = pendingReleaseDeletions.value.filter(
@@ -2151,6 +2289,16 @@ function close() {
 													</div>
 												</div>
 
+												<label
+													v-if="latestFastPatchBase && !isSingleZipSource"
+													class="developer-checkbox-label"
+												>
+													<input v-model="fastPatchMode" type="checkbox" />
+													<span>
+														<strong>Subida rápida por parche (GitHub Actions)</strong>
+														— compara contra v{{ latestFastPatchBase.version }} y solo sube lo nuevo o modificado.
+													</span>
+												</label>
 												<div class="developer-sources-footer-hint">
 													Al publicar, el launcher empaquetará todas las carpetas y archivos en un único ZIP optimizado con su manifest.json.
 												</div>
@@ -2458,12 +2606,24 @@ function close() {
 										/>
 									</label>
 
-									<label class="wide-field">
-										Estreno programado (Cuenta regresiva - Horario de Venezuela UTC-4)
+									<label>
+										Estreno programado (Horario de Venezuela UTC-4)
 										<input
 											type="datetime-local"
 											:value="selectedServer.release_date || ''"
 											@change="updateSelectedServer({ release_date: ($event.target as HTMLInputElement).value || undefined })"
+										/>
+									</label>
+
+									<label>
+										Horas antes para permitir precarga (0 = sin precarga)
+										<input
+											type="number"
+											min="0"
+											max="720"
+											placeholder="Ej: 24"
+											:value="selectedServer.preload_hours_before ?? ''"
+											@input="updateSelectedServer({ preload_hours_before: ($event.target as HTMLInputElement).value ? Math.max(0, Number(($event.target as HTMLInputElement).value)) : undefined })"
 										/>
 									</label>
 
@@ -2486,6 +2646,12 @@ function close() {
 												@input="updateSelectedServer({ image: ($event.target as HTMLInputElement).value })"
 											/>
 											<button type="button" @click="bannerInputRef?.click()">Subir imagen</button>
+											<button
+												type="button"
+												@click="openAssetGallery((url) => updateSelectedServer({ image: url }))"
+											>
+												Galería
+											</button>
 											<input
 												ref="bannerInputRef"
 												type="file"
@@ -2515,6 +2681,12 @@ function close() {
 												@input="updateSelectedServer({ logo: ($event.target as HTMLInputElement).value })"
 											/>
 											<button type="button" @click="logoInputRef?.click()">Subir imagen</button>
+											<button
+												type="button"
+												@click="openAssetGallery((url) => updateSelectedServer({ logo: url }))"
+											>
+												Galería
+											</button>
 											<input
 												ref="logoInputRef"
 												type="file"
@@ -2544,12 +2716,104 @@ function close() {
 												@input="updateSelectedServer({ logo_square: ($event.target as HTMLInputElement).value })"
 											/>
 											<button type="button" @click="logoSquareInputRef?.click()">Subir imagen</button>
+											<button
+												type="button"
+												@click="openAssetGallery((url) => updateSelectedServer({ logo_square: url }))"
+											>
+												Galería
+											</button>
 											<input
 												ref="logoSquareInputRef"
 												type="file"
 												accept="image/*"
 												hidden
 												@change="handleFileInputUpload($event, (url) => updateSelectedServer({ logo_square: url }))"
+											/>
+										</div>
+									</div>
+
+									<!-- Steam-style Title Logo -->
+									<div class="developer-image-field wide-field">
+										<span>Logo Título estilo Steam (PNG, GIF, WEBP, APNG — si está vacío muestra texto)</span>
+										<div
+											class="developer-image-dropzone"
+											:class="{ 'is-over': isDraggingImage['title_logo'] }"
+											@dragover.prevent="isDraggingImage['title_logo'] = true"
+											@dragleave="isDraggingImage['title_logo'] = false"
+											@drop.prevent="handleImageDrop($event, (url) => updateSelectedServer({ title_logo: url }), 'title_logo')"
+										>
+											<div v-if="selectedServer.title_logo" class="developer-image-thumb-box">
+												<img :src="resolveImageUrl(selectedServer.title_logo)" alt="Logo Título" class="developer-image-thumb" />
+											</div>
+											<input
+												:value="selectedServer.title_logo || ''"
+												placeholder="https://... o arrastra un PNG, GIF, WEBP o APNG"
+												@input="updateSelectedServer({ title_logo: ($event.target as HTMLInputElement).value || undefined })"
+											/>
+											<button type="button" @click="titleLogoInputRef?.click()">Subir logo título</button>
+											<button
+												type="button"
+												@click="openAssetGallery((url) => updateSelectedServer({ title_logo: url }))"
+											>
+												Galería
+											</button>
+											<button
+												v-if="selectedServer.title_logo"
+												type="button"
+												class="developer-danger"
+												@click="updateSelectedServer({ title_logo: undefined })"
+											>
+												Quitar
+											</button>
+											<input
+												ref="titleLogoInputRef"
+												type="file"
+												accept="image/png,image/apng,image/gif,image/webp,image/*"
+												hidden
+												@change="handleFileInputUpload($event, (url) => updateSelectedServer({ title_logo: url }))"
+											/>
+										</div>
+									</div>
+
+									<!-- Fixed Explore Image -->
+									<div class="developer-image-field wide-field">
+										<span>Foto fija en Explorar modpacks (si está vacío usa la primera disponible)</span>
+										<div
+											class="developer-image-dropzone"
+											:class="{ 'is-over': isDraggingImage['explore_image'] }"
+											@dragover.prevent="isDraggingImage['explore_image'] = true"
+											@dragleave="isDraggingImage['explore_image'] = false"
+											@drop.prevent="handleImageDrop($event, (url) => updateSelectedServer({ explore_image: url }), 'explore_image')"
+										>
+											<div v-if="selectedServer.explore_image" class="developer-image-thumb-box">
+												<img :src="resolveImageUrl(selectedServer.explore_image)" alt="Explorar" class="developer-image-thumb banner" />
+											</div>
+											<input
+												:value="selectedServer.explore_image || ''"
+												placeholder="https://... o arrastra una imagen fija para la tarjeta de Explorar"
+												@input="updateSelectedServer({ explore_image: ($event.target as HTMLInputElement).value || undefined })"
+											/>
+											<button type="button" @click="exploreImageInputRef?.click()">Subir imagen</button>
+											<button
+												type="button"
+												@click="openAssetGallery((url) => updateSelectedServer({ explore_image: url }))"
+											>
+												Galería
+											</button>
+											<button
+												v-if="selectedServer.explore_image"
+												type="button"
+												class="developer-danger"
+												@click="updateSelectedServer({ explore_image: undefined })"
+											>
+												Quitar
+											</button>
+											<input
+												ref="exploreImageInputRef"
+												type="file"
+												accept="image/png,image/apng,image/gif,image/webp,image/jpeg,image/*"
+												hidden
+												@change="handleFileInputUpload($event, (url) => updateSelectedServer({ explore_image: url }))"
 											/>
 										</div>
 									</div>
@@ -2818,6 +3082,46 @@ function close() {
 				</footer>
 			</template>
 		</section>
+
+		<!-- Asset Gallery Picker Modal -->
+		<div
+			v-if="assetGalleryOpen"
+			class="developer-asset-gallery-backdrop"
+			@mousedown.self="assetGalleryOpen = false"
+		>
+			<div class="developer-asset-gallery-modal" role="dialog" aria-modal="true" aria-label="Galería de assets subidos">
+				<div class="developer-asset-gallery-header">
+					<div>
+						<h3>Galería de assets subidos</h3>
+						<span>Elige cualquier imagen ya subida a Dr3sh.github.io sin volver a subirla</span>
+					</div>
+					<button type="button" class="developer-close" @click="assetGalleryOpen = false">×</button>
+				</div>
+				<div v-if="assetGalleryLoading" class="developer-asset-gallery-state">
+					Cargando imágenes desde GitHub...
+				</div>
+				<div v-else-if="assetGalleryError" class="developer-asset-gallery-state is-error">
+					{{ assetGalleryError }}
+				</div>
+				<div v-else-if="assetGalleryItems.length === 0" class="developer-asset-gallery-state">
+					No hay imágenes subidas todavía en assets/uploads.
+				</div>
+				<div v-else class="developer-asset-gallery-grid">
+					<button
+						v-for="item in assetGalleryItems"
+						:key="item.path"
+						type="button"
+						class="developer-asset-card"
+						@click="selectAssetFromGallery(item.url)"
+					>
+						<div class="developer-asset-thumb-wrap">
+							<img :src="item.url" :alt="item.name" loading="lazy" />
+						</div>
+						<span class="developer-asset-name" :title="item.name">{{ item.name }}</span>
+					</button>
+				</div>
+			</div>
+		</div>
 	</div>
 </template>
 

@@ -18,12 +18,12 @@ use theseus::prelude::*;
 
 pub mod dr3sh;
 use dr3sh::{
-    dr3sh_ack_migration_notice, dr3sh_cancel, dr3sh_cancel_download,
+    dr3sh_ack_migration_notice, dr3sh_activate_preload, dr3sh_cancel, dr3sh_cancel_download,
     dr3sh_check_instance_health, dr3sh_check_launcher_update,
     dr3sh_cleanup_deleted_instance, dr3sh_download_modpack, dr3sh_get_diagnostics,
-    dr3sh_get_state, dr3sh_install_or_update, dr3sh_link_existing_instance,
-    dr3sh_migrate_local_state, dr3sh_open_logs_folder, dr3sh_prepare_launch,
-    dr3sh_repair, dr3sh_wait_for_instance_ready,
+    dr3sh_get_network_time, dr3sh_get_preload_state, dr3sh_get_state, dr3sh_install_or_update,
+    dr3sh_link_existing_instance, dr3sh_lock_preload, dr3sh_migrate_local_state,
+    dr3sh_open_logs_folder, dr3sh_prepare_launch, dr3sh_repair, dr3sh_wait_for_instance_ready,
 };
 
 fn cleanup_dangling_profile_junctions() {
@@ -104,6 +104,9 @@ async fn dr3sh_publish_release(
     minecraft_version: Option<String>,
     loader: Option<String>,
     loader_version: Option<String>,
+    base_manifest_url: Option<String>,
+    base_tag: Option<String>,
+    fast_patch: Option<bool>,
 ) -> api::Result<PublishReleaseResult> {
     use std::process::Command;
     #[cfg(target_os = "windows")]
@@ -178,6 +181,15 @@ async fn dr3sh_publish_release(
     }
     if let Some(lv) = loader_version.filter(|v| !v.trim().is_empty()) {
         cmd.arg("--loader-version").arg(lv);
+    }
+    if let Some(bm) = base_manifest_url.filter(|v| !v.trim().is_empty()) {
+        cmd.arg("--base-manifest").arg(bm);
+    }
+    if let Some(bt) = base_tag.filter(|v| !v.trim().is_empty()) {
+        cmd.arg("--base-tag").arg(bt);
+    }
+    if fast_patch == Some(false) {
+        cmd.arg("--no-fast-patch");
     }
 
     #[cfg(target_os = "windows")]
@@ -1093,6 +1105,10 @@ fn main() {
             dr3sh_detect_github_token,
             dr3sh_create_desktop_shortcut,
             dr3sh_check_instance_health,
+            dr3sh_get_network_time,
+            dr3sh_get_preload_state,
+            dr3sh_lock_preload,
+            dr3sh_activate_preload,
         ]);
 
     tracing::info!("Initializing app...");

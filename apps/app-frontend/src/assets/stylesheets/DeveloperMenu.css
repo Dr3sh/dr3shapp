@@ -259,7 +259,7 @@
   font-weight: 600;
 }
 
-.developer-dialog input,
+.developer-dialog input:not([type='checkbox']):not([type='radio']):not([type='range']),
 .developer-dialog select,
 .developer-dialog textarea {
   width: 100%;
@@ -274,6 +274,42 @@
   font: inherit;
   font-size: 13px;
   transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.developer-dialog input[type='checkbox'],
+.developer-dialog input[type='radio'] {
+  width: 18px !important;
+  height: 18px !important;
+  min-width: 18px !important;
+  min-height: 18px !important;
+  padding: 0 !important;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: #22c55e;
+  cursor: pointer;
+  appearance: auto !important;
+  -webkit-appearance: auto !important;
+  background: transparent;
+  box-shadow: none;
+}
+
+.developer-checkbox-label {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 10px !important;
+  padding: 10px 12px;
+  background: rgba(15, 19, 29, 0.72);
+  border: 1px solid #293246;
+  border-radius: 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.developer-checkbox-label:hover {
+  border-color: #3b4963;
+  background: rgba(20, 26, 40, 0.9);
 }
 
 .developer-dialog input:focus,
@@ -1326,6 +1362,111 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* Asset Gallery Modal */
+.developer-asset-gallery-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  background: rgba(5, 8, 15, 0.78);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.developer-asset-gallery-modal {
+  width: min(860px, 94vw);
+  max-height: 82vh;
+  background: #121726;
+  border: 1px solid #2b354b;
+  border-radius: 18px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
+}
+
+.developer-asset-gallery-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid #242d40;
+}
+
+.developer-asset-gallery-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: #f8fafc;
+}
+
+.developer-asset-gallery-header span {
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
+.developer-asset-gallery-state {
+  padding: 40px 20px;
+  text-align: center;
+  color: #94a3b8;
+}
+
+.developer-asset-gallery-state.is-error {
+  color: #fca5a5;
+}
+
+.developer-asset-gallery-grid {
+  padding: 16px;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.developer-asset-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 12px;
+  background: #0b0f19;
+  border: 1px solid #252f44;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 140ms ease, transform 120ms ease;
+}
+
+.developer-asset-card:hover {
+  border-color: #22c55e;
+  transform: translateY(-2px);
+}
+
+.developer-asset-thumb-wrap {
+  width: 100%;
+  height: 96px;
+  border-radius: 8px;
+  background: repeating-conic-gradient(#171e2e 0% 25%, #111623 0% 50%) 50% / 14px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.developer-asset-thumb-wrap img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.developer-asset-name {
+  font-size: 11px;
+  color: #cbd5e1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .developer-mode-input-block input {

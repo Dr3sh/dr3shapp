@@ -73,6 +73,8 @@ import {
 	currentView,
 	isDeveloper,
 	isOffline,
+	catalogError,
+	retryingCatalog,
 	maintenanceMode,
 	maintenanceMessage,
 	refreshAccount,
@@ -80,6 +82,11 @@ import {
 	selectedId,
 	fetchVersionsData,
 	deselectModpack,
+	startupBlockedOffline,
+	connectionLostFatal,
+	debugPreview,
+	resetDebugPreview,
+	checkNetworkHealthTick,
 } from '@/composables/use-dr3sh-launcher'
 import {
 	initDr3shBackendState,
@@ -1422,19 +1429,81 @@ onMounted(() => {
 	setServerUpdateToPlayModal(updateToPlayModal.value)
 
 	window.addEventListener('keydown', handleGlobalKeydown)
+	startNetworkMonitor()
 })
 
 onUnmounted(() => {
 	window.removeEventListener('keydown', handleGlobalKeydown)
+	stopNetworkMonitor()
 })
+
+let networkMonitorInterval = null
+function startNetworkMonitor() {
+	if (networkMonitorInterval) clearInterval(networkMonitorInterval)
+	networkMonitorInterval = setInterval(() => {
+		void checkNetworkHealthTick()
+	}, 15_000)
+}
+function stopNetworkMonitor() {
+	if (networkMonitorInterval) {
+		clearInterval(networkMonitorInterval)
+		networkMonitorInterval = null
+	}
+}
+
+const effectiveMaintenanceLock = computed(
+	() => (maintenanceMode.value && !isDeveloper.value) || (isDeveloper.value && debugPreview.value.forceMaintenance),
+)
+const effectiveStartupOfflineLock = computed(
+	() =>
+		(startupBlockedOffline.value && !isDeveloper.value) ||
+		(isDeveloper.value && debugPreview.value.forceNetworkState === 'startup_offline'),
+)
+const effectiveLostConnectionLock = computed(
+	() =>
+		(connectionLostFatal.value && !isDeveloper.value) ||
+		(isDeveloper.value && debugPreview.value.forceNetworkState === 'lost_connection'),
+)
+
+async function restartLauncher() {
+	try {
+		await invoke('restart_app')
+	} catch {
+		window.location.reload()
+	}
+}
+
+async function applyDebugViewport(preset) {
+	debugPreview.value.viewportPreset = preset
+	try {
+		const win = getCurrentWindow()
+		const { LogicalSize } = await import('@tauri-apps/api/dpi')
+		if (preset === 'compact') {
+			await win.setSize(new LogicalSize(940, 620))
+		} else if (preset === 'standard') {
+			await win.setSize(new LogicalSize(1220, 760))
+		} else if (preset === 'wide') {
+			await win.setSize(new LogicalSize(1480, 880))
+		}
+	} catch (e) {
+		console.warn('Could not resize window for debug viewport:', e)
+	}
+}
 
 const developerMenuOpen = ref(false)
 function handleGlobalKeydown(e) {
 	if (e.shiftKey && (e.key === 'F10' || e.code === 'F10')) {
 		e.preventDefault()
 		developerMenuOpen.value = !developerMenuOpen.value
+	} else if (e.shiftKey && (e.key === 'F9' || e.code === 'F9')) {
+		if (isDeveloper.value) {
+			e.preventDefault()
+			debugPreview.value.open = !debugPreview.value.open
+		}
 	} else if (e.key === 'Escape') {
-		if (developerMenuOpen.value) {
+		if (debugPreview.value.open) {
+			debugPreview.value.open = false
+		} else if (developerMenuOpen.value) {
 			developerMenuOpen.value = false
 		} else {
 			deselectModpack()
@@ -2026,7 +2095,8 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 			</div>
 		</Transition>
 
-		<div v-if="maintenanceMode && !isDeveloper" class="maintenance-lock-view">
+		<div v-if="effectiveMaintenanceLock" class="maintenance-lock-view">
+			<div class="maintenance-bg-glow" aria-hidden="true" />
 			<header data-tauri-drag-region class="maintenance-lock-topbar">
 				<div class="brand-lockup-simple" data-tauri-drag-region>
 					<img src="/logo.png" alt="Dr3sh Launcher" class="w-6 h-6 rounded-md" />
@@ -2043,18 +2113,137 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 			</header>
 			<div class="maintenance-lock-card">
 				<div class="maintenance-icon-bubble">
-					<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+					<svg viewBox="0 0 24 24" width="38" height="38" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
 						<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
 					</svg>
 				</div>
-				<span class="maintenance-pill">Modo Mantenimiento</span>
-				<h2>Launcher en Mantenimiento</h2>
-				<p class="maintenance-msg">
-					{{ maintenanceMessage || 'Estamos realizando mejoras y mantenimiento en nuestros servidores. El acceso se restablecerá automáticamente cuando finalice.' }}
-				</p>
-				<div class="maintenance-pulse-indicator">
+				<span class="maintenance-pill">
 					<span class="maintenance-pulse-dot" />
-					<span>Verificando estado automáticamente...</span>
+					Mantenimiento Activo
+				</span>
+				<h2>Estamos en mantenimiento!</h2>
+				<p v-if="maintenanceMessage" class="maintenance-msg">
+					{{ maintenanceMessage }}
+				</p>
+				<div class="maintenance-actions-row">
+					<button
+						type="button"
+						class="maintenance-retry-btn"
+						:disabled="retryingCatalog"
+						@click="fetchVersionsData(true)"
+					>
+						{{ retryingCatalog ? 'Comprobando...' : 'Verificar estado ahora' }}
+					</button>
+					<button
+						v-if="isDeveloper && debugPreview.forceMaintenance"
+						type="button"
+						class="maintenance-debug-exit-btn"
+						@click="debugPreview.forceMaintenance = false"
+					>
+						Salir de vista Debug
+					</button>
+				</div>
+				<div class="maintenance-pulse-indicator">
+					<span>Comprobación automática cada pocos segundos</span>
+				</div>
+			</div>
+		</div>
+
+		<div v-else-if="effectiveStartupOfflineLock" class="maintenance-lock-view is-offline-lock">
+			<div class="maintenance-bg-glow is-red" aria-hidden="true" />
+			<header data-tauri-drag-region class="maintenance-lock-topbar">
+				<div class="brand-lockup-simple" data-tauri-drag-region>
+					<img src="/logo.png" alt="Dr3sh Launcher" class="w-6 h-6 rounded-md" />
+					<span class="font-bold text-sm text-white/90">Dr3sh Launcher</span>
+				</div>
+				<div class="window-controls" aria-label="Controles de ventana" data-tauri-drag-region-exclude>
+					<button class="window-control" title="Minimizar" aria-label="Minimizar" @click="getCurrentWindow().minimize()">
+						<span class="minimize-glyph" />
+					</button>
+					<button class="window-control close" title="Cerrar" aria-label="Cerrar" @click="handleClose">
+						<span class="close-glyph" />
+					</button>
+				</div>
+			</header>
+			<div class="maintenance-lock-card is-offline-card">
+				<div class="maintenance-icon-bubble is-red">
+					<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M12 20h.01" />
+						<path d="M8.5 16.429a5 5 0 0 1 7 0" />
+						<path d="M5 12.859a10 10 0 0 1 5.17-2.69" />
+						<path d="M19 12.859a10 10 0 0 0-2.007-1.523" />
+						<path d="M2 8.82a15 15 0 0 1 4.177-2.643" />
+						<path d="M22 8.82a15 15 0 0 0-11.288-3.764" />
+						<path d="m2 2 20 20" />
+					</svg>
+				</div>
+				<span class="maintenance-pill is-red">Sin conexión</span>
+				<h2>No se detectó conexión a internet</h2>
+				<p class="maintenance-msg">
+					{{ catalogError || 'Dr3sh Launcher requiere conexión a internet al iniciar para verificar servidores, cuentas y actualizaciones.' }}
+				</p>
+				<div class="maintenance-actions-row">
+					<button
+						type="button"
+						class="maintenance-retry-btn"
+						:disabled="retryingCatalog"
+						@click="fetchVersionsData(true)"
+					>
+						{{ retryingCatalog ? 'Conectando...' : 'Reintentar conexión' }}
+					</button>
+					<button
+						v-if="isDeveloper && debugPreview.forceNetworkState === 'startup_offline'"
+						type="button"
+						class="maintenance-debug-exit-btn"
+						@click="debugPreview.forceNetworkState = 'normal'"
+					>
+						Salir de vista Debug
+					</button>
+				</div>
+			</div>
+		</div>
+
+		<div v-else-if="effectiveLostConnectionLock" class="maintenance-lock-view is-offline-lock">
+			<div class="maintenance-bg-glow is-red" aria-hidden="true" />
+			<header data-tauri-drag-region class="maintenance-lock-topbar">
+				<div class="brand-lockup-simple" data-tauri-drag-region>
+					<img src="/logo.png" alt="Dr3sh Launcher" class="w-6 h-6 rounded-md" />
+					<span class="font-bold text-sm text-white/90">Dr3sh Launcher</span>
+				</div>
+				<div class="window-controls" aria-label="Controles de ventana" data-tauri-drag-region-exclude>
+					<button class="window-control" title="Minimizar" aria-label="Minimizar" @click="getCurrentWindow().minimize()">
+						<span class="minimize-glyph" />
+					</button>
+					<button class="window-control close" title="Cerrar" aria-label="Cerrar" @click="handleClose">
+						<span class="close-glyph" />
+					</button>
+				</div>
+			</header>
+			<div class="maintenance-lock-card is-offline-card">
+				<div class="maintenance-icon-bubble is-red">
+					<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+						<line x1="12" y1="9" x2="12" y2="13" />
+						<line x1="12" y1="17" x2="12.01" y2="17" />
+					</svg>
+				</div>
+				<span class="maintenance-pill is-red">Conexión perdida</span>
+				<h2>Se perdió la conexión a internet</h2>
+				<p class="maintenance-msg">
+					Se perdió la conexión con los servidores. Reinicia el launcher cuando vuelva tu internet para continuar.
+				</p>
+				<div class="maintenance-actions-row">
+					<button type="button" class="maintenance-retry-btn" @click="restartLauncher">
+						Reiniciar launcher
+					</button>
+					<button
+						v-if="isDeveloper && debugPreview.forceNetworkState === 'lost_connection'"
+						type="button"
+						class="maintenance-debug-exit-btn"
+						@click="debugPreview.forceNetworkState = 'normal'"
+					>
+						Salir de vista Debug
+					</button>
 				</div>
 			</div>
 		</div>
@@ -2135,6 +2324,71 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 	/>
 	<UnknownPackWarningModal ref="unknownPackWarningModal" />
 	<I18nDebugPanel />
+	<aside v-if="isDeveloper && debugPreview.open" class="dr3sh-debug-panel" aria-label="Menú Debug Admin">
+		<div class="dr3sh-debug-header">
+			<strong>Admin Debug Preview</strong>
+			<div class="dr3sh-debug-header-actions">
+				<button type="button" class="dr3sh-debug-reset" @click="resetDebugPreview">Reset</button>
+				<button type="button" class="dr3sh-debug-close" @click="debugPreview.open = false">×</button>
+			</div>
+		</div>
+		<div class="dr3sh-debug-body">
+			<div class="dr3sh-debug-group">
+				<span class="dr3sh-debug-label">Estado del botón principal</span>
+				<select v-model="debugPreview.forceButtonAction" class="dr3sh-debug-select">
+					<option value="auto">Auto (Real)</option>
+					<option value="download">Instalar</option>
+					<option value="preload">Precargar Modpack</option>
+					<option value="preloaded">Precargado · Esperando estreno</option>
+					<option value="countdown">Cuenta regresiva</option>
+					<option value="activate">Activar y Jugar</option>
+					<option value="play">Jugar</option>
+					<option value="update">Actualizar</option>
+					<option value="repair">Reparar</option>
+					<option value="running">Jugando</option>
+					<option value="disabled">Inhabilitado</option>
+				</select>
+			</div>
+			<div class="dr3sh-debug-group">
+				<span class="dr3sh-debug-label">Pantallas de estado y red</span>
+				<label class="dr3sh-debug-check">
+					<input v-model="debugPreview.forceMaintenance" type="checkbox" />
+					<span>Ver Mantenimiento (como usuario)</span>
+				</label>
+				<select v-model="debugPreview.forceNetworkState" class="dr3sh-debug-select">
+					<option value="normal">Red: Normal</option>
+					<option value="startup_offline">Sin internet al iniciar</option>
+					<option value="lost_connection">Pérdida &gt;90s (Pedir reinicio)</option>
+				</select>
+			</div>
+			<div class="dr3sh-debug-group">
+				<span class="dr3sh-debug-label">Tamaño de ventana</span>
+				<div class="dr3sh-debug-size-row">
+					<button
+						type="button"
+						:class="{ active: debugPreview.viewportPreset === 'compact' }"
+						@click="applyDebugViewport('compact')"
+					>
+						940×620
+					</button>
+					<button
+						type="button"
+						:class="{ active: debugPreview.viewportPreset === 'standard' }"
+						@click="applyDebugViewport('standard')"
+					>
+						1220×760
+					</button>
+					<button
+						type="button"
+						:class="{ active: debugPreview.viewportPreset === 'wide' }"
+						@click="applyDebugViewport('wide')"
+					>
+						1480×880
+					</button>
+				</div>
+			</div>
+		</div>
+	</aside>
 	<NotificationPanel :has-sidebar="sidebarVisible" />
 	<PopupNotificationPanel :has-sidebar="sidebarVisible" />
 	<ErrorModal ref="errorModal" />

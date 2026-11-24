@@ -33,6 +33,8 @@ export interface Dr3shServer {
 	image?: string
 	logo?: string
 	logo_square?: string
+	title_logo?: string
+	explore_image?: string
 	theme_color?: string
 	description?: string
 	minecraft_version?: string
@@ -44,6 +46,7 @@ export interface Dr3shServer {
 	disabled?: boolean
 	disabled_message?: string
 	release_date?: string
+	preload_hours_before?: number
 }
 
 export interface Dr3shVersion {
@@ -888,21 +891,133 @@ export async function fetchVersionsData(forceLive = false) {
 		if (chosenData) {
 			catalogError.value = null
 			isOffline.value = false
+			startupBlockedOffline.value = false
+			offlineSinceMs.value = null
+			connectionLostFatal.value = false
 			applyCatalogData(chosenData, true, forceLive)
+			void syncNetworkClock()
 		} else {
 			catalogError.value =
 				'No se pudo conectar con los servidores de Dr3sh. Comprueba tu conexión a internet.'
 			if (typeof navigator !== 'undefined' && !navigator.onLine) {
 				isOffline.value = true
 			}
+			if (!startupChecked.value && servers.value.length === 0) {
+				startupBlockedOffline.value = true
+			}
 		}
+		startupChecked.value = true
 	} catch (err) {
 		console.error('Failed to load Dr3sh versions:', err)
 		catalogError.value =
 			'No se pudo conectar con los servidores de Dr3sh. Comprueba tu conexión a internet.'
+		if (!startupChecked.value && servers.value.length === 0) {
+			startupBlockedOffline.value = true
+		}
+		startupChecked.value = true
 	} finally {
 		loading.value = false
 		retryingCatalog.value = false
+	}
+}
+
+export const NETWORK_LOSS_GRACE_MS = 90_000
+export const startupChecked = ref(false)
+export const startupBlockedOffline = ref(false)
+export const connectionLostFatal = ref(false)
+export const hasActiveGameRunning = ref(false)
+export const offlineSinceMs = ref<number | null>(null)
+export const networkClockOffsetMs = ref(0)
+
+export interface DebugPreviewState {
+	open: boolean
+	forceMaintenance: boolean
+	forceNetworkState: 'normal' | 'startup_offline' | 'lost_connection' | 'catalog_error'
+	forceButtonAction:
+		| 'auto'
+		| 'download'
+		| 'preload'
+		| 'preloaded'
+		| 'countdown'
+		| 'play'
+		| 'update'
+		| 'repair'
+		| 'running'
+		| 'disabled'
+	viewportPreset: 'auto' | 'compact' | 'standard' | 'wide'
+}
+
+export const debugPreview = ref<DebugPreviewState>({
+	open: false,
+	forceMaintenance: false,
+	forceNetworkState: 'normal',
+	forceButtonAction: 'auto',
+	viewportPreset: 'auto',
+})
+
+export function resetDebugPreview() {
+	debugPreview.value = {
+		open: false,
+		forceMaintenance: false,
+		forceNetworkState: 'normal',
+		forceButtonAction: 'auto',
+		viewportPreset: 'auto',
+	}
+}
+
+export function parseReleaseDateMs(raw?: string): number {
+	if (!raw) return NaN
+	const trimmed = raw.trim()
+	if (!trimmed) return NaN
+	// If datetime-local has no timezone offset, interpret as Venezuela UTC-4 (-04:00)
+	if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(trimmed)) {
+		return new Date(`${trimmed}-04:00`).getTime()
+	}
+	return new Date(trimmed).getTime()
+}
+
+export function getRealNowMs(): number {
+	return Date.now() + networkClockOffsetMs.value
+}
+
+export async function syncNetworkClock() {
+	try {
+		const netMs = await invoke<number | null>('dr3sh_get_network_time')
+		if (typeof netMs === 'number' && Number.isFinite(netMs) && netMs > 0) {
+			networkClockOffsetMs.value = netMs - Date.now()
+		}
+	} catch {
+		// Ignore network clock sync failure
+	}
+}
+
+export async function checkNetworkHealthTick() {
+	if (typeof navigator !== 'undefined' && navigator.onLine) {
+		try {
+			const netMs = await invoke<number | null>('dr3sh_get_network_time')
+			if (typeof netMs === 'number' && Number.isFinite(netMs) && netMs > 0) {
+				networkClockOffsetMs.value = netMs - Date.now()
+				offlineSinceMs.value = null
+				isOffline.value = false
+				return
+			}
+		} catch {
+			// Fall through to offline tracking
+		}
+	}
+
+	if (hasActiveGameRunning.value) {
+		// Never interrupt or demand restart while Minecraft is open
+		offlineSinceMs.value = null
+		return
+	}
+
+	const now = Date.now()
+	if (offlineSinceMs.value === null) {
+		offlineSinceMs.value = now
+	} else if (now - offlineSinceMs.value >= NETWORK_LOSS_GRACE_MS) {
+		isOffline.value = true
+		connectionLostFatal.value = true
 	}
 }
 
@@ -1053,5 +1168,15 @@ export function useDr3shLauncher() {
 		setRailWidth,
 		toggleSidebarCollapse,
 		deselectModpack,
+		startupChecked,
+		startupBlockedOffline,
+		connectionLostFatal,
+		hasActiveGameRunning,
+		debugPreview,
+		resetDebugPreview,
+		parseReleaseDateMs,
+		getRealNowMs,
+		syncNetworkClock,
+		checkNetworkHealthTick,
 	}
 }

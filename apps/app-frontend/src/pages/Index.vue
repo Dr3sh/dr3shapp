@@ -88,6 +88,10 @@ const {
 	removeOwned,
 	resolveImageUrl,
 	handleAvatarError,
+	debugPreview,
+	hasActiveGameRunning,
+	parseReleaseDateMs,
+	getRealNowMs,
 } = useDr3shLauncher()
 
 const instancesQuery = useQuery(instanceListQueryOptions())
@@ -837,6 +841,7 @@ async function checkRunningState() {
 	const instId = matchingInstance.value?.id || null
 	if (!instId) {
 		isSelectedRunning.value = false
+		hasActiveGameRunning.value = false
 		lastRunningInstanceId = null
 		return
 	}
@@ -846,12 +851,14 @@ async function checkRunningState() {
 		const sameInstanceStopped =
 			lastRunningInstanceId === instId && isSelectedRunning.value && !nowRunning
 		isSelectedRunning.value = nowRunning
+		hasActiveGameRunning.value = nowRunning
 		lastRunningInstanceId = instId
 		if (sameInstanceStopped) {
 			void checkForRecentCrashAfterStop(instId)
 		}
 	} catch {
 		isSelectedRunning.value = false
+		hasActiveGameRunning.value = false
 		lastRunningInstanceId = instId
 	}
 }
@@ -907,14 +914,48 @@ watch(
 	{ immediate: true },
 )
 
-// Live countdown clock
-const countdownNow = ref(Date.now())
+// Live countdown clock & Preload state
+interface PreloadStatusDto {
+	preloaded: boolean
+	version?: string | null
+	release_date?: string | null
+	locked_mods_count: number
+}
+
+const preloadStatus = ref<PreloadStatusDto>({
+	preloaded: false,
+	version: null,
+	release_date: null,
+	locked_mods_count: 0,
+})
+
+async function refreshPreloadStatus(serverId?: string) {
+	if (!serverId) {
+		preloadStatus.value = { preloaded: false, version: null, release_date: null, locked_mods_count: 0 }
+		return
+	}
+	try {
+		preloadStatus.value = await invoke<PreloadStatusDto>('dr3sh_get_preload_state', { serverId })
+	} catch {
+		preloadStatus.value = { preloaded: false, version: null, release_date: null, locked_mods_count: 0 }
+	}
+}
+
+watch(
+	() => selectedServer.value?.id,
+	(sid) => {
+		void refreshPreloadStatus(sid)
+	},
+	{ immediate: true },
+)
+
+const countdownNow = ref(getRealNowMs())
 let countdownInterval: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
 	countdownInterval = setInterval(() => {
-		if (!isPowerSaving.value && selectedServer.value?.release_date) {
-			countdownNow.value = Date.now()
+		if (!isPowerSaving.value && (selectedServer.value?.release_date || isDeveloper.value)) {
+			countdownNow.value = getRealNowMs()
 		}
 	}, 1000)
 })
@@ -926,15 +967,40 @@ onUnmounted(() => {
 	}
 })
 
+const titleLogoFailed = ref(false)
+const titleLogoLoaded = ref(false)
+const titleLogoImgRef = ref<HTMLImageElement | null>(null)
+watch(
+	() => [selectedServer.value?.id, selectedServer.value?.title_logo],
+	async () => {
+		titleLogoFailed.value = false
+		titleLogoLoaded.value = false
+		await nextTick()
+		if (titleLogoImgRef.value?.complete && titleLogoImgRef.value.naturalWidth > 0) {
+			titleLogoLoaded.value = true
+		}
+	},
+	{ immediate: true },
+)
+
 const isCountdownActive = computed(() => {
 	if (!selectedServer.value?.release_date) return false
-	const target = new Date(selectedServer.value.release_date).getTime()
+	const target = parseReleaseDateMs(selectedServer.value.release_date)
 	return !isNaN(target) && target > countdownNow.value
+})
+
+const isPreloadWindowOpen = computed(() => {
+	const srv = selectedServer.value
+	if (!srv?.release_date || !srv.preload_hours_before || srv.preload_hours_before <= 0) return false
+	const target = parseReleaseDateMs(srv.release_date)
+	if (isNaN(target) || target <= countdownNow.value) return false
+	const windowStart = target - srv.preload_hours_before * 3600_000
+	return countdownNow.value >= windowStart
 })
 
 const countdownLabel = computed(() => {
 	if (!selectedServer.value?.release_date) return ''
-	const target = new Date(selectedServer.value.release_date).getTime()
+	const target = parseReleaseDateMs(selectedServer.value.release_date)
 	if (isNaN(target) || target <= countdownNow.value) return ''
 	const diffSec = Math.floor((target - countdownNow.value) / 1000)
 	const days = Math.floor(diffSec / 86400)
@@ -943,15 +1009,27 @@ const countdownLabel = computed(() => {
 	const secs = diffSec % 60
 	const pad = (n: number) => String(n).padStart(2, '0')
 	if (days > 0) {
-		return `Estreno en ${days}d ${pad(hours)}h ${pad(mins)}m ${pad(secs)}s`
+		return `Inicio del server en ${days}d ${pad(hours)}h ${pad(mins)}m ${pad(secs)}s`
 	}
-	return `Estreno en ${pad(hours)}:${pad(mins)}:${pad(secs)}`
+	return `Inicio del server en ${pad(hours)}:${pad(mins)}:${pad(secs)}`
 })
 
-const buttonAction = computed<'running' | 'repair' | 'play' | 'update' | 'download' | 'maintenance' | 'disabled' | 'countdown'>(() => {
+const buttonAction = computed<
+	'running' | 'repair' | 'play' | 'update' | 'download' | 'maintenance' | 'disabled' | 'countdown' | 'preload' | 'preloaded' | 'activate'
+>(() => {
+	if (isDeveloper.value && debugPreview.value.forceButtonAction !== 'auto') {
+		return debugPreview.value.forceButtonAction
+	}
 	if (maintenanceMode.value && !isDeveloper.value) return 'maintenance'
 	if (selectedServer.value?.disabled && !isDeveloper.value) return 'disabled'
-	if (isCountdownActive.value && !isDeveloper.value) return 'countdown'
+	if (isCountdownActive.value && !isDeveloper.value) {
+		if (preloadStatus.value.preloaded) return 'preloaded'
+		if (isPreloadWindowOpen.value && !isInstalled.value) return 'preload'
+		return 'countdown'
+	}
+	if (preloadStatus.value.preloaded && !isInstalled.value) {
+		return 'activate'
+	}
 	if (isSelectedRunning.value) return 'running'
 	if (selectedInstanceHealth.value.needs_repair) return 'repair'
 	if (!isInstalled.value) return 'download'
@@ -965,6 +1043,15 @@ const buttonLabel = computed(() => {
 	}
 	if (buttonAction.value === 'disabled') {
 		return selectedServer.value?.disabled_message?.trim() || 'Modpack no disponible'
+	}
+	if (buttonAction.value === 'preload') {
+		return 'Precargar Modpack'
+	}
+	if (buttonAction.value === 'preloaded') {
+		return countdownLabel.value ? `Precargado · ${countdownLabel.value}` : 'Precargado · Esperando inicio del server'
+	}
+	if (buttonAction.value === 'activate') {
+		return 'Activar y Jugar'
 	}
 	if (buttonAction.value === 'countdown') {
 		return countdownLabel.value || 'Próximamente'
@@ -1628,7 +1715,83 @@ async function handlePlayOrInstall() {
 	}
 
 	if (buttonAction.value === 'countdown') {
-		showToast(`Este modpack no está disponible hasta el estreno: ${countdownLabel.value}`, 4500)
+		showToast(`Este modpack no está disponible hasta el inicio del server: ${countdownLabel.value}`, 4500)
+		return
+	}
+
+	if (buttonAction.value === 'preloaded') {
+		showToast('Modpack precargado y protegido. Se desbloqueará al iniciar el server.', 4500)
+		return
+	}
+
+	if (buttonAction.value === 'preload' && selectedServer.value && selectedVersion.value) {
+		try {
+			busy.value = true
+			const srv = selectedServer.value
+			const ver = selectedVersion.value
+			showToast(`Precargando ${srv.title} v${ver.version} en modo protegido...`)
+			await downloadAndInstallModpack({
+				server: srv,
+				version: ver,
+				bypassGate: true,
+				onSuccess: async (done) => {
+					await invoke('dr3sh_lock_preload', {
+						serverId: srv.id,
+						instanceId: done.instance_id,
+						instanceDir: done.instance_path,
+						version: done.version || ver.version || '1.0.0',
+						releaseDate: srv.release_date || null,
+					})
+					await refreshPreloadStatus(srv.id)
+					await instancesQuery.refetch()
+					showToast(`¡${srv.title} precargado y protegido! Se activará en 1 segundo al estrenarse.`, 5500)
+				},
+				onError: (err) => {
+					openErrorDiagnosticsModal(err)
+				},
+			})
+		} catch (e: any) {
+			openErrorDiagnosticsModal(e)
+		} finally {
+			busy.value = false
+		}
+		return
+	}
+
+	if (buttonAction.value === 'activate' && selectedServer.value && selectedVersion.value) {
+		try {
+			busy.value = true
+			const srv = selectedServer.value
+			const ver = selectedVersion.value
+			showToast(`Activando precarga de ${srv.title}...`)
+			await invoke('dr3sh_activate_preload', {
+				serverId: srv.id,
+				versionRef: {
+					id: ver.id,
+					version: ver.version,
+					download_url: ver.link,
+					manifest_url: ver.manifest,
+					game_version: ver.minecraft_version || srv.minecraft_version,
+					loader: ver.mod_loader || srv.mod_loader,
+					loader_version: ver.mod_loader_version || srv.mod_loader_version,
+					sha256: ver.sha256,
+					size_mb: ver.size_mb,
+					server_name: srv.title,
+					icon_url: srv.logo_square || srv.logo || srv.image || null,
+				},
+				expectedReleaseDate: srv.release_date || null,
+				bypassGate: Boolean(isDeveloper.value),
+			})
+			addOwned(srv.id)
+			await refreshPreloadStatus(srv.id)
+			await instancesQuery.refetch()
+			await checkSelectedInstanceHealth()
+			showToast(`¡${srv.title} activado al instante! Ya puedes jugar.`, 4500)
+		} catch (e: any) {
+			openErrorDiagnosticsModal(e)
+		} finally {
+			busy.value = false
+		}
 		return
 	}
 
@@ -2020,7 +2183,20 @@ const filteredMarketServers = computed(() => {
 		<!-- 2. HEADER DEL MODPACK (SIN PÍLDORA 'AL DÍA', SIN VERSIÓN DUPLICADA ARRIBA) -->
 		<div class="hero-top-row">
 			<div class="hero-meta-col">
-				<h1 class="hero-modpack-title">{{ selectedServer.title }}</h1>
+				<img
+					v-if="selectedServer.title_logo && !titleLogoFailed"
+					ref="titleLogoImgRef"
+					v-show="titleLogoLoaded"
+					:key="`${selectedServer.id}:${selectedServer.title_logo}`"
+					:src="resolveImageUrl(selectedServer.title_logo)"
+					:alt="selectedServer.title"
+					class="hero-modpack-title-logo"
+					@load="titleLogoLoaded = true; titleLogoFailed = false"
+					@error="titleLogoFailed = true"
+				/>
+				<h1 v-if="!selectedServer.title_logo || titleLogoFailed || !titleLogoLoaded" class="hero-modpack-title">
+					{{ selectedServer.title }}
+				</h1>
 				<div
 					v-if="selectedServer.description"
 					v-scroll-desc="selectedServer.description"
@@ -2495,8 +2671,8 @@ const filteredMarketServers = computed(() => {
 				<button
 					type="button"
 					class="hero-play-button"
-					:class="[`action-${buttonAction}`, { 'is-running': buttonAction === 'running', 'is-disabled-server': buttonAction === 'disabled', 'is-countdown': buttonAction === 'countdown' }]"
-					:disabled="busy || isDownloading || buttonAction === 'running' || buttonAction === 'disabled' || buttonAction === 'countdown'"
+					:class="[`action-${buttonAction}`, { 'is-running': buttonAction === 'running', 'is-disabled-server': buttonAction === 'disabled', 'is-countdown': buttonAction === 'countdown' || buttonAction === 'preloaded', 'is-preload': buttonAction === 'preload' }]"
+					:disabled="busy || isDownloading || buttonAction === 'running' || buttonAction === 'disabled' || buttonAction === 'countdown' || buttonAction === 'preloaded'"
 					:title="buttonAction === 'repair' && selectedInstanceHealth.reason ? selectedInstanceHealth.reason : undefined"
 					@click="handlePlayOrInstall"
 				>
@@ -2696,10 +2872,21 @@ const filteredMarketServers = computed(() => {
 			>
 				<div class="market-card-banner">
 					<img
-						:src="getThumbnailUrl(getServerPreviewImages(server)[0] || resolveImageUrl(server.image || server.logo || server.logo_square))"
+						:src="
+							server.explore_image
+								? resolveImageUrl(server.explore_image)
+								: getThumbnailUrl(getServerPreviewImages(server)[0] || resolveImageUrl(server.image || server.logo || server.logo_square))
+						"
 						:alt="server.title"
 						class="market-card-img"
-						@error="handleImageError($event, getServerPreviewImages(server)[0] || resolveImageUrl(server.image || server.logo || server.logo_square))"
+						@error="
+							handleImageError(
+								$event,
+								server.explore_image
+									? resolveImageUrl(server.explore_image)
+									: getServerPreviewImages(server)[0] || resolveImageUrl(server.image || server.logo || server.logo_square),
+							)
+						"
 					/>
 					<span class="market-loader-badge">
 						{{ formatLoaderName(server.mod_loader) }}

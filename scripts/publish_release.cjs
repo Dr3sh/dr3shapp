@@ -8,10 +8,13 @@ async function publishRelease({
 	title,
 	archivePath,
 	description = '',
-	targetRepo = 'Dr3sh/modpack-versions',
+	targetRepo = 'ramirezjeider28-alt/modpack-versions',
 	minecraftVersion = '1.21.1',
 	loader = 'fabric',
 	loaderVersion = '',
+	baseManifestUrl = '',
+	baseTag = '',
+	fastPatch = true,
 }) {
 	return await publishModpack({
 		packId: serverId,
@@ -24,6 +27,9 @@ async function publishRelease({
 		title,
 		description,
 		token,
+		baseManifestUrl: baseManifestUrl || null,
+		baseTag: baseTag || null,
+		fastPatch,
 		dryRun: false,
 		onProgress: (progress) => {
 			console.log(`DR3SH_PROGRESS:${JSON.stringify(progress)}`)
@@ -43,10 +49,13 @@ if (require.main === module) {
 	const archivePath = getArg('--zip') || getArg('--src')
 	const title = getArg('--title')
 	const description = getArg('--description')
-	const repo = getArg('--repo') || 'Dr3sh/modpack-versions'
+	const repo = getArg('--repo') || 'ramirezjeider28-alt/modpack-versions'
 	const minecraftVersion = getArg('--mc') || getArg('--mc-version') || '1.21.1'
 	const loader = getArg('--loader') || 'fabric'
 	const loaderVersion = getArg('--loader-version')
+	const baseManifestUrl = getArg('--base-manifest')
+	const baseTag = getArg('--base-tag')
+	const fastPatch = !args.includes('--no-fast-patch')
 	const token = process.env.GITHUB_TOKEN || getArg('--token')
 
 	publishRelease({
@@ -60,6 +69,9 @@ if (require.main === module) {
 		minecraftVersion,
 		loader,
 		loaderVersion,
+		baseManifestUrl,
+		baseTag,
+		fastPatch,
 	})
 		.then((result) => {
 			console.log(`DR3SH_RESULT_JSON_START${JSON.stringify(result)}DR3SH_RESULT_JSON_END`)

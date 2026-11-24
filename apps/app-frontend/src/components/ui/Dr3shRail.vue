@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import { invoke } from '@tauri-apps/api/core'
@@ -13,6 +13,7 @@ import {
 	loaderIconUrl,
 	formatLoaderName,
 	requestDeleteConfirm,
+	getStageImageUrl,
 } from '@/composables/use-dr3sh-launcher'
 import {
 	useDr3shDownloader,
@@ -23,9 +24,78 @@ import {
 	findMatchingInstance as findMatchingInstanceHelper,
 } from '@/composables/use-dr3sh-downloader'
 import { run, get_full_path } from '@/helpers/instance'
+import { get_by_instance_id } from '@/helpers/process.js'
 import { showInstanceInFolder } from '@/helpers/utils.js'
 
 const DR3SH_LOGO_DATA_URI = '/logo.png'
+
+const hoverPreloadCache = new Map<
+	string,
+	{ images: HTMLImageElement[]; timer: ReturnType<typeof setTimeout> }
+>()
+
+function evictHoverPreload(serverId: string) {
+	const entry = hoverPreloadCache.get(serverId)
+	if (!entry) return
+	clearTimeout(entry.timer)
+	for (const img of entry.images) {
+		img.onload = null
+		img.onerror = null
+		img.src = ''
+	}
+	entry.images.length = 0
+	hoverPreloadCache.delete(serverId)
+}
+
+function preloadServerImagesOnHover(server: Dr3shServer) {
+	if (!server?.id || selectedId.value === server.id) return
+
+	const existing = hoverPreloadCache.get(server.id)
+	if (existing) {
+		clearTimeout(existing.timer)
+		existing.timer = setTimeout(() => {
+			if (selectedId.value !== server.id) {
+				evictHoverPreload(server.id)
+			}
+		}, 5000)
+		return
+	}
+
+	const rawUrls: string[] = []
+	if (server.title_logo) {
+		rawUrls.push(resolveImageUrl(server.title_logo))
+	}
+	const previewFirst = getServerPreviewImages(server)[0]
+	if (previewFirst) {
+		rawUrls.push(getStageImageUrl(previewFirst))
+	} else if (server.image) {
+		rawUrls.push(getStageImageUrl(resolveImageUrl(server.image)))
+	}
+
+	const uniqueUrls = Array.from(new Set(rawUrls.filter(Boolean)))
+	if (uniqueUrls.length === 0) return
+
+	const images = uniqueUrls.map((url) => {
+		const img = new Image()
+		img.decoding = 'async'
+		img.src = url
+		return img
+	})
+
+	const timer = setTimeout(() => {
+		if (selectedId.value !== server.id) {
+			evictHoverPreload(server.id)
+		}
+	}, 5000)
+
+	hoverPreloadCache.set(server.id, { images, timer })
+}
+
+onUnmounted(() => {
+	for (const sid of Array.from(hoverPreloadCache.keys())) {
+		evictHoverPreload(sid)
+	}
+})
 
 const router = useRouter()
 const {
@@ -85,25 +155,150 @@ function selectServer(id: string) {
 	}
 }
 
-async function handleQuickPlay(event: MouseEvent, server: Dr3shServer) {
-	event.stopPropagation()
-	selectServer(server.id)
-	const inst = findMatchingInstance(server)
-	if (inst && isServerInstalled(server)) {
-		try {
-			if (!activeAccount.value) {
-				await refreshAccount()
+const runningServerIds = ref<Record<string, boolean>>({})
+const launchingServerIds = ref<Record<string, boolean>>({})
+const needsRepairMap = ref<Record<string, boolean>>({})
+let railStatusTimer: ReturnType<typeof setInterval> | null = null
+
+function getRailAction(server: Dr3shServer): 'running' | 'repair' | 'update' | 'play' {
+	if (runningServerIds.value[server.id] || launchingServerIds.value[server.id]) {
+		return 'running'
+	}
+	if (needsRepairMap.value[server.id]) {
+		return 'repair'
+	}
+	if (hasServerUpdate(server)) {
+		return 'update'
+	}
+	return 'play'
+}
+
+function isRailActionDisabled(server: Dr3shServer): boolean {
+	const action = getRailAction(server)
+	if (action === 'running') return true
+	if (isDownloading.value) return true
+	return false
+}
+
+function getRailActionTitle(server: Dr3shServer): string {
+	if (launchingServerIds.value[server.id]) return `Iniciando ${server.title}...`
+	const action = getRailAction(server)
+	if (action === 'running') return `${server.title} ya está en ejecución`
+	if (action === 'repair') return `Reparar ${server.title}`
+	if (action === 'update') return `Actualizar ${server.title}`
+	return `Jugar a ${server.title}`
+}
+
+async function refreshRailStatuses() {
+	if (typeof document !== 'undefined' && document.hidden) return
+	const list = ownedServers.value
+	if (!list.length) return
+
+	const nextRunning: Record<string, boolean> = {}
+	const nextRepair: Record<string, boolean> = {}
+
+	await Promise.all(
+		list.map(async (server) => {
+			if (!isServerInstalled(server)) return
+			const inst = findMatchingInstance(server)
+			if (!inst?.id) return
+			try {
+				const procs = await get_by_instance_id(inst.id)
+				nextRunning[server.id] = Array.isArray(procs) && procs.length > 0
+			} catch {
+				nextRunning[server.id] = false
 			}
-			await invoke('dr3sh_prepare_launch', {
-				serverId: server.id,
-				isOffline: !activeAccount.value?.isMicrosoft,
-				offlineUsername: activeAccount.value?.name || 'Player',
-				bypassGate: Boolean(isDeveloper.value),
+			if (!isDownloading.value && !nextRunning[server.id]) {
+				try {
+					let fallbackPath = getInstalledFolder(server.id)
+					if (!fallbackPath) {
+						fallbackPath = await get_full_path(inst.id).catch(() => null)
+					}
+					const health = await invoke<{ needs_repair?: boolean }>('dr3sh_check_instance_health', {
+						serverId: server.id,
+						fallbackInstancePath: fallbackPath || null,
+					})
+					nextRepair[server.id] = Boolean(health?.needs_repair)
+				} catch {
+					nextRepair[server.id] = false
+				}
+			}
+		}),
+	)
+
+	runningServerIds.value = nextRunning
+	needsRepairMap.value = nextRepair
+}
+
+async function handleRailAction(event: MouseEvent, server: Dr3shServer) {
+	event.stopPropagation()
+	if (isRailActionDisabled(server)) return
+
+	const action = getRailAction(server)
+	selectServer(server.id)
+
+	if (action === 'repair') {
+		const ver = getLatestVersionForServer(server)
+		if (!ver) return
+		try {
+			await repairModpack({
+				server,
+				version: ver,
+				onSuccess: async () => {
+					await instancesQuery.refetch()
+					await refreshRailStatuses()
+				},
 			})
-			await run(inst.id)
 		} catch (e) {
-			console.warn('Quick play failed:', e)
+			console.warn('Sidebar repair failed:', e)
 		}
+		return
+	}
+
+	if (action === 'update') {
+		const ver = getLatestVersionForServer(server)
+		const inst = findMatchingInstance(server)
+		if (!ver) return
+		try {
+			await downloadAndInstallModpack({
+				server,
+				version: ver,
+				matchingInstanceId: inst?.id,
+				customFolder: getInstalledFolder(server.id),
+				bypassGate: Boolean(isDeveloper.value),
+				onSuccess: async () => {
+					await instancesQuery.refetch()
+					await refreshRailStatuses()
+				},
+			})
+		} catch (e) {
+			console.warn('Sidebar update failed:', e)
+		}
+		return
+	}
+
+	const inst = findMatchingInstance(server)
+	if (!inst || !isServerInstalled(server)) return
+
+	launchingServerIds.value = { ...launchingServerIds.value, [server.id]: true }
+	try {
+		if (!activeAccount.value) {
+			await refreshAccount()
+		}
+		await invoke('dr3sh_prepare_launch', {
+			serverId: server.id,
+			isOffline: !activeAccount.value?.isMicrosoft,
+			offlineUsername: activeAccount.value?.name || 'Player',
+			bypassGate: Boolean(isDeveloper.value),
+		})
+		await run(inst.id)
+		runningServerIds.value = { ...runningServerIds.value, [server.id]: true }
+	} catch (e) {
+		console.warn('Quick play failed:', e)
+	} finally {
+		const nextLaunching = { ...launchingServerIds.value }
+		delete nextLaunching[server.id]
+		launchingServerIds.value = nextLaunching
 	}
 }
 
@@ -271,14 +466,28 @@ function onResizerMouseUp() {
 	window.removeEventListener('mouseup', onResizerMouseUp)
 }
 
+watch([ownedServers, instances, isDownloading], () => {
+	void refreshRailStatuses()
+})
+
 onMounted(() => {
 	refreshAccount()
+	void refreshRailStatuses()
 	window.addEventListener('click', closeContextMenu)
+	window.addEventListener('focus', refreshRailStatuses)
+	railStatusTimer = setInterval(() => {
+		void refreshRailStatuses()
+	}, 3000)
 })
 onUnmounted(() => {
 	window.removeEventListener('click', closeContextMenu)
+	window.removeEventListener('focus', refreshRailStatuses)
 	window.removeEventListener('mousemove', onResizerMouseMove)
 	window.removeEventListener('mouseup', onResizerMouseUp)
+	if (railStatusTimer) {
+		clearInterval(railStatusTimer)
+		railStatusTimer = null
+	}
 })
 </script>
 
@@ -416,7 +625,8 @@ onUnmounted(() => {
 						installed: isServerInstalled(server),
 						'has-update': hasServerUpdate(server),
 					}"
-					@click="selectServer(server.id)"
+					@mouseenter="preloadServerImagesOnHover(server)"
+					@click="evictHoverPreload(server.id); selectServer(server.id)"
 					@contextmenu.prevent="openSidebarContextMenu($event, server)"
 				>
 					<span class="server-thumb">
@@ -440,16 +650,30 @@ onUnmounted(() => {
 							}"
 						/>
 
-						<!-- Overlay Play Button: visible on hover in 1:1 mode ONLY IF INSTALLED -->
+						<!-- Unified Overlay Action Button (1:1 collapsed mode): Running / Repair / Update / Play -->
 						<span
 							v-if="isServerInstalled(server)"
 							class="overlay-play-btn"
+							:class="{
+								'is-running': getRailAction(server) === 'running',
+								'is-update': getRailAction(server) === 'update',
+								'is-repair': getRailAction(server) === 'repair',
+								'is-busy': isRailActionDisabled(server) && getRailAction(server) !== 'running',
+							}"
 							role="button"
-							tabindex="0"
-							:title="`Jugar a ${server.title}`"
-							@click.stop="handleQuickPlay($event, server)"
+							:tabindex="isRailActionDisabled(server) ? -1 : 0"
+							:aria-disabled="isRailActionDisabled(server)"
+							:title="getRailActionTitle(server)"
+							@click.stop="handleRailAction($event, server)"
 						>
-							<svg viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5 fill-current">
+							<span v-if="getRailAction(server) === 'running'" class="rail-running-dot" />
+							<svg v-else-if="getRailAction(server) === 'repair'" viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5 fill-current">
+								<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2-2a5.5 5.5 0 0 1-7.4 7.4l-6.2 6.2a1.8 1.8 0 0 1-2.6-2.6l6.2-6.2a5.5 5.5 0 0 1 7.4-7.4l-2.4 1.6Z" />
+							</svg>
+							<svg v-else-if="getRailAction(server) === 'update'" viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5">
+								<path d="M10 15V5m0 0-4 4m4-4 4 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+							</svg>
+							<svg v-else viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5 fill-current">
 								<path d="M6 4.5 15.5 10 6 15.5V4.5Z" />
 							</svg>
 						</span>
@@ -463,27 +687,31 @@ onUnmounted(() => {
 						</span>
 					</span>
 
-					<!-- Quick Play Button on the right (expanded mode) ONLY IF INSTALLED -->
+					<!-- Single Unified Action Button (expanded mode): Running / Repair / Update / Play -->
 					<span
 						v-if="isServerInstalled(server)"
 						class="rail-quick-play-btn"
+						:class="{
+							'is-running': getRailAction(server) === 'running',
+							'is-update': getRailAction(server) === 'update',
+							'is-repair': getRailAction(server) === 'repair',
+							'is-busy': isRailActionDisabled(server) && getRailAction(server) !== 'running',
+						}"
 						role="button"
-						tabindex="0"
-						:title="`Jugar a ${server.title}`"
-						@click.stop="handleQuickPlay($event, server)"
+						:tabindex="isRailActionDisabled(server) ? -1 : 0"
+						:aria-disabled="isRailActionDisabled(server)"
+						:title="getRailActionTitle(server)"
+						@click.stop="handleRailAction($event, server)"
 					>
-						<svg viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5 fill-current">
-							<path d="M6 4.5 15.5 10 6 15.5V4.5Z" />
+						<span v-if="getRailAction(server) === 'running'" class="rail-running-dot" />
+						<svg v-else-if="getRailAction(server) === 'repair'" viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5 fill-current">
+							<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2-2a5.5 5.5 0 0 1-7.4 7.4l-6.2 6.2a1.8 1.8 0 0 1-2.6-2.6l6.2-6.2a5.5 5.5 0 0 1 7.4-7.4l-2.4 1.6Z" />
 						</svg>
-					</span>
-
-					<span
-						v-if="hasServerUpdate(server)"
-						class="update-badge"
-						title="Actualización disponible"
-					>
-						<svg viewBox="0 0 20 20" aria-hidden="true">
-							<path d="M10 15V5m0 0-4 4m4-4 4 4" />
+						<svg v-else-if="getRailAction(server) === 'update'" viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5">
+							<path d="M10 15V5m0 0-4 4m4-4 4 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+						</svg>
+						<svg v-else viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5 fill-current">
+							<path d="M6 4.5 15.5 10 6 15.5V4.5Z" />
 						</svg>
 					</span>
 				</button>
