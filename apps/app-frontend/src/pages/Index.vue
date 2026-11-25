@@ -949,6 +949,22 @@ watch(
 	{ immediate: true },
 )
 
+watch(
+	() => [selectedServer.value?.id, selectedServer.value?.logo_square, matchingInstance.value?.id],
+	([sid, logoSq, instId]) => {
+		if (!sid || !instId || !selectedServer.value) return
+		const rawIcon = logoSq || selectedServer.value.logo || selectedServer.value.image
+		if (!rawIcon) return
+		void invoke('dr3sh_sync_desktop_shortcut_icon', {
+			instanceName: selectedServer.value.title,
+			instanceId: String(instId),
+			serverId: String(sid),
+			iconUrl: resolveImageUrl(String(rawIcon)),
+		}).catch(() => {})
+	},
+	{ immediate: true },
+)
+
 const countdownNow = ref(getRealNowMs())
 let countdownInterval: ReturnType<typeof setInterval> | null = null
 
@@ -2019,15 +2035,6 @@ async function confirmInstallLocation() {
 					} catch {}
 				}
 				await instancesQuery.refetch()
-				const createdInst = findInstanceForServer(server)
-				const rawIcon = server.logo_square || server.logo || server.image
-				const iconUrl = rawIcon ? resolveImageUrl(rawIcon) : null
-				void invoke('dr3sh_create_desktop_shortcut', {
-					instanceName: server.title,
-					instanceId: createdInst?.id || server.id,
-					serverId: server.id,
-					iconUrl,
-				}).catch(() => {})
 				showToast(`¡${server.title} se ha instalado correctamente y está listo para jugar!`)
 			},
 			onError: (err) => {

@@ -2491,32 +2491,19 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 		role="dialog"
 		aria-modal="true"
 		aria-labelledby="dr3sh-update-title"
-		@click="dismissLauncherUpdateModal"
 	>
 		<div class="dr3sh-update-modal" @click.stop>
 			<div class="dr3sh-update-header">
 				<div>
 					<span class="dr3sh-update-pill">Nueva actualización</span>
 					<h3 id="dr3sh-update-title" class="dr3sh-update-title">
-						{{ launcherUpdateInfo.releaseName || `Dr3sh Launcher v${launcherUpdateInfo.latestVersion}` }}
+						La nueva versión v{{ launcherUpdateInfo.latestVersion }} ya está disponible
 					</h3>
 					<p class="dr3sh-update-versions">
 						Instalada: <strong>v{{ launcherUpdateInfo.currentVersion }}</strong> → Disponible:
 						<strong class="dr3sh-update-new-ver">v{{ launcherUpdateInfo.latestVersion }}</strong>
 					</p>
 				</div>
-				<button
-					type="button"
-					class="dr3sh-update-close"
-					aria-label="Cerrar"
-					@click="dismissLauncherUpdateModal"
-				>
-					✕
-				</button>
-			</div>
-
-			<div v-if="launcherUpdateInfo.releaseNotes" class="dr3sh-update-notes">
-				{{ launcherUpdateInfo.releaseNotes }}
 			</div>
 
 			<p class="dr3sh-update-safe-note">
@@ -2526,24 +2513,10 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 			<div class="dr3sh-update-actions">
 				<button
 					type="button"
-					class="dr3sh-update-btn-secondary"
-					@click="dismissLauncherUpdateModal"
-				>
-					Más tarde
-				</button>
-				<button
-					type="button"
-					class="dr3sh-update-btn-secondary"
-					@click="openLauncherUpdateDownload(launcherUpdateInfo.releasePageUrl)"
-				>
-					Ver en GitHub
-				</button>
-				<button
-					type="button"
 					class="dr3sh-update-btn-primary"
 					@click="openLauncherUpdateDownload()"
 				>
-					Descargar actualización (Recomendado)
+					Actualizar ahora
 				</button>
 			</div>
 		</div>

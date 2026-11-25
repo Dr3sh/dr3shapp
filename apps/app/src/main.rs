@@ -639,6 +639,81 @@ async fn dr3sh_create_desktop_shortcut(
 }
 
 #[tauri::command]
+async fn dr3sh_sync_desktop_shortcut_icon(
+    app: tauri::AppHandle,
+    instance_name: String,
+    instance_id: String,
+    server_id: Option<String>,
+    icon_url: Option<String>,
+) -> api::Result<bool> {
+    let Some(desktop) = resolve_windows_desktop_dir(&app) else {
+        return Ok(false);
+    };
+    let safe_name: String = instance_name
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect();
+    let safe_name = if safe_name.trim().is_empty() {
+        "Modpack".to_string()
+    } else {
+        safe_name.trim().to_string()
+    };
+    let out_path = desktop.join(format!("{safe_name}.lnk"));
+    if !out_path.is_file() {
+        return Ok(false);
+    }
+
+    let trimmed_url = icon_url.as_deref().map(str::trim).unwrap_or("");
+    if trimmed_url.is_empty() {
+        return Ok(false);
+    }
+
+    let key = server_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&instance_id);
+    let safe_key: String = key
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let marker_path = dr3sh::logger::launcher_data_dir()
+        .join("icons")
+        .join(format!("{safe_key}.shortcut_url.txt"));
+    if let Ok(prev_url) = std::fs::read_to_string(&marker_path)
+        && prev_url.trim() == trimmed_url
+    {
+        return Ok(false);
+    }
+
+    let icon_path = resolve_instance_shortcut_ico(
+        &instance_id,
+        server_id.as_deref(),
+        Some(trimmed_url),
+    )
+    .await;
+    if icon_path.is_none() {
+        return Ok(false);
+    }
+
+    api::shortcuts::create_instance_shortcut(
+        instance_name,
+        instance_id,
+        out_path,
+        None,
+        None,
+        icon_path,
+    )
+    .await?;
+
+    if let Some(parent) = marker_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&marker_path, trimmed_url);
+    Ok(true)
+}
+
+#[tauri::command]
 async fn dr3sh_detect_github_token() -> Option<String> {
     tokio::task::spawn_blocking(|| {
         use std::process::Command;
@@ -1104,6 +1179,7 @@ fn main() {
             dr3sh_clear_dev_session,
             dr3sh_detect_github_token,
             dr3sh_create_desktop_shortcut,
+            dr3sh_sync_desktop_shortcut_icon,
             dr3sh_check_instance_health,
             dr3sh_get_network_time,
             dr3sh_get_preload_state,

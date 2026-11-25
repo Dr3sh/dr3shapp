@@ -757,6 +757,9 @@ pub async fn wait_for_theseus_base(
 ) -> Result<(), Dr3shError> {
     let mut last_progress_change = Instant::now();
     let mut last_progress_signature = String::new();
+    let mut last_bytes_sample_at = Instant::now();
+    let mut last_bytes_sample: u64 = 0;
+    let mut smoothed_speed_bps: u64 = 0;
     let timeout = Duration::from_secs(600); // 10 minutes of no progress change
 
     // Brief initial pause so Theseus can register any newly spawned install job
@@ -823,7 +826,10 @@ pub async fn wait_for_theseus_base(
                 InstallJobStatus::Queued | InstallJobStatus::Running => {
                     let cur = job.progress.as_ref().map(|p| p.current).unwrap_or(0);
                     let tot = job.progress.as_ref().map(|p| p.total).unwrap_or(100);
-                    let sig = format!("{:?}:{}/{}", job.phase, cur, tot);
+                    let sec = job.progress.as_ref().and_then(|p| p.secondary.as_ref());
+                    let sec_cur = sec.map(|s| s.current).unwrap_or(0);
+                    let sec_tot = sec.map(|s| s.total).unwrap_or(0);
+                    let sig = format!("{:?}:{}/{}:{}/{}", job.phase, cur, tot, sec_cur, sec_tot);
                     if sig != last_progress_signature {
                         last_progress_signature = sig.clone();
                         last_progress_change = Instant::now();
@@ -833,23 +839,60 @@ pub async fn wait_for_theseus_base(
                         });
                     }
 
+                    let (bytes_done, bytes_total) = if sec_tot > 1024 {
+                        (sec_cur.min(sec_tot), sec_tot)
+                    } else if tot > 1024 {
+                        (cur.min(tot), tot)
+                    } else {
+                        (0, 0)
+                    };
+
+                    if bytes_done > last_bytes_sample {
+                        let dt = last_bytes_sample_at.elapsed().as_secs_f64();
+                        if dt >= 0.25 {
+                            let inst_speed = ((bytes_done - last_bytes_sample) as f64 / dt) as u64;
+                            smoothed_speed_bps = if smoothed_speed_bps == 0 {
+                                inst_speed
+                            } else {
+                                ((smoothed_speed_bps as f64 * 0.65) + (inst_speed as f64 * 0.35)) as u64
+                            };
+                            last_bytes_sample = bytes_done;
+                            last_bytes_sample_at = Instant::now();
+                        }
+                    } else if bytes_done < last_bytes_sample {
+                        last_bytes_sample = bytes_done;
+                        last_bytes_sample_at = Instant::now();
+                        smoothed_speed_bps = 0;
+                    }
+
+                    let eta_s = if bytes_total > bytes_done && smoothed_speed_bps > 0 {
+                        Some((bytes_total - bytes_done) / smoothed_speed_bps)
+                    } else {
+                        None
+                    };
+
                     let ratio = if tot > 0 {
                         (cur as f64 / tot as f64).clamp(0.0, 1.0)
                     } else {
-                        0.2
+                        0.15
                     };
                     let pct = (1.0 + ratio * 5.0).round() as u32;
+                    let phase_msg = if bytes_total > 0 {
+                        "Descargando Minecraft y modloader..."
+                    } else {
+                        "Preparando Minecraft y modloader..."
+                    };
                     if let Some(app_handle) = app {
                         emit_progress(
                             app_handle,
                             op_id,
                             server_id,
                             "base",
-                            format!("Instalando Minecraft/Loader ({:?})...", job.phase),
-                            (ratio * 100.0) as u64,
-                            100,
-                            0,
-                            None,
+                            phase_msg,
+                            bytes_done,
+                            bytes_total,
+                            smoothed_speed_bps,
+                            eta_s,
                             Some(pct),
                         );
                     }
