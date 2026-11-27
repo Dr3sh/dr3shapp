@@ -135,21 +135,25 @@ async function close() {
 			</div>
 		</div>
 
-		<div class="window-controls" aria-label="Controles de ventana" data-tauri-drag-region-exclude>
-			<button class="window-control" title="Minimizar" aria-label="Minimizar" @click="minimize">
-				<span class="minimize-glyph" />
-			</button>
-			<button
-				class="window-control"
-				:title="isMaximized ? 'Restaurar' : 'Maximizar'"
-				aria-label="Maximizar"
-				@click="toggleMaximize"
-			>
-				<span :class="isMaximized ? 'restore-glyph' : 'maximize-glyph'" />
-			</button>
-			<button class="window-control close-control" title="Cerrar" aria-label="Cerrar" @click="close">
-				<span class="close-glyph" />
-			</button>
-		</div>
+		<div class="window-controls-spacer" aria-hidden="true" />
+
+		<Teleport to="body">
+			<div class="window-controls window-controls-floating" aria-label="Controles de ventana" data-tauri-drag-region-exclude>
+				<button class="window-control" title="Minimizar" aria-label="Minimizar" @click="minimize">
+					<span class="minimize-glyph" />
+				</button>
+				<button
+					class="window-control"
+					:title="isMaximized ? 'Restaurar' : 'Maximizar'"
+					aria-label="Maximizar"
+					@click="toggleMaximize"
+				>
+					<span :class="isMaximized ? 'restore-glyph' : 'maximize-glyph'" />
+				</button>
+				<button class="window-control close-control" title="Cerrar" aria-label="Cerrar" @click="close">
+					<span class="close-glyph" />
+				</button>
+			</div>
+		</Teleport>
 	</header>
 </template>

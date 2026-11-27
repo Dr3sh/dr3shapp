@@ -49,6 +49,13 @@ export interface Dr3shServer {
 	preload_hours_before?: number
 }
 
+export interface Dr3shVersionPatch {
+	from: string
+	url: string
+	size?: number
+	sha256?: string
+}
+
 export interface Dr3shVersion {
 	id: string
 	server: string
@@ -57,6 +64,7 @@ export interface Dr3shVersion {
 	description?: string
 	link?: string
 	manifest?: string
+	patch?: Dr3shVersionPatch | null
 	sha256?: string
 	minecraft_version?: string
 	mod_loader?: string
@@ -442,10 +450,14 @@ export function getRawServerColor(server?: Dr3shServer | null): string {
 
 export function getSubduedColor(hex: string): string {
 	const [h, s, l] = hexToHsl(hex)
-	// Desaturar moderadamente para evitar saturaciones fluorescentes
-	const newS = Math.max(0.18, Math.min(0.62, s * 0.70))
-	// Oscurecer moderadamente para evitar brillos excesivos en la interfaz
-	const newL = Math.max(0.22, Math.min(0.44, l * 0.82))
+	// Si el color base es gris/neutro, conservarlo gris plateado (evitar forzar saturación que lo vuelve marrón)
+	if (s < 0.1) {
+		const neutralL = Math.max(0.46, Math.min(0.64, l))
+		return hslToHex(0, Math.min(s, 0.04), neutralL)
+	}
+	// Acento vivo y con identidad sobre negro AMOLED, evitando neones chillones
+	const newS = Math.max(0.32, Math.min(0.80, s * 0.88))
+	const newL = Math.max(0.38, Math.min(0.54, l * 0.94))
 	return hslToHex(h, newS, newL)
 }
 
@@ -454,11 +466,26 @@ export function getAccentColor(server?: Dr3shServer | null): string {
 	return getSubduedColor(getRawServerColor(server))
 }
 
+export function getContrastTextColor(hex: string): '#0b0e14' | '#ffffff' {
+	const clean = String(hex || '').replace('#', '').trim()
+	if (clean.length !== 6) return '#ffffff'
+	const toLinear = (c: number) => {
+		const s = c / 255
+		return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4)
+	}
+	const r = toLinear(parseInt(clean.slice(0, 2), 16))
+	const g = toLinear(parseInt(clean.slice(2, 4), 16))
+	const b = toLinear(parseInt(clean.slice(4, 6), 16))
+	if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return '#ffffff'
+	const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+	return luminance > 0.24 ? '#0b0e14' : '#ffffff'
+}
+
 const INITIAL_COLORS = {
-	'--ink': '#0c1018',
-	'--panel': '#131824',
-	'--panel-2': '#1a2130',
-	'--line': '#283246',
+	'--ink': '#050608',
+	'--panel': '#0a0c10',
+	'--panel-2': '#11141b',
+	'--line': '#1b202c',
 }
 
 try {
@@ -469,22 +496,36 @@ try {
 		const root = document.documentElement
 		if (initialView === 'home' && initialServer && initialAccent) {
 			const subduedAccent = getSubduedColor(initialAccent)
-			root.style.setProperty('--ink', mixHex(INITIAL_COLORS['--ink'], subduedAccent, 0.22))
-			root.style.setProperty('--panel', mixHex(INITIAL_COLORS['--panel'], subduedAccent, 0.28))
-			root.style.setProperty('--panel-2', mixHex(INITIAL_COLORS['--panel-2'], subduedAccent, 0.32))
-			root.style.setProperty('--line', mixHex(INITIAL_COLORS['--line'], subduedAccent, 0.28))
+			const onAccent = getContrastTextColor(subduedAccent)
+			root.style.setProperty('--ink', mixHex(INITIAL_COLORS['--ink'], subduedAccent, 0.06))
+			root.style.setProperty('--panel', mixHex(INITIAL_COLORS['--panel'], subduedAccent, 0.09))
+			root.style.setProperty('--panel-2', mixHex(INITIAL_COLORS['--panel-2'], subduedAccent, 0.12))
+			root.style.setProperty('--line', mixHex(INITIAL_COLORS['--line'], subduedAccent, 0.22))
 			root.style.setProperty('--brand', subduedAccent)
-			root.style.setProperty('--brand-hover', mixHex(subduedAccent, '#ffffff', 0.15))
-			root.style.setProperty('--brand-soft', mixHex('#0c1018', subduedAccent, 0.25))
+			root.style.setProperty('--on-brand', onAccent)
+			root.style.setProperty('--brand-hover', mixHex(subduedAccent, '#ffffff', 0.14))
+			root.style.setProperty('--brand-soft', mixHex('#050608', subduedAccent, 0.22))
 			root.style.setProperty('--current-accent', subduedAccent)
-			root.style.setProperty('--current-glow', `color-mix(in srgb, ${subduedAccent} 35%, transparent)`)
-			root.style.setProperty('--current-border', `color-mix(in srgb, ${subduedAccent} 30%, transparent)`)
-			root.style.setProperty('--current-soft', `color-mix(in srgb, ${subduedAccent} 16%, transparent)`)
+			root.style.setProperty('--current-on-accent', onAccent)
+			root.style.setProperty(
+				'--current-on-accent-shadow',
+				onAccent === '#0b0e14' ? 'none' : '0 1px 3px rgba(0, 0, 0, 0.38)',
+			)
+			root.style.setProperty('--current-glow', `color-mix(in srgb, ${subduedAccent} 48%, transparent)`)
+			root.style.setProperty('--current-border', `color-mix(in srgb, ${subduedAccent} 46%, transparent)`)
+			root.style.setProperty('--current-soft', `color-mix(in srgb, ${subduedAccent} 24%, transparent)`)
 		} else {
+			const baseOnAccent = getContrastTextColor('#1bd96a')
 			root.style.setProperty('--brand', '#1bd96a')
+			root.style.setProperty('--on-brand', baseOnAccent)
 			root.style.setProperty('--brand-hover', '#16bd5a')
 			root.style.setProperty('--brand-soft', 'rgba(27, 217, 106, 0.18)')
 			root.style.setProperty('--current-accent', '#1bd96a')
+			root.style.setProperty('--current-on-accent', baseOnAccent)
+			root.style.setProperty(
+				'--current-on-accent-shadow',
+				baseOnAccent === '#0b0e14' ? 'none' : '0 1px 3px rgba(0, 0, 0, 0.38)',
+			)
 			root.style.setProperty('--current-glow', 'rgba(27, 217, 106, 0.45)')
 			root.style.setProperty('--current-border', 'rgba(27, 217, 106, 0.35)')
 			root.style.setProperty('--current-soft', 'rgba(27, 217, 106, 0.15)')
@@ -497,11 +538,18 @@ export function updateThemePalette(server?: Dr3shServer | null) {
 	const root = document.documentElement
 	if (!server || currentView.value !== 'home') {
 		localStorage.removeItem('dr3sh_active_accent')
+		const baseOnAccent = getContrastTextColor('#1bd96a')
 		// Reset to Verde Base (#1bd96a)
 		root.style.setProperty('--brand', '#1bd96a')
+		root.style.setProperty('--on-brand', baseOnAccent)
 		root.style.setProperty('--brand-hover', '#16bd5a')
 		root.style.setProperty('--brand-soft', 'rgba(27, 217, 106, 0.18)')
 		root.style.setProperty('--current-accent', '#1bd96a')
+		root.style.setProperty('--current-on-accent', baseOnAccent)
+		root.style.setProperty(
+			'--current-on-accent-shadow',
+			baseOnAccent === '#0b0e14' ? 'none' : '0 1px 3px rgba(0, 0, 0, 0.38)',
+		)
 		root.style.setProperty('--current-glow', 'rgba(27, 217, 106, 0.45)')
 		root.style.setProperty('--current-border', 'rgba(27, 217, 106, 0.35)')
 		root.style.setProperty('--current-soft', 'rgba(27, 217, 106, 0.15)')
@@ -512,20 +560,27 @@ export function updateThemePalette(server?: Dr3shServer | null) {
 		return
 	}
 	const brandAccent = getAccentColor(server)
+	const onAccent = getContrastTextColor(brandAccent)
 	localStorage.setItem('dr3sh_active_accent', brandAccent)
 
-	// Mezcla con versión desaturada y oscurecida del color oficial para evitar saturaciones chillonas
-	root.style.setProperty('--ink', mixHex(INITIAL_COLORS['--ink'], brandAccent, 0.22))
-	root.style.setProperty('--panel', mixHex(INITIAL_COLORS['--panel'], brandAccent, 0.28))
-	root.style.setProperty('--panel-2', mixHex(INITIAL_COLORS['--panel-2'], brandAccent, 0.32))
-	root.style.setProperty('--line', mixHex(INITIAL_COLORS['--line'], brandAccent, 0.28))
+	// Dos tonos sobre negro AMOLED: superficies casi negras con tinte sutil + acento vivo controlado
+	root.style.setProperty('--ink', mixHex(INITIAL_COLORS['--ink'], brandAccent, 0.06))
+	root.style.setProperty('--panel', mixHex(INITIAL_COLORS['--panel'], brandAccent, 0.09))
+	root.style.setProperty('--panel-2', mixHex(INITIAL_COLORS['--panel-2'], brandAccent, 0.12))
+	root.style.setProperty('--line', mixHex(INITIAL_COLORS['--line'], brandAccent, 0.22))
 	root.style.setProperty('--brand', brandAccent)
-	root.style.setProperty('--brand-hover', mixHex(brandAccent, '#ffffff', 0.15))
-	root.style.setProperty('--brand-soft', mixHex('#0c1018', brandAccent, 0.25))
+	root.style.setProperty('--on-brand', onAccent)
+	root.style.setProperty('--brand-hover', mixHex(brandAccent, '#ffffff', 0.14))
+	root.style.setProperty('--brand-soft', mixHex('#050608', brandAccent, 0.22))
 	root.style.setProperty('--current-accent', brandAccent)
-	root.style.setProperty('--current-glow', `color-mix(in srgb, ${brandAccent} 35%, transparent)`)
-	root.style.setProperty('--current-border', `color-mix(in srgb, ${brandAccent} 30%, transparent)`)
-	root.style.setProperty('--current-soft', `color-mix(in srgb, ${brandAccent} 16%, transparent)`)
+	root.style.setProperty('--current-on-accent', onAccent)
+	root.style.setProperty(
+		'--current-on-accent-shadow',
+		onAccent === '#0b0e14' ? 'none' : '0 1px 3px rgba(0, 0, 0, 0.38)',
+	)
+	root.style.setProperty('--current-glow', `color-mix(in srgb, ${brandAccent} 48%, transparent)`)
+	root.style.setProperty('--current-border', `color-mix(in srgb, ${brandAccent} 46%, transparent)`)
+	root.style.setProperty('--current-soft', `color-mix(in srgb, ${brandAccent} 24%, transparent)`)
 }
 
 export function deselectModpack() {
@@ -546,23 +601,97 @@ export function resolveImageUrl(img?: string | null): string {
 	return `https://raw.githubusercontent.com/Dr3sh/Dr3sh.github.io/main/${cleaned.replace(/^\/+/, '')}`
 }
 
+const MEDIA_CACHE_NAME = 'dr3sh-media-cache-v1'
+const cachedMediaUrls = ref<Record<string, string>>({})
+const inflightMediaFetches = new Set<string>()
+const mediaQueue: string[] = []
+let activeMediaWorkers = 0
+
+async function processMediaQueue() {
+	if (typeof window === 'undefined' || !('caches' in window)) return
+	while (activeMediaWorkers < 4 && mediaQueue.length > 0) {
+		const url = mediaQueue.shift()
+		if (!url) continue
+		activeMediaWorkers++
+		void (async () => {
+			try {
+				const cache = await window.caches.open(MEDIA_CACHE_NAME)
+				const cachedResp = await cache.match(url)
+				if (cachedResp) {
+					const blob = await cachedResp.blob()
+					if (blob.size > 0) {
+						cachedMediaUrls.value = {
+							...cachedMediaUrls.value,
+							[url]: URL.createObjectURL(blob),
+						}
+						return
+					}
+				}
+				const res = await tauriFetch(url).catch(() => null)
+				if (!res || !res.ok) return
+				const buf = await res.arrayBuffer()
+				if (!buf || buf.byteLength <= 0 || buf.byteLength > 15 * 1024 * 1024) return
+				const contentType = res.headers?.get?.('content-type') || 'image/webp'
+				const blob = new Blob([buf], { type: contentType })
+				await cache.put(
+					url,
+					new Response(blob, {
+						status: 200,
+						headers: { 'Content-Type': contentType },
+					}),
+				)
+				cachedMediaUrls.value = {
+					...cachedMediaUrls.value,
+					[url]: URL.createObjectURL(blob),
+				}
+			} catch {
+				// Best-effort cache; network URL fallback remains active
+			} finally {
+				activeMediaWorkers--
+				void processMediaQueue()
+			}
+		})()
+	}
+}
+
+function queueCacheMediaUrl(remoteUrl: string) {
+	if (!remoteUrl || !remoteUrl.startsWith('https://')) return
+	if (typeof window === 'undefined' || !('caches' in window)) return
+	if (cachedMediaUrls.value[remoteUrl] || inflightMediaFetches.has(remoteUrl)) return
+	inflightMediaFetches.add(remoteUrl)
+	mediaQueue.push(remoteUrl)
+	void processMediaQueue()
+}
+
+export function getCachedMediaUrl(remoteUrl: string): string {
+	if (!remoteUrl || !remoteUrl.startsWith('https://')) return remoteUrl
+	const hit = cachedMediaUrls.value[remoteUrl]
+	if (hit) return hit
+	queueCacheMediaUrl(remoteUrl)
+	return remoteUrl
+}
+
 export function getStageImageUrl(url?: string | null): string {
 	const resolved = resolveImageUrl(url)
 	if (!resolved) return '/logo.png'
 	// Compress 3MB+ uncompressed PNG uploads via global WebP edge cache for instant display
 	if (resolved.includes('raw.githubusercontent.com') && resolved.includes('/assets/uploads/') && /\.png$/i.test(resolved)) {
-		return `https://wsrv.nl/?url=${encodeURIComponent(resolved)}&w=1280&q=85&output=webp`
+		return getCachedMediaUrl(
+			`https://wsrv.nl/?url=${encodeURIComponent(resolved)}&w=1280&q=85&output=webp`,
+		)
 	}
-	return resolved
+	return getCachedMediaUrl(resolved)
 }
 
 export function getThumbnailUrl(url?: string | null): string {
 	const resolved = resolveImageUrl(url)
 	if (!resolved) return '/logo.png'
 	if (resolved.includes('raw.githubusercontent.com') && (resolved.includes('/assets/uploads/') || resolved.includes('/assets/screenshots/')) && /\.(png|jpg|jpeg)$/i.test(resolved)) {
-		return `https://wsrv.nl/?url=${encodeURIComponent(resolved)}&w=260&q=80&output=webp`
+		return getCachedMediaUrl(
+			`https://wsrv.nl/?url=${encodeURIComponent(resolved)}&w=260&q=80&output=webp`,
+		)
 	}
-	return resolved
+	return getCachedMediaUrl(resolved)
 }
 
 export function handleImageError(event: Event, rawFallbackUrl?: string) {
@@ -655,13 +784,14 @@ export function preloadCatalogImages(serverList: Dr3shServer[]) {
 	const priorityUrls: string[] = []
 
 	for (const srv of serverList) {
-		const logos = [srv.logo_square, srv.logo, srv.image]
+		const logos = [srv.logo_square, srv.logo, srv.image, srv.title_logo]
 			.map((u) => resolveImageUrl(u))
 			.filter(Boolean)
 		for (const u of logos) {
 			if (u && !preloadedImageUrls.has(u)) {
 				preloadedImageUrls.add(u)
 				priorityUrls.push(u)
+				queueCacheMediaUrl(u)
 			}
 		}
 		if (srv.id === selectedId.value) {
@@ -1029,7 +1159,12 @@ export interface DeleteConfirmRequest {
 }
 
 export const deleteConfirmModal = ref<DeleteConfirmRequest | null>(null)
+export const pendingInstallServer = ref<Dr3shServer | null>(null)
 let deleteCountdownTimer: ReturnType<typeof setInterval> | null = null
+
+export function requestInstallModpack(server: Dr3shServer) {
+	pendingInstallServer.value = server
+}
 
 export function requestDeleteConfirm(server: Dr3shServer, mode: 'local-only' | 'pack-remove') {
 	if (deleteCountdownTimer) {
@@ -1138,6 +1273,8 @@ export function useDr3shLauncher() {
 		launcherRefreshMode,
 		launcherRefreshId,
 		deleteConfirmModal,
+		pendingInstallServer,
+		requestInstallModpack,
 		requestDeleteConfirm,
 		closeDeleteConfirm,
 		refreshAccount,
@@ -1162,6 +1299,7 @@ export function useDr3shLauncher() {
 		formatLoaderName,
 		updateThemePalette,
 		getAccentColor,
+		getContrastTextColor,
 		mixHex,
 		isSidebarCollapsed,
 		railWidth,

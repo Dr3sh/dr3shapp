@@ -74,6 +74,14 @@ pub(in crate::api::instance) fn sync_files_are_protected(
     )
 }
 
+pub(in crate::api::instance) fn is_dr3sh_managed_instance(
+    metadata: &InstanceMetadata,
+    state: &State,
+) -> bool {
+    let dir = instance_dir(metadata, state);
+    dir.join(".dr3sh").is_dir() || dir.join(".dr3sh_instance").is_file()
+}
+
 pub(in crate::api::instance) async fn instance_is_running(
     metadata: &InstanceMetadata,
     state: &State,

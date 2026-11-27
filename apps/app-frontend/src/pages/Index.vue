@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { getVersion } from '@tauri-apps/api/app'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { useQuery } from '@tanstack/vue-query'
 import { instanceListQueryOptions } from '@/pages/instance/query-options'
 import {
 	useDr3shLauncher,
+	getAccentColor,
+	getContrastTextColor,
 	type Dr3shServer,
 	getServerPreviewImages,
 	getStageImageUrl,
@@ -17,6 +21,7 @@ import {
 	loaderIconUrl,
 	formatLoaderName,
 	deleteConfirmModal,
+	pendingInstallServer,
 	requestDeleteConfirm,
 	closeDeleteConfirm,
 	loginOfflineAccount,
@@ -160,6 +165,71 @@ interface InstallLocationState {
 const installLocationModal = ref<InstallLocationState | null>(null)
 const defaultInstancesBaseDir = ref<string>('AppData\\Roaming\\Dr3shLauncher\\instances')
 
+watch(pendingInstallServer, (srv) => {
+	if (!srv) return
+	pendingInstallServer.value = null
+	if (isDownloading.value || busy.value) return
+	if (maintenanceMode.value && !isDeveloper.value) {
+		showToast(
+			maintenanceMessage.value ||
+				'El launcher está en mantenimiento. Las instalaciones están pausadas temporalmente.',
+		)
+		return
+	}
+	installLocationModal.value = {
+		server: srv,
+		mode: 'default',
+		customFolder: '',
+	}
+})
+
+function handleIndexEscapeKeydown(e: KeyboardEvent) {
+	if (e.key !== 'Escape') return
+	if (zoomedScreenshot.value) {
+		e.preventDefault()
+		e.stopImmediatePropagation()
+		zoomedScreenshot.value = null
+		return
+	}
+	if (diagnosticsModalError.value) {
+		e.preventDefault()
+		e.stopImmediatePropagation()
+		diagnosticsModalError.value = null
+		return
+	}
+	if (logsModalOpen.value) {
+		e.preventDefault()
+		e.stopImmediatePropagation()
+		closeInstanceLogsModal()
+		return
+	}
+	if (installLocationModal.value) {
+		e.preventDefault()
+		e.stopImmediatePropagation()
+		installLocationModal.value = null
+		return
+	}
+	if (deleteConfirmModal.value) {
+		e.preventDefault()
+		e.stopImmediatePropagation()
+		closeDeleteConfirm()
+		return
+	}
+	if (instanceMenuOpen.value) {
+		e.preventDefault()
+		e.stopImmediatePropagation()
+		closeInstanceMenu()
+	}
+}
+
+onMounted(() => {
+	window.addEventListener('keydown', handleIndexEscapeKeydown, true)
+})
+
+onUnmounted(() => {
+	window.removeEventListener('keydown', handleIndexEscapeKeydown, true)
+})
+
 const {
 	isDownloading,
 	isCancelling,
@@ -269,8 +339,8 @@ const isPowerSaving = computed(() => isDocumentHidden.value || isSelectedRunning
 
 const slideBatchStart = computed(() => {
 	const total = previewImages.value.length
-	if (total <= 3) return 0
-	return Math.max(0, Math.min(total - 3, activeScreenshotIndex.value - 1))
+	if (total <= 6) return 0
+	return Math.max(0, Math.min(total - 6, activeScreenshotIndex.value - 2))
 })
 
 function resetZoomView() {
@@ -784,6 +854,120 @@ async function handleCopyCurrentLog() {
 	}
 }
 
+async function handleCopySupportReport() {
+	try {
+		const appVer = await getVersion().catch(() => '3.3.0')
+		const srvName = selectedServer.value?.title || logsModalInstanceName.value || 'Sin seleccionar'
+		const instVer = selectedInstalledVersion.value || 'Desconocida'
+		const latestVer = selectedVersion.value?.version || 'Desconocida'
+		const mcVer =
+			selectedVersion.value?.minecraft_version || selectedServer.value?.minecraft_version || '?'
+		const loader = formatLoaderName(
+			selectedVersion.value?.mod_loader || selectedServer.value?.mod_loader,
+		)
+		const javaMode = settingsJavaAuto.value
+			? 'Automático (Mojang Runtime)'
+			: settingsJavaPath.value || 'Personalizado'
+		const rawText = (logRawText.value || '').trim()
+		const tailLines = rawText
+			? rawText.split(/\r?\n/).slice(-60).join('\n')
+			: '(Sin salida de log cargada)'
+		const hintBlock = detectedCrashHint.value
+			? `\n**Posible causa detectada:** ${detectedCrashHint.value.title} — ${detectedCrashHint.value.advice}`
+			: ''
+
+		const report = [
+			`### Reporte de Soporte — Dr3sh App v${appVer}`,
+			`**Modpack:** ${srvName} (Instalada: ${instVer} | Última: ${latestVer})`,
+			`**Entorno:** Minecraft ${mcVer} • ${loader}`,
+			`**RAM:** ${settingsMemoryMb.value} MB asignados / ${systemTotalRamMb.value} MB totales (Xms: ${settingsMinMemoryMb.value} MB)`,
+			`**Java:** ${javaMode}`,
+			`**Fuente de log:** ${logSelectedSource.value}${hintBlock}`,
+			'',
+			'```log',
+			tailLines,
+			'```',
+		].join('\n')
+
+		await navigator.clipboard.writeText(report)
+		showToast('Reporte de soporte copiado (listo para Discord).')
+	} catch (e: any) {
+		showToast(`No se pudo copiar el reporte: ${e?.message || e}`)
+	}
+}
+
+const DR3SH_SUPPORT_REPORT_URL = 'https://dr3sh-app-reports.dreshtext.workers.dev/'
+const sendingSupportReport = ref(false)
+
+async function handleSendSupportReport(
+	kind: 'manual' | 'crash' | 'download_error' = 'manual',
+	overrideError?: Dr3shLastError | null,
+	overrideLogText?: string,
+) {
+	if (sendingSupportReport.value) return
+	sendingSupportReport.value = true
+	try {
+		const appVersion = await getVersion().catch(() => '3.3.0')
+		const server = selectedServer.value?.title || logsModalInstanceName.value || 'Sin seleccionar'
+		const installedVersion = selectedInstalledVersion.value || 'No instalado'
+		const latestVersion = selectedVersion.value?.version || '?'
+		const mcVersion =
+			selectedVersion.value?.minecraft_version || selectedServer.value?.minecraft_version || '?'
+		const loader = formatLoaderName(
+			selectedVersion.value?.mod_loader || selectedServer.value?.mod_loader,
+		)
+		const java = settingsJavaAuto.value
+			? 'Automático (Mojang Runtime)'
+			: settingsJavaPath.value || 'Personalizado'
+		const ram = `${settingsMemoryMb.value} MB / ${systemTotalRamMb.value} MB`
+		const username = activeAccount.value?.name || 'Anónimo'
+
+		let logText = typeof overrideLogText === 'string' ? overrideLogText : logRawText.value || ''
+		if (!logText.trim() && overrideError) {
+			logText =
+				(await getDiagnosticsText(overrideError.op_id, selectedServer.value?.id).catch(() => '')) ||
+				overrideError.details ||
+				''
+		}
+
+		const summary =
+			overrideError?.message ||
+			(detectedCrashHint.value
+				? `${detectedCrashHint.value.title}: ${detectedCrashHint.value.advice}`
+				: 'Reporte manual enviado desde Dr3sh App')
+
+		const res = await tauriFetch(DR3SH_SUPPORT_REPORT_URL, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				appVersion,
+				server,
+				installedVersion,
+				latestVersion,
+				mcVersion,
+				loader,
+				ram,
+				java,
+				username,
+				kind,
+				errorCode: overrideError?.code || '',
+				summary,
+				logText: logText.slice(-150_000),
+			}),
+		})
+
+		const data: any = await res.json().catch(() => null)
+		if (!res.ok || !data?.ok) {
+			throw new Error(data?.error || `HTTP ${res.status}`)
+		}
+		showToast('Reporte enviado al equipo de soporte. ¡Gracias!')
+	} catch (e: any) {
+		showToast(`No se pudo enviar el reporte: ${e?.message || e}`)
+	} finally {
+		sendingSupportReport.value = false
+	}
+}
+
 async function handleClearLiveConsole() {
 	if (logSelectedSource.value !== 'live' || !logsModalInstanceId.value) return
 	logRawText.value = ''
@@ -1014,9 +1198,10 @@ const isPreloadWindowOpen = computed(() => {
 	return countdownNow.value >= windowStart
 })
 
-const countdownLabel = computed(() => {
-	if (!selectedServer.value?.release_date) return ''
-	const target = parseReleaseDateMs(selectedServer.value.release_date)
+const countdownShortLabel = computed(() => {
+	const rawDate = selectedServer.value?.release_date || preloadStatus.value?.release_date
+	if (!rawDate) return ''
+	const target = parseReleaseDateMs(rawDate)
 	if (isNaN(target) || target <= countdownNow.value) return ''
 	const diffSec = Math.floor((target - countdownNow.value) / 1000)
 	const days = Math.floor(diffSec / 86400)
@@ -1025,9 +1210,14 @@ const countdownLabel = computed(() => {
 	const secs = diffSec % 60
 	const pad = (n: number) => String(n).padStart(2, '0')
 	if (days > 0) {
-		return `Inicio del server en ${days}d ${pad(hours)}h ${pad(mins)}m ${pad(secs)}s`
+		return `${days}d ${pad(hours)}h ${pad(mins)}m ${pad(secs)}s`
 	}
-	return `Inicio del server en ${pad(hours)}:${pad(mins)}:${pad(secs)}`
+	return `${pad(hours)}:${pad(mins)}:${pad(secs)}`
+})
+
+const countdownLabel = computed(() => {
+	if (!countdownShortLabel.value) return ''
+	return `Inicio del server en ${countdownShortLabel.value}`
 })
 
 const buttonAction = computed<
@@ -1044,7 +1234,7 @@ const buttonAction = computed<
 		return 'countdown'
 	}
 	if (preloadStatus.value.preloaded && !isInstalled.value) {
-		return 'activate'
+		return 'play'
 	}
 	if (isSelectedRunning.value) return 'running'
 	if (selectedInstanceHealth.value.needs_repair) return 'repair'
@@ -1064,7 +1254,9 @@ const buttonLabel = computed(() => {
 		return 'Precargar Modpack'
 	}
 	if (buttonAction.value === 'preloaded') {
-		return countdownLabel.value ? `Precargado · ${countdownLabel.value}` : 'Precargado · Esperando inicio del server'
+		return countdownShortLabel.value
+			? `Precargado · Empieza en ${countdownShortLabel.value}`
+			: 'Precargado · Esperando inicio del server'
 	}
 	if (buttonAction.value === 'activate') {
 		return 'Activar y Jugar'
@@ -1186,6 +1378,16 @@ const systemTotalRamMb = ref(16384)
 const maxAllowedRamMb = computed(() => {
 	return Math.max(2048, Math.floor((systemTotalRamMb.value * 0.8) / 512) * 512)
 })
+const recommendedRamMb = computed(() => {
+	const total = systemTotalRamMb.value
+	let target = 4096
+	if (total <= 6144) target = 2048
+	else if (total <= 8192) target = 4096
+	else if (total <= 12288) target = 6144
+	else if (total <= 20480) target = 8192
+	else target = 10240
+	return Math.min(target, maxAllowedRamMb.value)
+})
 const settingsMemoryMb = ref(4096)
 const settingsMinMemoryMb = ref(1024)
 const settingsJavaAuto = ref(localStorage.getItem('dr3sh.java_auto') !== 'false')
@@ -1266,11 +1468,21 @@ async function loadLauncherSettings() {
 		if (s) {
 			rawBackendSettings.value = s
 			const savedMax = Number(s.memory?.maximum) || 4096
-			settingsMemoryMb.value = Math.min(savedMax, maxAllowedRamMb.value)
-			settingsMinMemoryMb.value = Math.min(
-				Number(localStorage.getItem('dr3sh.min_ram_mb')) || 1024,
-				settingsMemoryMb.value,
-			)
+			const userConfiguredRam = localStorage.getItem('dr3sh.ram_user_configured') === '1'
+			if (!userConfiguredRam && savedMax <= 4096 && recommendedRamMb.value !== savedMax) {
+				settingsMemoryMb.value = recommendedRamMb.value
+				settingsMinMemoryMb.value = Math.min(
+					Number(localStorage.getItem('dr3sh.min_ram_mb')) || 1024,
+					settingsMemoryMb.value,
+				)
+				void saveLauncherSettings(false, false)
+			} else {
+				settingsMemoryMb.value = Math.min(savedMax, maxAllowedRamMb.value)
+				settingsMinMemoryMb.value = Math.min(
+					Number(localStorage.getItem('dr3sh.min_ram_mb')) || 1024,
+					settingsMemoryMb.value,
+				)
+			}
 			settingsJvmArgs.value = Array.isArray(s.extra_launch_args) ? s.extra_launch_args.join(' ') : ''
 			settingsWidth.value = s.game_resolution?.[0] || 1280
 			settingsHeight.value = s.game_resolution?.[1] || 720
@@ -1295,12 +1507,15 @@ async function syncJavaOverrideToInstances() {
 	)
 }
 
-async function saveLauncherSettings(notify = false) {
+async function saveLauncherSettings(notify = false, markUserRam = true) {
 	try {
 		const clampedRam = Math.min(Number(settingsMemoryMb.value) || 4096, maxAllowedRamMb.value)
 		settingsMemoryMb.value = clampedRam
 		if (settingsMinMemoryMb.value > clampedRam) {
 			settingsMinMemoryMb.value = clampedRam
+		}
+		if (markUserRam) {
+			localStorage.setItem('dr3sh.ram_user_configured', '1')
 		}
 		const trimmedJavaPath = settingsJavaPath.value.trim()
 		const useAutoJava = settingsJavaAuto.value || !trimmedJavaPath
@@ -1342,6 +1557,15 @@ async function saveLauncherSettings(notify = false) {
 	} catch (e) {
 		console.warn('Error saving settings:', e)
 	}
+}
+
+function applyRecommendedRam() {
+	settingsMemoryMb.value = recommendedRamMb.value
+	if (settingsMinMemoryMb.value > settingsMemoryMb.value) {
+		settingsMinMemoryMb.value = settingsMemoryMb.value
+	}
+	localStorage.setItem('dr3sh.ram_user_configured', '1')
+	void saveLauncherSettings(true)
 }
 
 function applyAikarFlags() {
@@ -1705,6 +1929,69 @@ onUnmounted(() => {
 	stopLogsPolling()
 })
 
+const activatingPreloadPromises = new Map<string, Promise<boolean>>()
+
+async function activatePreloadIfNeeded(srv: Dr3shServer, ver: Dr3shVersion): Promise<boolean> {
+	const existing = activatingPreloadPromises.get(srv.id)
+	if (existing) return existing
+
+	const task = (async () => {
+		try {
+			await invoke('dr3sh_activate_preload', {
+				serverId: srv.id,
+				versionRef: {
+					id: ver.id,
+					version: ver.version,
+					download_url: ver.link,
+					manifest_url: ver.manifest,
+					game_version: ver.minecraft_version || srv.minecraft_version,
+					loader: ver.mod_loader || srv.mod_loader,
+					loader_version: ver.mod_loader_version || srv.mod_loader_version,
+					sha256: ver.sha256,
+					size_mb: ver.size_mb,
+					server_name: srv.title,
+					icon_url: srv.logo_square || srv.logo || srv.image || null,
+					patch: ver.patch || null,
+				},
+				expectedReleaseDate: srv.release_date || null,
+				bypassGate: Boolean(isDeveloper.value),
+			})
+			addOwned(srv.id)
+			await refreshPreloadStatus(srv.id)
+			await instancesQuery.refetch()
+			await checkSelectedInstanceHealth()
+			return true
+		} catch (e: any) {
+			console.warn('Auto-activate preload failed:', e)
+			return false
+		} finally {
+			activatingPreloadPromises.delete(srv.id)
+		}
+	})()
+
+	activatingPreloadPromises.set(srv.id, task)
+	return task
+}
+
+watch(
+	[
+		() => selectedServer.value?.id,
+		isCountdownActive,
+		() => preloadStatus.value.preloaded,
+		isInstalled,
+	],
+	() => {
+		const srv = selectedServer.value
+		const ver = selectedVersion.value
+		if (!srv || !ver) return
+		if (!preloadStatus.value.preloaded || isInstalled.value) return
+		if (isCountdownActive.value && !isDeveloper.value) return
+		if (isDownloading.value || busy.value) return
+		void activatePreloadIfNeeded(srv, ver)
+	},
+	{ immediate: true },
+)
+
 async function handlePlayOrInstall() {
 	if (isDownloading.value) return
 
@@ -1774,41 +2061,31 @@ async function handlePlayOrInstall() {
 		return
 	}
 
-	if (buttonAction.value === 'activate' && selectedServer.value && selectedVersion.value) {
+	if (
+		(buttonAction.value === 'activate' ||
+			(buttonAction.value === 'play' && preloadStatus.value.preloaded && !isInstalled.value)) &&
+		selectedServer.value &&
+		selectedVersion.value
+	) {
 		try {
 			busy.value = true
 			const srv = selectedServer.value
 			const ver = selectedVersion.value
-			showToast(`Activando precarga de ${srv.title}...`)
-			await invoke('dr3sh_activate_preload', {
-				serverId: srv.id,
-				versionRef: {
-					id: ver.id,
-					version: ver.version,
-					download_url: ver.link,
-					manifest_url: ver.manifest,
-					game_version: ver.minecraft_version || srv.minecraft_version,
-					loader: ver.mod_loader || srv.mod_loader,
-					loader_version: ver.mod_loader_version || srv.mod_loader_version,
-					sha256: ver.sha256,
-					size_mb: ver.size_mb,
-					server_name: srv.title,
-					icon_url: srv.logo_square || srv.logo || srv.image || null,
-				},
-				expectedReleaseDate: srv.release_date || null,
-				bypassGate: Boolean(isDeveloper.value),
-			})
-			addOwned(srv.id)
-			await refreshPreloadStatus(srv.id)
-			await instancesQuery.refetch()
-			await checkSelectedInstanceHealth()
-			showToast(`¡${srv.title} activado al instante! Ya puedes jugar.`, 4500)
+			const ok = await activatePreloadIfNeeded(srv, ver)
+			if (!ok) {
+				showToast(`No se pudo desbloquear la precarga de ${srv.title}. Inténtalo de nuevo.`, 4500)
+				return
+			}
+			if (buttonAction.value === 'activate') {
+				showToast(`¡${srv.title} activado al instante! Ya puedes jugar.`, 4500)
+				return
+			}
 		} catch (e: any) {
 			openErrorDiagnosticsModal(e)
+			return
 		} finally {
 			busy.value = false
 		}
-		return
 	}
 
 	if (buttonAction.value === 'repair') {
@@ -2159,27 +2436,33 @@ const filteredMarketServers = computed(() => {
 		<button type="button" aria-label="Cerrar aviso" @click="notice = null">✕</button>
 	</div>
 
+	<Transition :name="isPowerSaving ? '' : 'dr3sh-server-fade'" mode="out-in">
 	<!-- =========================================================
 	     VIEW 1: HOME (BIBLIOTECA DE INSTANCIAS)
 	     ========================================================= -->
 	<div
 		v-if="currentView === 'home' && selectedServer"
+		key="home"
 		class="home-layout obsidian-home"
 		:class="{ 'is-power-saving': isPowerSaving }"
 	>
-		<!-- 1. CAPTURA PANORÁMICA DE FONDO CON FADE -->
+		<!-- 1. CAPTURA PANORÁMICA DE FONDO CON FADE PURO (ESTÁTICA, SIN REBOTE) -->
 		<div
 			class="hero-slideshow-stack"
 			@mouseenter="isHoveringGallery = true"
 			@mouseleave="isHoveringGallery = false"
 		>
-			<div
-				v-for="(s, idx) in previewImages"
-				:key="`bg-${selectedServer.id}-${idx}`"
-				class="slide-fade-image"
-				:class="{ 'is-active': idx === activeScreenshotIndex }"
-				:style="{ backgroundImage: `url(&quot;${getStageImageUrl(s)}&quot;)` }"
-			/>
+			<Transition :name="isPowerSaving ? '' : 'dr3sh-bg-fade'">
+				<div :key="`bg-server-${selectedServer.id}`" class="hero-bg-layer">
+					<div
+						v-for="(s, idx) in previewImages"
+						:key="`bg-${selectedServer.id}-${idx}`"
+						class="slide-fade-image"
+						:class="{ 'is-active': idx === activeScreenshotIndex }"
+						:style="{ backgroundImage: `url(&quot;${getStageImageUrl(s)}&quot;)` }"
+					/>
+				</div>
+			</Transition>
 
 			<!-- Viñeta oscura cinematográfica y resplandor ambiental -->
 			<div class="slideshow-vignette-top" />
@@ -2187,23 +2470,26 @@ const filteredMarketServers = computed(() => {
 			<div class="slideshow-ambient-glow" />
 		</div>
 
-		<!-- 2. HEADER DEL MODPACK (SIN PÍLDORA 'AL DÍA', SIN VERSIÓN DUPLICADA ARRIBA) -->
+		<div :key="`fg-${selectedServer.id}`" class="hero-foreground-layer">
+				<!-- 2. HEADER DEL MODPACK (SIN PÍLDORA 'AL DÍA', SIN VERSIÓN DUPLICADA ARRIBA) -->
 		<div class="hero-top-row">
 			<div class="hero-meta-col">
-				<img
-					v-if="selectedServer.title_logo && !titleLogoFailed"
-					ref="titleLogoImgRef"
-					v-show="titleLogoLoaded"
-					:key="`${selectedServer.id}:${selectedServer.title_logo}`"
-					:src="resolveImageUrl(selectedServer.title_logo)"
-					:alt="selectedServer.title"
-					class="hero-modpack-title-logo"
-					@load="titleLogoLoaded = true; titleLogoFailed = false"
-					@error="titleLogoFailed = true"
-				/>
-				<h1 v-if="!selectedServer.title_logo || titleLogoFailed || !titleLogoLoaded" class="hero-modpack-title">
-					{{ selectedServer.title }}
-				</h1>
+				<div class="hero-logo-slot">
+					<img
+						v-if="selectedServer.title_logo && !titleLogoFailed"
+						ref="titleLogoImgRef"
+						v-show="titleLogoLoaded"
+						:key="`${selectedServer.id}:${selectedServer.title_logo}`"
+						:src="resolveImageUrl(selectedServer.title_logo)"
+						:alt="selectedServer.title"
+						class="hero-modpack-title-logo"
+						@load="titleLogoLoaded = true; titleLogoFailed = false"
+						@error="titleLogoFailed = true"
+					/>
+					<h1 v-if="!selectedServer.title_logo || titleLogoFailed || !titleLogoLoaded" class="hero-modpack-title">
+						{{ selectedServer.title }}
+					</h1>
+				</div>
 				<div
 					v-if="selectedServer.description"
 					v-scroll-desc="selectedServer.description"
@@ -2339,7 +2625,7 @@ const filteredMarketServers = computed(() => {
 			</div>
 		</div>
 
-		<!-- 3. SLIDESHOW DE MINIATURAS: PEGADO ABAJO JUSTO SOBRE EL FOOTER (3 MINIATURAS POR TANDA) -->
+		<!-- 3. SLIDESHOW DE MINIATURAS: PEGADO ABAJO JUSTO SOBRE EL FOOTER (HASTA 6 MINIATURAS POR TANDA) -->
 		<div
 			v-if="previewImages.length > 0"
 			class="hero-thumbnails-bar"
@@ -2359,12 +2645,12 @@ const filteredMarketServers = computed(() => {
 
 				<div class="thumbnails-track">
 					<button
-						v-for="(shot, idxInBatch) in previewImages.slice(slideBatchStart, slideBatchStart + 3)"
+						v-for="(shot, idxInBatch) in previewImages.slice(slideBatchStart, slideBatchStart + 6)"
 						:key="`thumb-${slideBatchStart + idxInBatch}`"
 						type="button"
 						class="batch-thumb-item"
 						:class="{ active: (slideBatchStart + idxInBatch) === activeScreenshotIndex }"
-						:title="`Ver captura ${slideBatchStart + idxInBatch + 1}`"
+						:title="(slideBatchStart + idxInBatch) === activeScreenshotIndex ? 'Clic para ampliar captura' : `Ver captura ${slideBatchStart + idxInBatch + 1}`"
 						@click="selectScreenshot(slideBatchStart + idxInBatch)"
 					>
 						<img
@@ -2385,17 +2671,6 @@ const filteredMarketServers = computed(() => {
 				>
 					<svg viewBox="0 0 20 20" aria-hidden="true" class="w-4 h-4 fill-none stroke-current" stroke-width="2">
 						<path d="M7.5 5l5 5-5 5" stroke-linecap="round" stroke-linejoin="round" />
-					</svg>
-				</button>
-
-				<button
-					type="button"
-					class="batch-zoom-btn"
-					title="Ver captura en grande (con zoom)"
-					@click="openZoomedScreenshot()"
-				>
-					<svg viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5 fill-none stroke-current" stroke-width="1.8">
-						<path d="M12.5 3.5h4v4M7.5 16.5h-4v-4M16.5 3.5l-4.8 4.8M3.5 16.5l4.8-4.8" stroke-linecap="round" stroke-linejoin="round" />
 					</svg>
 				</button>
 			</div>
@@ -2519,7 +2794,9 @@ const filteredMarketServers = computed(() => {
 						v-if="
 							(downloadProgress.phase === 'preparing' ||
 								downloadProgress.phase === 'downloading') &&
-							downloadProgress.totalBytes > 0
+							downloadProgress.totalBytes >= 1024 &&
+							downloadProgress.downloadedFormatted &&
+							downloadProgress.totalFormatted
 						"
 						class="hero-dl-metric"
 					>
@@ -2749,10 +3026,11 @@ const filteredMarketServers = computed(() => {
 				</button>
 			</div>
 		</div>
+		</div>
 	</div>
 
 	<!-- Welcome / Empty Library State (Exact from Electron) -->
-	<div v-else-if="currentView === 'home' && !selectedServer" class="welcome-layout">
+	<div v-else-if="currentView === 'home' && !selectedServer" key="home-welcome" class="welcome-layout">
 		<div v-if="servers.length === 0 && (isOffline || catalogError)" class="welcome-hero">
 			<div class="offline-empty-icon" aria-hidden="true">
 				<svg
@@ -2826,7 +3104,7 @@ const filteredMarketServers = computed(() => {
 	<!-- =========================================================
 	     VIEW 2: MARKET (EXPLORAR MODPACKS)
 	     ========================================================= -->
-	<div v-else-if="currentView === 'market'" class="market-layout obsidian-market">
+	<div v-else-if="currentView === 'market'" key="market" class="market-layout obsidian-market">
 		<div class="market-header-row">
 			<div class="market-heading-text">
 				<h1>Explorar modpacks</h1>
@@ -2874,6 +3152,11 @@ const filteredMarketServers = computed(() => {
 				v-for="server in filteredMarketServers"
 				:key="server.id"
 				class="market-card-item"
+				:style="{
+					'--card-accent': getAccentColor(server),
+					'--card-on-accent': getContrastTextColor(getAccentColor(server)),
+					'--card-glow': `color-mix(in srgb, ${getAccentColor(server)} 42%, transparent)`,
+				}"
 				@mouseenter="hoveredMarketId = server.id"
 				@mouseleave="hoveredMarketId = null"
 			>
@@ -2896,50 +3179,56 @@ const filteredMarketServers = computed(() => {
 						"
 					/>
 					<span class="market-loader-badge">
-						{{ formatLoaderName(server.mod_loader) }}
+						<img :src="loaderIconUrl(server.mod_loader)" alt="" class="market-loader-icon" />
+						<span>{{ formatLoaderName(server.mod_loader) }} • {{ server.minecraft_version || '1.21.1' }}</span>
 					</span>
 				</div>
 
 				<div class="market-card-body">
-					<h2 class="market-card-title">{{ server.title }}</h2>
+					<div class="market-card-head">
+						<span class="market-card-icon">
+							<img
+								v-if="server.logo_square || server.logo || server.image"
+								:src="resolveImageUrl(server.logo_square || server.logo || server.image)"
+								:alt="server.title"
+								@error="handleImageError($event)"
+							/>
+							<span v-else class="market-card-icon-fallback">
+								{{ server.title.slice(0, 2) }}
+							</span>
+						</span>
+						<div class="market-card-title-wrap">
+							<h2 class="market-card-title">{{ server.title }}</h2>
+							<span
+								class="market-status-tag"
+								:class="{ 'in-library': owned.has(server.id) }"
+							>
+								{{ owned.has(server.id) ? '● En biblioteca' : '● Disponible' }}
+							</span>
+						</div>
+					</div>
+
 					<p class="market-card-desc">
 						{{ server.description || 'Disponible para instalar en tu biblioteca.' }}
 					</p>
 
 					<div class="market-card-footer">
-						<span
-							class="market-status-tag"
-							:class="{ 'in-library': owned.has(server.id) }"
+						<button
+							v-if="owned.has(server.id)"
+							type="button"
+							class="card-remove-btn card-full-btn"
+							@click="requestDeleteConfirm(server, 'pack-remove')"
 						>
-							{{ owned.has(server.id) ? 'EN BIBLIOTECA' : 'DISPONIBLE' }}
-						</span>
-
-						<div class="market-card-actions">
-							<button
-								type="button"
-								class="card-view-btn"
-								@click="selectedId = server.id; currentView = 'home'"
-							>
-								Ver
-							</button>
-
-							<button
-								v-if="owned.has(server.id)"
-								type="button"
-								class="card-remove-btn"
-								@click="requestDeleteConfirm(server, 'pack-remove')"
-							>
-								Quitar
-							</button>
-							<button
-								v-else
-								type="button"
-								class="card-add-btn"
-								@click="addOwned(server.id); showToast(`Modpack &quot;${server.title}&quot; añadido a tu biblioteca.`)"
-							>
-								Añadir
-							</button>
-						</div>
+							Eliminar
+						</button>
+						<button
+							v-else
+							type="button"
+							class="card-add-btn card-full-btn"
+							@click="addOwned(server.id); showToast(`Modpack &quot;${server.title}&quot; añadido a tu biblioteca.`)"
+						>
+							Obtener
+						</button>
 					</div>
 				</div>
 			</article>
@@ -2988,7 +3277,7 @@ const filteredMarketServers = computed(() => {
 	<!-- =========================================================
 	     VIEW 3: SETTINGS (AJUSTES DEL LAUNCHER - 5 TABS)
 	     ========================================================= -->
-	<div v-else-if="currentView === 'settings'" class="settings-layout">
+	<div v-else-if="currentView === 'settings'" key="settings" class="settings-layout">
 		<div class="page-heading">
 			<div>
 				<h1>Ajustes del Launcher</h1>
@@ -3122,6 +3411,14 @@ const filteredMarketServers = computed(() => {
 						/>
 					</div>
 					<div class="settings-inline-actions" style="margin-top: 8px">
+						<button
+							type="button"
+							class="settings-chip-btn"
+							:class="{ active: settingsMemoryMb === recommendedRamMb }"
+							@click="applyRecommendedRam"
+						>
+							Recomendado ({{ (recommendedRamMb / 1024).toFixed(recommendedRamMb % 1024 === 0 ? 0 : 1) }} GB)
+						</button>
 						<button
 							v-for="preset in ramPresetOptions"
 							:key="preset"
@@ -3572,7 +3869,7 @@ const filteredMarketServers = computed(() => {
 						@click="handleOpenStorageFolder('data')"
 					>
 						<div>
-							<b>Carpeta de datos de Dr3sh Launcher</b>
+							<b>Carpeta de datos de Dr3sh App</b>
 							<small>Configuración general, cachés y respaldos del launcher</small>
 						</div>
 						<span>Abrir carpeta</span>
@@ -3581,6 +3878,7 @@ const filteredMarketServers = computed(() => {
 			</section>
 		</div>
 	</div>
+	</Transition>
 
 	<!-- =========================================================
 	     GLOBAL MODALS (INSTALL LOCATION, DELETE CONFIRM, ZOOM)
@@ -3658,19 +3956,28 @@ const filteredMarketServers = computed(() => {
 							<input
 								v-model="installLocationModal.customFolder"
 								type="text"
-								readonly
+								spellcheck="false"
 								class="install-folder-input"
-								placeholder="Ninguna carpeta seleccionada..."
+								placeholder="Ej: D:\Juegos\Minecraft o usa Examinar..."
+								@focus="installLocationModal.mode = 'custom'"
+								@input="installLocationModal.mode = 'custom'"
 							/>
 							<button
 								type="button"
-								class="settings-secondary-btn"
+								class="install-browse-btn"
 								@click="browseCustomFolder"
 							>
-								Examinar...
+								<svg viewBox="0 0 20 20" aria-hidden="true" class="w-4 h-4 fill-none stroke-current" stroke-width="1.8">
+									<path
+										d="M2.5 5.5A1.5 1.5 0 0 1 4 4h4.2l1.8 2H16a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 16 16H4a1.5 1.5 0 0 1-1.5-1.5v-9Z"
+										stroke-linecap="round"
+										stroke-linejoin="round"
+									/>
+								</svg>
+								<span>Examinar</span>
 							</button>
 						</div>
-						<div v-if="installLocationModal.customFolder" class="install-final-path-alert">
+						<div v-if="installLocationModal.customFolder.trim()" class="install-final-path-alert">
 							<svg viewBox="0 0 20 20" fill="currentColor">
 								<path
 									fill-rule="evenodd"
@@ -3681,7 +3988,7 @@ const filteredMarketServers = computed(() => {
 							<span>
 								Se instalará en:
 								<strong>
-									{{ installLocationModal.customFolder.replace(/[\\/]$/, '') }}\{{ installLocationModal.server.title }}
+									{{ installLocationModal.customFolder.trim().replace(/[\\/]$/, '') }}\{{ installLocationModal.server.title }}
 								</strong>
 							</span>
 						</div>
@@ -3913,7 +4220,7 @@ const filteredMarketServers = computed(() => {
 					</svg>
 				</div>
 				<div class="confirm-modal-title-group">
-					<h3 id="first-launch-title">¡Bienvenido a Dr3sh Launcher!</h3>
+					<h3 id="first-launch-title">¡Bienvenido a Dr3sh App!</h3>
 					<p class="confirm-modal-target">Selecciona cómo deseas identificarte para jugar</p>
 				</div>
 			</div>
@@ -4073,6 +4380,20 @@ const filteredMarketServers = computed(() => {
 					@click="handleCopyDiagnostics"
 				>
 					Copiar diagnóstico
+				</button>
+				<button
+					type="button"
+					class="confirm-modal-cancel-btn"
+					:disabled="sendingSupportReport"
+					@click="
+						handleSendSupportReport(
+							'download_error',
+							diagnosticsModalError,
+							diagnosticsText || diagnosticsModalError?.details || '',
+						)
+					"
+				>
+					{{ sendingSupportReport ? 'Enviando...' : 'Enviar a soporte' }}
 				</button>
 				<button
 					type="button"
@@ -4277,6 +4598,21 @@ const filteredMarketServers = computed(() => {
 						@click="handleCopyCurrentLog"
 					>
 						Copiar log
+					</button>
+					<button
+						type="button"
+						class="confirm-modal-cancel-btn"
+						@click="handleCopySupportReport"
+					>
+						Reporte soporte
+					</button>
+					<button
+						type="button"
+						class="confirm-modal-cancel-btn"
+						:disabled="sendingSupportReport"
+						@click="handleSendSupportReport(detectedCrashHint ? 'crash' : 'manual')"
+					>
+						{{ sendingSupportReport ? 'Enviando...' : 'Enviar a soporte' }}
 					</button>
 					<button
 						v-if="logSelectedSource === 'live'"

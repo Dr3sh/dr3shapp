@@ -78,6 +78,11 @@ pub struct Manifest {
     pub files: Vec<ManifestFileEntry>,
 }
 
+pub fn is_player_extensible_pack_dir(path: &str) -> bool {
+    let lower = path.replace('\\', "/").to_ascii_lowercase();
+    lower.starts_with("shaderpacks/") || lower.starts_with("resourcepacks/")
+}
+
 pub fn default_rules() -> Vec<ManifestRule> {
     vec![
         ManifestRule {
@@ -86,11 +91,11 @@ pub fn default_rules() -> Vec<ManifestRule> {
         },
         ManifestRule {
             pattern: "resourcepacks/**".to_string(),
-            policy: "managed".to_string(),
+            policy: "update_on_change".to_string(),
         },
         ManifestRule {
             pattern: "shaderpacks/**".to_string(),
-            policy: "managed".to_string(),
+            policy: "update_on_change".to_string(),
         },
         ManifestRule {
             pattern: "config/**".to_string(),
@@ -105,16 +110,20 @@ pub fn default_rules() -> Vec<ManifestRule> {
             policy: "update_on_change".to_string(),
         },
         ManifestRule {
+            pattern: "dr3sh_options_patch.txt".to_string(),
+            policy: "managed".to_string(),
+        },
+        ManifestRule {
             pattern: "options.txt".to_string(),
-            policy: "seed".to_string(),
+            policy: "ignore".to_string(),
         },
         ManifestRule {
             pattern: "optionsof.txt".to_string(),
-            policy: "seed".to_string(),
+            policy: "ignore".to_string(),
         },
         ManifestRule {
             pattern: "optionsshaders.txt".to_string(),
-            policy: "seed".to_string(),
+            policy: "ignore".to_string(),
         },
         ManifestRule {
             pattern: "servers.dat".to_string(),
@@ -630,10 +639,7 @@ pub fn save_baseline_atomic(instance_root: &Path, manifest: &Manifest) -> Result
         })?;
         let _ = f.sync_all();
     }
-    fs::rename(&tmp, &target).map_err(|e| Dr3shError::FsPermission {
-        path: target.to_string_lossy().to_string(),
-        os_code: e.raw_os_error().unwrap_or(-1).to_string(),
-    })?;
+    crate::dr3sh::transaction::rename_with_lock_retries(&tmp, &target)?;
     Ok(())
 }
 
@@ -774,6 +780,8 @@ fn walk_instance_for_managed(
         }
         let top_seg = rel_str.split('/').next().unwrap_or("");
         if top_seg.eq_ignore_ascii_case(".dr3sh")
+            || top_seg.eq_ignore_ascii_case("shaderpacks")
+            || top_seg.eq_ignore_ascii_case("resourcepacks")
             || resolve_policy_from_rules(rules, &format!("{rel_str}/placeholder"))
                 == FilePolicy::Ignore
             || resolve_policy_from_rules(rules, &rel_str) == FilePolicy::Ignore
@@ -862,6 +870,15 @@ pub fn build_reconciliation_plan(
             n_entry.map(|e| e.sha256.as_str()),
             l_hash.as_deref(),
         );
+
+        if is_player_extensible_pack_dir(&canonical_path)
+            && n_entry.is_none()
+            && b_entry.is_some()
+            && l_hash.is_some()
+        {
+            action = PlanActionKind::Remove;
+            tag = Some("REMOVED_PACK_ASSET");
+        }
 
         if ignore_mtime_cache
             && policy == FilePolicy::Managed
@@ -1546,5 +1563,125 @@ mod tests {
 
         // Unknown file in config/ must not be touched
         assert!(!plan.items.iter().any(|i| i.path.contains("player_custom")));
+    }
+
+    #[test]
+    fn test_player_extensible_shaderpacks_and_resourcepacks_variant2() {
+        let temp = tempfile::tempdir().unwrap();
+        let inst = temp.path();
+        fs::create_dir_all(inst.join("shaderpacks")).unwrap();
+        fs::create_dir_all(inst.join("resourcepacks")).unwrap();
+
+        let official_old = b"official_shader_v1";
+        let official_keep = b"official_shader_keep";
+        let player_custom_shader = b"player_complementary_shader";
+        let player_custom_rp = b"player_texture_pack";
+
+        fs::write(inst.join("shaderpacks/OfficialOld.zip"), official_old).unwrap();
+        fs::write(inst.join("shaderpacks/OfficialKeep.zip"), official_keep).unwrap();
+        fs::write(inst.join("shaderpacks/PlayerCustom.zip"), player_custom_shader).unwrap();
+        fs::write(inst.join("resourcepacks/PlayerPack.zip"), player_custom_rp).unwrap();
+
+        let sha_hex = |data: &[u8]| -> String {
+            Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect()
+        };
+
+        let baseline = Manifest {
+            schema: 1,
+            pack_id: "test".to_string(),
+            version: "1.0.0".to_string(),
+            minecraft_version: "1.21.1".to_string(),
+            loader: "fabric".to_string(),
+            loader_version: "0.16.9".to_string(),
+            zip: ManifestZip {
+                url: "https://github.com/Dr3sh/test1.zip".to_string(),
+                size: 100,
+                sha256: sample_hash('a'),
+            },
+            rules: default_rules(),
+            files: vec![
+                ManifestFileEntry {
+                    path: "shaderpacks/OfficialOld.zip".to_string(),
+                    sha256: sha_hex(official_old),
+                    size: official_old.len() as u64,
+                    policy: "update_on_change".to_string(),
+                    archive_path: None,
+                    mtime: None,
+                },
+                ManifestFileEntry {
+                    path: "shaderpacks/OfficialKeep.zip".to_string(),
+                    sha256: sha_hex(official_keep),
+                    size: official_keep.len() as u64,
+                    policy: "update_on_change".to_string(),
+                    archive_path: None,
+                    mtime: None,
+                },
+            ],
+        };
+
+        // Even with legacy rules marking shaderpacks/** and resourcepacks/** as managed,
+        // player files MUST NOT be removed, while obsolete pack files in baseline ARE removed.
+        let mut legacy_rules = default_rules();
+        for r in &mut legacy_rules {
+            if r.pattern == "shaderpacks/**" || r.pattern == "resourcepacks/**" {
+                r.policy = "managed".to_string();
+            }
+        }
+        let official_new = b"official_shader_v2";
+        let new_manifest = Manifest {
+            schema: 1,
+            pack_id: "test".to_string(),
+            version: "1.1.0".to_string(),
+            minecraft_version: "1.21.1".to_string(),
+            loader: "fabric".to_string(),
+            loader_version: "0.16.9".to_string(),
+            zip: ManifestZip {
+                url: "https://github.com/Dr3sh/test2.zip".to_string(),
+                size: 100,
+                sha256: sample_hash('b'),
+            },
+            rules: legacy_rules,
+            files: vec![
+                ManifestFileEntry {
+                    path: "shaderpacks/OfficialKeep.zip".to_string(),
+                    sha256: sha_hex(official_keep),
+                    size: official_keep.len() as u64,
+                    policy: "managed".to_string(),
+                    archive_path: None,
+                    mtime: None,
+                },
+                ManifestFileEntry {
+                    path: "shaderpacks/OfficialNew.zip".to_string(),
+                    sha256: sha_hex(official_new),
+                    size: official_new.len() as u64,
+                    policy: "managed".to_string(),
+                    archive_path: None,
+                    mtime: None,
+                },
+            ],
+        };
+
+        let plan = build_reconciliation_plan(inst, Some(&baseline), &new_manifest, false);
+        let removed = plan
+            .items
+            .iter()
+            .find(|i| i.path == "shaderpacks/OfficialOld.zip")
+            .expect("obsolete pack shader should be removed");
+        assert_eq!(removed.action, PlanActionKind::Remove);
+        assert_eq!(removed.tag.as_deref(), Some("REMOVED_PACK_ASSET"));
+
+        let added = plan
+            .items
+            .iter()
+            .find(|i| i.path == "shaderpacks/OfficialNew.zip")
+            .expect("new pack shader should be written");
+        assert_eq!(added.action, PlanActionKind::Write);
+
+        assert!(!plan.items.iter().any(|i| i.path.contains("PlayerCustom")));
+        assert!(!plan.items.iter().any(|i| i.path.contains("PlayerPack")));
+        assert_eq!(
+            resolve_policy_from_rules(&default_rules(), "options.txt"),
+            FilePolicy::Ignore
+        );
     }
 }

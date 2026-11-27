@@ -1067,6 +1067,204 @@ pub fn cleanup_stale_part_downloads(roots: &[PathBuf]) {
     }
 }
 
+pub fn cleanup_old_pack_part_downloads(
+    op_id: Option<&str>,
+    instance_dir: &Path,
+    pack_id: &str,
+) {
+    let safe_pack: String = pack_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let prefix = format!("{safe_pack}-");
+
+    let mut search_dirs = vec![
+        crate::dr3sh::download::drive_root_for_path(instance_dir).join(".dr3sh_downloads"),
+        instance_dir.join(".dr3sh").join("downloads"),
+    ];
+    search_dirs.dedup();
+
+    for dl_dir in search_dirs {
+        let Ok(entries) = fs::read_dir(&dl_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("part") {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !name.starts_with(&prefix) {
+                continue;
+            }
+            if fs::remove_file(&path).is_ok() {
+                log_event(
+                    op_id,
+                    "CLEANUP",
+                    "INFO",
+                    "deleted obsolete .part download for pack after successful commit",
+                    &[("path", path.to_string_lossy().to_string())],
+                );
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AppliedOptionsPatch {
+    sha256: String,
+    version: String,
+}
+
+pub fn apply_options_patch_if_needed(
+    op_id: Option<&str>,
+    instance_dir: &Path,
+    pack_version: &str,
+) -> Result<bool, Dr3shError> {
+    let patch_path = instance_dir.join("dr3sh_options_patch.txt");
+    if !patch_path.is_file() {
+        return Ok(false);
+    }
+
+    let patch_bytes = fs::read(&patch_path).map_err(|e| Dr3shError::FsPermission {
+        path: patch_path.to_string_lossy().to_string(),
+        os_code: e.raw_os_error().unwrap_or(-1).to_string(),
+    })?;
+    let patch_sha256: String = Sha256::digest(&patch_bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
+    let dr3sh_dir = instance_dir.join(".dr3sh");
+    let state_path = dr3sh_dir.join("options_patch_applied.json");
+    if let Ok(raw) = fs::read_to_string(&state_path)
+        && let Ok(prev) = serde_json::from_str::<AppliedOptionsPatch>(&raw)
+        && prev.sha256.eq_ignore_ascii_case(&patch_sha256)
+    {
+        return Ok(false);
+    }
+
+    let options_path = instance_dir.join("options.txt");
+    if !options_path.is_file() {
+        log_event(
+            op_id,
+            "APPLY",
+            "INFO",
+            "options.txt not found yet; skipping dr3sh_options_patch.txt so YOSBR defaults remain intact",
+            &[("version", pack_version.to_string())],
+        );
+        return Ok(false);
+    }
+
+    let patch_text = String::from_utf8_lossy(&patch_bytes);
+    let mut ordered_keys: Vec<String> = Vec::new();
+    let mut patch_map: HashMap<String, String> = HashMap::new();
+    for raw_line in patch_text.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+            continue;
+        }
+        let Some((k_raw, v_raw)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let key = k_raw.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let val = v_raw.trim();
+        if !patch_map.contains_key(key) {
+            ordered_keys.push(key.to_string());
+        }
+        patch_map.insert(key.to_string(), val.to_string());
+    }
+
+    if !ordered_keys.is_empty() {
+        let existing_raw = fs::read_to_string(&options_path).map_err(|e| Dr3shError::FsPermission {
+            path: options_path.to_string_lossy().to_string(),
+            os_code: e.raw_os_error().unwrap_or(-1).to_string(),
+        })?;
+        let line_ending = if existing_raw.contains("\r\n") { "\r\n" } else { "\n" };
+        let mut applied_keys: HashSet<String> = HashSet::new();
+        let mut out_lines: Vec<String> = Vec::new();
+
+        for line in existing_raw.lines() {
+            if let Some((k, _)) = line.split_once(':') {
+                let trimmed_k = k.trim();
+                if let Some(new_val) = patch_map.get(trimmed_k) {
+                    out_lines.push(format!("{trimmed_k}:{new_val}"));
+                    applied_keys.insert(trimmed_k.to_string());
+                    continue;
+                }
+            }
+            out_lines.push(line.to_string());
+        }
+
+        for key in &ordered_keys {
+            if !applied_keys.contains(key)
+                && let Some(val) = patch_map.get(key)
+            {
+                out_lines.push(format!("{key}:{val}"));
+            }
+        }
+
+        let mut new_content = out_lines.join(line_ending);
+        if existing_raw.ends_with('\n') || !new_content.is_empty() {
+            new_content.push_str(line_ending);
+        }
+
+        let tmp_options = instance_dir.join("options.txt.tmp");
+        {
+            let mut f = File::create(&tmp_options).map_err(|e| Dr3shError::FsPermission {
+                path: tmp_options.to_string_lossy().to_string(),
+                os_code: e.raw_os_error().unwrap_or(-1).to_string(),
+            })?;
+            f.write_all(new_content.as_bytes()).map_err(|e| Dr3shError::FsPermission {
+                path: tmp_options.to_string_lossy().to_string(),
+                os_code: e.raw_os_error().unwrap_or(-1).to_string(),
+            })?;
+            let _ = f.sync_all();
+        }
+        rename_with_lock_retries(&tmp_options, &options_path)?;
+    }
+
+    fs::create_dir_all(&dr3sh_dir).map_err(|e| Dr3shError::FsPermission {
+        path: dr3sh_dir.to_string_lossy().to_string(),
+        os_code: e.raw_os_error().unwrap_or(-1).to_string(),
+    })?;
+    let state_tmp = dr3sh_dir.join("options_patch_applied.json.tmp");
+    let state_bytes = serde_json::to_vec_pretty(&AppliedOptionsPatch {
+        sha256: patch_sha256,
+        version: pack_version.to_string(),
+    })
+    .map_err(|e| Dr3shError::unknown(format!("Failed to serialize options patch state: {e}")))?;
+    {
+        let mut f = File::create(&state_tmp).map_err(|e| Dr3shError::FsPermission {
+            path: state_tmp.to_string_lossy().to_string(),
+            os_code: e.raw_os_error().unwrap_or(-1).to_string(),
+        })?;
+        f.write_all(&state_bytes).map_err(|e| Dr3shError::FsPermission {
+            path: state_tmp.to_string_lossy().to_string(),
+            os_code: e.raw_os_error().unwrap_or(-1).to_string(),
+        })?;
+        let _ = f.sync_all();
+    }
+    rename_with_lock_retries(&state_tmp, &state_path)?;
+
+    log_event(
+        op_id,
+        "APPLY",
+        "INFO",
+        "applied surgical options.txt patch",
+        &[
+            ("version", pack_version.to_string()),
+            ("keys_updated", ordered_keys.len().to_string()),
+        ],
+    );
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1289,7 +1487,7 @@ mod tests {
             ("mods/a.jar", b"mod_a_v1", "managed"),
             ("mods/b.jar", b"mod_b_v1", "managed"),
             ("config/pack.toml", b"cfg_v1", "update_on_change"),
-            ("options.txt", b"fov:70", "seed"),
+            ("servers.dat", b"srv_v1", "seed"),
         ];
         let v1_zip_raw: Vec<(&str, &[u8])> = v1_entries.iter().map(|(p, d, _)| (*p, *d)).collect();
         let (z1_path, z1_sha, z1_sz) = make_zip("Desgraciamon-v1", &v1_zip_raw);
@@ -1310,18 +1508,18 @@ mod tests {
 
         assert_eq!(fs::read(inst_dir.join("mods/a.jar")).unwrap(), b"mod_a_v1");
         assert_eq!(fs::read(inst_dir.join("config/pack.toml")).unwrap(), b"cfg_v1");
-        assert_eq!(fs::read(inst_dir.join("options.txt")).unwrap(), b"fov:70");
+        assert_eq!(fs::read(inst_dir.join("servers.dat")).unwrap(), b"srv_v1");
 
-        // Player customizes config/pack.toml and options.txt
+        // Player customizes config/pack.toml and servers.dat
         fs::write(inst_dir.join("config/pack.toml"), b"player_custom_cfg_longer").unwrap();
-        fs::write(inst_dir.join("options.txt"), b"fov:110").unwrap();
+        fs::write(inst_dir.join("servers.dat"), b"player_srv_custom").unwrap();
 
-        // v1.1.0: config/pack.toml is UNCHANGED in pack ("cfg_v1"), mods/b.jar removed, mods/c.jar added, options.txt changed in pack
+        // v1.1.0: config/pack.toml is UNCHANGED in pack ("cfg_v1"), mods/b.jar removed, mods/c.jar added, servers.dat changed in pack
         let v2_entries: Vec<(&str, &[u8], &str)> = vec![
             ("mods/a.jar", b"mod_a_v1", "managed"),
             ("mods/c.jar", b"mod_c_v2", "managed"),
             ("config/pack.toml", b"cfg_v1", "update_on_change"),
-            ("options.txt", b"fov:90", "seed"),
+            ("servers.dat", b"srv_v2", "seed"),
         ];
         let v2_zip_raw: Vec<(&str, &[u8])> = v2_entries.iter().map(|(p, d, _)| (*p, *d)).collect();
         let (z2_path, z2_sha, z2_sz) = make_zip("", &v2_zip_raw);
@@ -1348,7 +1546,7 @@ mod tests {
             fs::read(inst_dir.join("config/pack.toml")).unwrap(),
             b"player_custom_cfg_longer"
         );
-        assert_eq!(fs::read(inst_dir.join("options.txt")).unwrap(), b"fov:110");
+        assert_eq!(fs::read(inst_dir.join("servers.dat")).unwrap(), b"player_srv_custom");
 
         // v1.2.0: config/pack.toml IS updated in pack ("cfg_v3").
         // Even with mtime cache enabled (ignore_mtime_cache = false), it MUST detect player edit from v1.0.0 and do BackupThenWrite!
@@ -1356,7 +1554,7 @@ mod tests {
             ("mods/a.jar", b"mod_a_v1", "managed"),
             ("mods/c.jar", b"mod_c_v2", "managed"),
             ("config/pack.toml", b"cfg_v3_updated_by_author", "update_on_change"),
-            ("options.txt", b"fov:90", "seed"),
+            ("servers.dat", b"srv_v2", "seed"),
         ];
         let v3_zip_raw: Vec<(&str, &[u8])> = v3_entries.iter().map(|(p, d, _)| (*p, *d)).collect();
         let (z3_path, z3_sha, z3_sz) = make_zip("", &v3_zip_raw);
@@ -1539,6 +1737,40 @@ mod tests {
             assert_eq!(data.len(), 32 * 1024);
             assert_eq!(data[0], (i as u8).wrapping_mul(17).wrapping_add(5));
         }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_surgical_options_patch_applied_once_and_preserves_other_settings() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("dr3sh_opt_patch_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let opts_path = temp_dir.join("options.txt");
+        let patch_path = temp_dir.join("dr3sh_options_patch.txt");
+
+        fs::write(&opts_path, "fov:1.0\nsoundCategory_master:0.4\nlang:es_es\n").unwrap();
+        fs::write(&patch_path, "# Cambio puntual\nfov:0.8\nao:false\n").unwrap();
+
+        assert!(apply_options_patch_if_needed(None, &temp_dir, "1.1.0").unwrap());
+        let after_first = fs::read_to_string(&opts_path).unwrap();
+        assert!(after_first.contains("fov:0.8\n"));
+        assert!(after_first.contains("soundCategory_master:0.4\n"));
+        assert!(after_first.contains("lang:es_es\n"));
+        assert!(after_first.contains("ao:false\n"));
+
+        // Player changes fov back; re-running same patch hash must NOT overwrite
+        fs::write(&opts_path, after_first.replace("fov:0.8", "fov:0.95")).unwrap();
+        assert!(!apply_options_patch_if_needed(None, &temp_dir, "1.1.0").unwrap());
+        assert!(fs::read_to_string(&opts_path).unwrap().contains("fov:0.95"));
+
+        // New patch content DOES apply
+        fs::write(&patch_path, "renderDistance:12\n").unwrap();
+        assert!(apply_options_patch_if_needed(None, &temp_dir, "1.2.0").unwrap());
+        let after_second = fs::read_to_string(&opts_path).unwrap();
+        assert!(after_second.contains("fov:0.95"));
+        assert!(after_second.contains("renderDistance:12"));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

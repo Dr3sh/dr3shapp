@@ -62,9 +62,9 @@
 			}
 		]
 	},
-	"productName": "Dr3sh Launcher",
+	"productName": "Dr3sh App",
 	"version": "../app-frontend/package.json",
-	"mainBinaryName": "Dr3sh Launcher",
+	"mainBinaryName": "Dr3sh App",
 	"identifier": "com.dr3sh.launcher",
 	"plugins": {
 		"deep-link": {
@@ -90,11 +90,11 @@
 				"fullscreen": false,
 				"height": 800,
 				"resizable": true,
-				"title": "Dr3sh Launcher",
+				"title": "Dr3sh App",
 				"label": "main",
 				"width": 1280,
-				"minHeight": 700,
-				"minWidth": 1100,
+				"minHeight": 600,
+				"minWidth": 800,
 				"visible": false,
 				"zoomHotkeysEnabled": false,
 				"decorations": false
@@ -115,8 +115,8 @@
 			"capabilities": ["ads", "core", "plugins"],
 			"csp": {
 				"default-src": "'self' customprotocol: asset:",
-				"connect-src": "ipc: http://ipc.localhost https://raw.githubusercontent.com https://api.github.com https://github.com https://*.githubusercontent.com https://modrinth.com https://*.modrinth.com https://*.nodes.modrinth.com https://*.sentry.io https://api.mclo.gs http://textures.minecraft.net https://textures.minecraft.net https://js.stripe.com https://*.stripe.com wss://*.stripe.com https://*.intercom.io wss://*.intercom.io https://*.intercomcdn.com https://www.intercom-reporting.com https://app.getsentry.com wss://*.nodes.modrinth.com https://*.taila228c5.ts.net https://*.taila228c5.ts.net wss://*.taila228c5.ts.net https://fill.papermc.io https://api.purpurmc.org 'self' data: blob:",
-				"font-src": ["https://cdn.modrinth.com/fonts/", "https://js.intercomcdn.com"],
+				"connect-src": "ipc: http://ipc.localhost https://dr3sh-app-reports.dreshtext.workers.dev https://raw.githubusercontent.com https://api.github.com https://github.com https://*.githubusercontent.com https://modrinth.com https://*.modrinth.com https://*.nodes.modrinth.com https://*.sentry.io https://api.mclo.gs http://textures.minecraft.net https://textures.minecraft.net https://js.stripe.com https://*.stripe.com wss://*.stripe.com https://*.intercom.io wss://*.intercom.io https://*.intercomcdn.com https://www.intercom-reporting.com https://app.getsentry.com wss://*.nodes.modrinth.com https://*.taila228c5.ts.net https://*.taila228c5.ts.net wss://*.taila228c5.ts.net https://fill.papermc.io https://api.purpurmc.org 'self' data: blob:",
+				"font-src": ["'self'", "data:", "https://cdn.modrinth.com/fonts/", "https://js.intercomcdn.com"],
 				"img-src": "https: 'unsafe-inline' 'self' asset: http://asset.localhost http://textures.minecraft.net blob: data:",
 				"style-src": "'unsafe-inline' 'self'",
 				"script-src": "https://js.stripe.com https://widget.intercom.io https://js.intercomcdn.com https://tally.so/widgets/embed.js 'self'",

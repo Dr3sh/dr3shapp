@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -76,6 +76,7 @@ struct RangeBatch {
     range_start: u64,
     range_end: u64,
     entries: Vec<MatchedDeltaEntry>,
+    retries_done: u32,
 }
 
 enum ExtractOneResult {
@@ -124,6 +125,10 @@ fn looks_like_html_payload(bytes: &[u8]) -> bool {
     head.starts_with("<!doctype") || head.starts_with("<html")
 }
 
+fn is_non_recoverable_range_reason(reason: &str) -> bool {
+    reason.contains("200 OK") || reason.contains("HTML") || reason.contains("compresión")
+}
+
 async fn resolve_fresh_cdn_url(original_url: &str) -> Option<String> {
     let client = shared_http_client();
     let resp = client
@@ -145,7 +150,7 @@ async fn fetch_range_with_retries(
     end: u64,
     cancel_token: &Arc<AtomicBool>,
 ) -> Result<Result<(Bytes, u64, Option<u64>), String>, Dr3shError> {
-    const MAX_RETRIES: u32 = 4;
+    const MAX_RETRIES: u32 = 6;
     let client = multipart_http_client();
     let range_header = format!("bytes={start}-{end}");
 
@@ -161,7 +166,7 @@ async fn fetch_range_with_retries(
             .get(&target_url)
             .header(reqwest::header::RANGE, &range_header)
             .header(reqwest::header::ACCEPT_ENCODING, "identity")
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(45))
             .send()
             .await;
 
@@ -182,7 +187,12 @@ async fn fetch_range_with_retries(
                         Ok(b) => b,
                         Err(err) => {
                             if attempt < MAX_RETRIES {
-                                tokio::time::sleep(Duration::from_millis(500 * (attempt as u64 + 1))).await;
+                                if attempt >= 2
+                                    && let Some(fresh) = resolve_fresh_cdn_url(original_url).await
+                                {
+                                    *resolved_url.write().await = fresh;
+                                }
+                                tokio::time::sleep(Duration::from_millis(600 * (attempt as u64 + 1))).await;
                                 continue;
                             }
                             return Ok(Err(format!("Error leyendo rango HTTP ({err})")));
@@ -199,19 +209,22 @@ async fn fetch_range_with_retries(
                         "El servidor devolvió 200 OK ignorando la cabecera Range".to_string(),
                     ));
                 } else if (status == reqwest::StatusCode::FORBIDDEN
-                    || status == reqwest::StatusCode::UNAUTHORIZED)
+                    || status == reqwest::StatusCode::UNAUTHORIZED
+                    || status == reqwest::StatusCode::GONE
+                    || (status == reqwest::StatusCode::NOT_FOUND && attempt < 2))
                     && attempt < MAX_RETRIES
                 {
                     if let Some(fresh) = resolve_fresh_cdn_url(original_url).await {
                         *resolved_url.write().await = fresh;
                     }
-                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    tokio::time::sleep(Duration::from_millis(450 * (attempt as u64 + 1))).await;
                     continue;
                 } else if (status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    || status == reqwest::StatusCode::REQUEST_TIMEOUT
                     || status.is_server_error())
                     && attempt < MAX_RETRIES
                 {
-                    tokio::time::sleep(Duration::from_millis(700 * (attempt as u64 + 1))).await;
+                    tokio::time::sleep(Duration::from_millis(800 * (attempt as u64 + 1))).await;
                     continue;
                 } else {
                     return Ok(Err(format!(
@@ -224,7 +237,12 @@ async fn fetch_range_with_retries(
             }
             Err(err) => {
                 if attempt < MAX_RETRIES {
-                    tokio::time::sleep(Duration::from_millis(600 * (attempt as u64 + 1))).await;
+                    if attempt >= 2
+                        && let Some(fresh) = resolve_fresh_cdn_url(original_url).await
+                    {
+                        *resolved_url.write().await = fresh;
+                    }
+                    tokio::time::sleep(Duration::from_millis(650 * (attempt as u64 + 1))).await;
                     continue;
                 }
                 return Ok(Err(format!("Fallo de red solicitando rango HTTP: {err}")));
@@ -765,6 +783,7 @@ pub async fn download_and_extract_partial_zip(
                 range_start: entry.local_header_offset,
                 range_end: entry.est_end,
                 entries: vec![entry],
+                retries_done: 0,
             });
         }
     }
@@ -833,6 +852,7 @@ pub async fn download_and_extract_partial_zip(
     }
 
     let queue = Arc::new(tokio::sync::Mutex::new(batches));
+    let in_flight = Arc::new(AtomicUsize::new(0));
     let files_done = Arc::new(AtomicU64::new(0));
     let fallback_reason: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let fatal_error: Arc<Mutex<Option<Dr3shError>>> = Arc::new(Mutex::new(None));
@@ -844,6 +864,7 @@ pub async fn download_and_extract_partial_zip(
 
     for _ in 0..worker_count {
         let queue_c = Arc::clone(&queue);
+        let in_flight_c = Arc::clone(&in_flight);
         let url_orig = zip_url.to_string();
         let resolved_c = Arc::clone(&resolved_url);
         let cancel_c = Arc::clone(cancel_token);
@@ -877,10 +898,19 @@ pub async fn download_and_extract_partial_zip(
 
                 let batch = {
                     let mut q = queue_c.lock().await;
-                    q.pop_front()
+                    if let Some(b) = q.pop_front() {
+                        in_flight_c.fetch_add(1, Ordering::AcqRel);
+                        Some(b)
+                    } else {
+                        None
+                    }
                 };
                 let Some(batch) = batch else {
-                    break;
+                    if in_flight_c.load(Ordering::Acquire) == 0 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                    continue;
                 };
 
                 let batch_res = fetch_range_with_retries(
@@ -898,6 +928,21 @@ pub async fn download_and_extract_partial_zip(
                         (b, cr_start)
                     }
                     Ok(Err(reason)) => {
+                        if !is_non_recoverable_range_reason(&reason) && batch.retries_done < 2 {
+                            if let Some(fresh) = resolve_fresh_cdn_url(&url_orig).await {
+                                *resolved_c.write().await = fresh;
+                            }
+                            let mut retry_batch = batch;
+                            retry_batch.retries_done += 1;
+                            {
+                                let mut q = queue_c.lock().await;
+                                q.push_back(retry_batch);
+                                in_flight_c.fetch_sub(1, Ordering::AcqRel);
+                            }
+                            tokio::time::sleep(Duration::from_millis(1200)).await;
+                            continue;
+                        }
+                        in_flight_c.fetch_sub(1, Ordering::AcqRel);
                         abort_c.store(true, Ordering::Release);
                         if let Ok(mut g) = fallback_c.lock()
                             && g.is_none()
@@ -907,6 +952,7 @@ pub async fn download_and_extract_partial_zip(
                         break;
                     }
                     Err(err) => {
+                        in_flight_c.fetch_sub(1, Ordering::AcqRel);
                         abort_c.store(true, Ordering::Release);
                         if let Ok(mut g) = fatal_c.lock()
                             && g.is_none()
@@ -917,7 +963,13 @@ pub async fn download_and_extract_partial_zip(
                     }
                 };
 
-                for entry in batch.entries {
+                let batch_range_end = batch.range_end;
+                let batch_retries_done = batch.retries_done;
+                let entries = batch.entries;
+                let mut requeued = false;
+
+                for idx in 0..entries.len() {
+                    let entry = &entries[idx];
                     if cancel_c.load(Ordering::Relaxed) {
                         abort_c.store(true, Ordering::Release);
                         if let Ok(mut g) = fatal_c.lock()
@@ -1001,6 +1053,34 @@ pub async fn download_and_extract_partial_zip(
                                 break;
                             }
                             Ok(Err(reason)) => {
+                                if !is_non_recoverable_range_reason(&reason)
+                                    && batch_retries_done < 2
+                                {
+                                    if let Some(fresh) = resolve_fresh_cdn_url(&url_orig).await {
+                                        *resolved_c.write().await = fresh;
+                                    }
+                                    let remaining = entries[idx..].to_vec();
+                                    let new_start = remaining[0].local_header_offset;
+                                    let new_end = batch_range_end.max(
+                                        remaining
+                                            .iter()
+                                            .map(|e| e.est_end)
+                                            .max()
+                                            .unwrap_or(batch_range_end),
+                                    );
+                                    {
+                                        let mut q = queue_c.lock().await;
+                                        q.push_back(RangeBatch {
+                                            range_start: new_start,
+                                            range_end: new_end,
+                                            entries: remaining,
+                                            retries_done: batch_retries_done + 1,
+                                        });
+                                        in_flight_c.fetch_sub(1, Ordering::AcqRel);
+                                    }
+                                    requeued = true;
+                                    break;
+                                }
                                 abort_c.store(true, Ordering::Release);
                                 if let Ok(mut g) = fallback_c.lock()
                                     && g.is_none()
@@ -1091,6 +1171,32 @@ pub async fn download_and_extract_partial_zip(
                             }
                         }
                         Ok(ExtractOneResult::Fallback(reason)) => {
+                            if !is_non_recoverable_range_reason(&reason) && batch_retries_done < 1 {
+                                if let Some(fresh) = resolve_fresh_cdn_url(&url_orig).await {
+                                    *resolved_c.write().await = fresh;
+                                }
+                                let remaining = entries[idx..].to_vec();
+                                let new_start = remaining[0].local_header_offset;
+                                let new_end = batch_range_end.max(
+                                    remaining
+                                        .iter()
+                                        .map(|e| e.est_end)
+                                        .max()
+                                        .unwrap_or(batch_range_end),
+                                );
+                                {
+                                    let mut q = queue_c.lock().await;
+                                    q.push_back(RangeBatch {
+                                        range_start: new_start,
+                                        range_end: new_end,
+                                        entries: remaining,
+                                        retries_done: batch_retries_done + 1,
+                                    });
+                                    in_flight_c.fetch_sub(1, Ordering::AcqRel);
+                                }
+                                requeued = true;
+                                break;
+                            }
                             abort_c.store(true, Ordering::Release);
                             if let Ok(mut g) = fallback_c.lock()
                                 && g.is_none()
@@ -1120,6 +1226,12 @@ pub async fn download_and_extract_partial_zip(
                             break;
                         }
                     }
+                }
+
+                if !requeued {
+                    in_flight_c.fetch_sub(1, Ordering::AcqRel);
+                } else {
+                    tokio::time::sleep(Duration::from_millis(1200)).await;
                 }
             }
         }));

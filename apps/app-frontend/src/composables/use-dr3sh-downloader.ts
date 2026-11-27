@@ -554,6 +554,7 @@ export function useDr3shDownloader() {
 				loaderVersion: version.mod_loader_version || server.mod_loader_version || null,
 				downloadUrl: version.link || null,
 				manifestUrl: version.manifest ? resolveImageUrl(version.manifest) : null,
+				patch: version.patch || null,
 				sha256: version.sha256 || null,
 				sizeMb: version.size_mb || null,
 				iconUrl: resolvedIcon && resolvedIcon.startsWith('http') ? resolvedIcon : null,

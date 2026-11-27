@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use chrono::Utc;
 use dashmap::DashMap;
@@ -130,7 +131,31 @@ fn save_state_to_disk(state: &Dr3shPersistentState) {
         if let Ok(mut f) = File::create(&tmp) {
             if f.write_all(&bytes).is_ok() {
                 let _ = f.sync_all();
-                let _ = fs::rename(&tmp, &path);
+                drop(f);
+                let delays_ms = [100u64, 200, 300, 400, 500];
+                for (attempt, delay_ms) in std::iter::once(0u64).chain(delays_ms.into_iter()).enumerate() {
+                    if attempt > 0 {
+                        std::thread::sleep(Duration::from_millis(delay_ms));
+                    }
+                    match fs::rename(&tmp, &path) {
+                        Ok(()) => return,
+                        Err(e) => {
+                            let os_code = e.raw_os_error().unwrap_or(-1);
+                            let is_lock = matches!(os_code, 5 | 32 | 33)
+                                || e.kind() == std::io::ErrorKind::PermissionDenied;
+                            if !is_lock || attempt == delays_ms.len() {
+                                log_event(
+                                    None,
+                                    "STATE",
+                                    "WARN",
+                                    "failed to persist dr3sh_state.json after retries",
+                                    &[("error", e.to_string()), ("os_code", os_code.to_string())],
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         }
     }

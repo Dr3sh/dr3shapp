@@ -484,6 +484,7 @@ const authServerQuery = useQuery({
 	refetchOnWindowFocus: false,
 })
 
+const authBannerDismissed = ref(false)
 const authUnreachable = computed(() => {
 	if (offline.value || isOffline.value || !activeAccount.value?.isMicrosoft) {
 		return false
@@ -493,6 +494,12 @@ const authUnreachable = computed(() => {
 		return true
 	}
 	return false
+})
+
+watch(authUnreachable, (unreachable) => {
+	if (unreachable) {
+		authBannerDismissed.value = false
+	}
 })
 
 let unlistenEditMenu
@@ -1501,10 +1508,18 @@ function handleGlobalKeydown(e) {
 			debugPreview.value.open = !debugPreview.value.open
 		}
 	} else if (e.key === 'Escape') {
+		if (e.defaultPrevented) return
 		if (debugPreview.value.open) {
 			debugPreview.value.open = false
 		} else if (developerMenuOpen.value) {
 			developerMenuOpen.value = false
+		} else if (
+			typeof document !== 'undefined' &&
+			document.querySelector(
+				'[role="dialog"], .confirm-modal-backdrop, .image-zoom-backdrop, .context-floating, .instance-dropdown-menu',
+			)
+		) {
+			return
 		} else {
 			deselectModpack()
 		}
@@ -2099,8 +2114,8 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 			<div class="maintenance-bg-glow" aria-hidden="true" />
 			<header data-tauri-drag-region class="maintenance-lock-topbar">
 				<div class="brand-lockup-simple" data-tauri-drag-region>
-					<img src="/logo.png" alt="Dr3sh Launcher" class="w-6 h-6 rounded-md" />
-					<span class="font-bold text-sm text-white/90">Dr3sh Launcher</span>
+					<img src="/logo.png" alt="Dr3sh App" class="w-6 h-6 rounded-md" />
+					<span class="font-bold text-sm text-white/90">Dr3sh App</span>
 				</div>
 				<div class="window-controls" aria-label="Controles de ventana" data-tauri-drag-region-exclude>
 					<button class="window-control" title="Minimizar" aria-label="Minimizar" @click="getCurrentWindow().minimize()">
@@ -2143,9 +2158,6 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 						Salir de vista Debug
 					</button>
 				</div>
-				<div class="maintenance-pulse-indicator">
-					<span>Comprobación automática cada pocos segundos</span>
-				</div>
 			</div>
 		</div>
 
@@ -2153,8 +2165,8 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 			<div class="maintenance-bg-glow is-red" aria-hidden="true" />
 			<header data-tauri-drag-region class="maintenance-lock-topbar">
 				<div class="brand-lockup-simple" data-tauri-drag-region>
-					<img src="/logo.png" alt="Dr3sh Launcher" class="w-6 h-6 rounded-md" />
-					<span class="font-bold text-sm text-white/90">Dr3sh Launcher</span>
+					<img src="/logo.png" alt="Dr3sh App" class="w-6 h-6 rounded-md" />
+					<span class="font-bold text-sm text-white/90">Dr3sh App</span>
 				</div>
 				<div class="window-controls" aria-label="Controles de ventana" data-tauri-drag-region-exclude>
 					<button class="window-control" title="Minimizar" aria-label="Minimizar" @click="getCurrentWindow().minimize()">
@@ -2180,7 +2192,7 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 				<span class="maintenance-pill is-red">Sin conexión</span>
 				<h2>No se detectó conexión a internet</h2>
 				<p class="maintenance-msg">
-					{{ catalogError || 'Dr3sh Launcher requiere conexión a internet al iniciar para verificar servidores, cuentas y actualizaciones.' }}
+					{{ catalogError || 'Dr3sh App requiere conexión a internet al iniciar para verificar servidores, cuentas y actualizaciones.' }}
 				</p>
 				<div class="maintenance-actions-row">
 					<button
@@ -2207,8 +2219,8 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 			<div class="maintenance-bg-glow is-red" aria-hidden="true" />
 			<header data-tauri-drag-region class="maintenance-lock-topbar">
 				<div class="brand-lockup-simple" data-tauri-drag-region>
-					<img src="/logo.png" alt="Dr3sh Launcher" class="w-6 h-6 rounded-md" />
-					<span class="font-bold text-sm text-white/90">Dr3sh Launcher</span>
+					<img src="/logo.png" alt="Dr3sh App" class="w-6 h-6 rounded-md" />
+					<span class="font-bold text-sm text-white/90">Dr3sh App</span>
 				</div>
 				<div class="window-controls" aria-label="Controles de ventana" data-tauri-drag-region-exclude>
 					<button class="window-control" title="Minimizar" aria-label="Minimizar" @click="getCurrentWindow().minimize()">
@@ -2255,6 +2267,40 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 			<!-- Main Area: Top Bar + Content -->
 			<section class="main-area">
 				<Dr3shTopBar />
+				<div
+					v-if="criticalErrorMessage || (authUnreachable && !authBannerDismissed)"
+					class="dr3sh-floating-alerts"
+				>
+					<Admonition
+						v-if="criticalErrorMessage"
+						type="critical"
+						:header="criticalErrorMessage.header"
+						class="dr3sh-floating-alert-card"
+					>
+						<div
+							class="markdown-body text-primary"
+							v-html="renderString(criticalErrorMessage.body ?? '')"
+						></div>
+					</Admonition>
+					<Admonition
+						v-if="authUnreachable && !authBannerDismissed"
+						type="warning"
+						:header="formatMessage(messages.authUnreachableHeader)"
+						class="dr3sh-floating-alert-card"
+					>
+						<div class="dr3sh-floating-alert-row">
+							<span>{{ formatMessage(messages.authUnreachableBody) }}</span>
+							<button
+								type="button"
+								class="dr3sh-floating-alert-close"
+								aria-label="Cerrar aviso"
+								@click="authBannerDismissed = true"
+							>
+								×
+							</button>
+						</div>
+					</Admonition>
+				</div>
 				<div class="content-scroll">
 					<SurveyPopup />
 					<div
@@ -2267,25 +2313,6 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 					>
 						<LoadingBar position="absolute" />
 					</div>
-					<Admonition
-						v-if="criticalErrorMessage"
-						type="critical"
-						:header="criticalErrorMessage.header"
-						class="m-6 mb-0"
-					>
-						<div
-							class="markdown-body text-primary"
-							v-html="renderString(criticalErrorMessage.body ?? '')"
-						></div>
-					</Admonition>
-					<Admonition
-						v-if="authUnreachable"
-						type="warning"
-						:header="formatMessage(messages.authUnreachableHeader)"
-						class="m-6 mb-0"
-					>
-						{{ formatMessage(messages.authUnreachableBody) }}
-					</Admonition>
 					<HostingUpdateRequired v-if="hostingUpdateRequired" />
 					<RouterView v-else v-slot="{ Component }">
 						<template v-if="Component">
@@ -2701,13 +2728,62 @@ provideAppUpdateDownloadProgress(appUpdateDownload)
 }
 
 .main-area {
-	display: grid;
-	grid-template-rows: 50px minmax(0, 1fr);
+	position: relative;
+	display: flex;
+	flex-direction: column;
 	min-width: 0;
 	min-height: 0;
 	height: 100vh;
 	overflow: hidden;
 	border: none;
+}
+
+.dr3sh-floating-alerts {
+	position: absolute;
+	top: 62px;
+	left: 20px;
+	right: 20px;
+	z-index: 200;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 10px;
+	pointer-events: none;
+}
+
+.dr3sh-floating-alert-card {
+	width: min(720px, 100%);
+	pointer-events: auto;
+	box-shadow: 0 16px 40px rgba(0, 0, 0, 0.52);
+	backdrop-filter: blur(12px);
+}
+
+.dr3sh-floating-alert-row {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.dr3sh-floating-alert-close {
+	appearance: none;
+	border: 1px solid rgba(255, 255, 255, 0.16);
+	background: rgba(255, 255, 255, 0.08);
+	color: inherit;
+	width: 24px;
+	height: 24px;
+	border-radius: 6px;
+	font-size: 16px;
+	line-height: 1;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	flex-shrink: 0;
+}
+
+.dr3sh-floating-alert-close:hover {
+	background: rgba(255, 255, 255, 0.18);
 }
 
 .content-scroll {

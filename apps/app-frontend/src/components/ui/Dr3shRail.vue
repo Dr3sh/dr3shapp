@@ -7,12 +7,15 @@ import { instanceListQueryOptions } from '@/pages/instance/query-options'
 import {
 	useDr3shLauncher,
 	type Dr3shServer,
+	getAccentColor,
+	getContrastTextColor,
 	getServerPreviewImages,
 	getThumbnailUrl,
 	handleImageError,
 	loaderIconUrl,
 	formatLoaderName,
 	requestDeleteConfirm,
+	requestInstallModpack,
 	getStageImageUrl,
 } from '@/composables/use-dr3sh-launcher'
 import {
@@ -160,9 +163,12 @@ const launchingServerIds = ref<Record<string, boolean>>({})
 const needsRepairMap = ref<Record<string, boolean>>({})
 let railStatusTimer: ReturnType<typeof setInterval> | null = null
 
-function getRailAction(server: Dr3shServer): 'running' | 'repair' | 'update' | 'play' {
+function getRailAction(server: Dr3shServer): 'running' | 'repair' | 'update' | 'download' | 'play' {
 	if (runningServerIds.value[server.id] || launchingServerIds.value[server.id]) {
 		return 'running'
+	}
+	if (!isServerInstalled(server)) {
+		return 'download'
 	}
 	if (needsRepairMap.value[server.id]) {
 		return 'repair'
@@ -184,6 +190,7 @@ function getRailActionTitle(server: Dr3shServer): string {
 	if (launchingServerIds.value[server.id]) return `Iniciando ${server.title}...`
 	const action = getRailAction(server)
 	if (action === 'running') return `${server.title} ya está en ejecución`
+	if (action === 'download') return `Descargar ${server.title}`
 	if (action === 'repair') return `Reparar ${server.title}`
 	if (action === 'update') return `Actualizar ${server.title}`
 	return `Jugar a ${server.title}`
@@ -252,6 +259,11 @@ async function handleRailAction(event: MouseEvent, server: Dr3shServer) {
 		} catch (e) {
 			console.warn('Sidebar repair failed:', e)
 		}
+		return
+	}
+
+	if (action === 'download') {
+		requestInstallModpack(server)
 		return
 	}
 
@@ -335,7 +347,23 @@ const userAvatarUrl = computed(() => {
 	return 'https://mc-heads.net/avatar/Player/64'
 })
 
-const { isDownloading, downloadAndInstallModpack, repairModpack } = useDr3shDownloader()
+const { isDownloading, currentServerId, downloadProgress, downloadAndInstallModpack, repairModpack } =
+	useDr3shDownloader()
+
+const downloadingServer = computed(() => {
+	if (!currentServerId.value) return null
+	return ownedServers.value.find((s) => s.id === currentServerId.value) || null
+})
+
+const showMiniDownloadPill = computed(() => {
+	if (!isDownloading.value || !currentServerId.value) return false
+	return currentView.value !== 'home' || selectedId.value !== currentServerId.value
+})
+
+const miniDownloadPercent = computed(() => {
+	const raw = Number(downloadProgress.value?.percent ?? 0)
+	return Number.isFinite(raw) ? Math.max(0, Math.min(100, Math.round(raw))) : 0
+})
 
 // Right-click context menu
 const contextMenu = ref<{ server: Dr3shServer; x: number; y: number } | null>(null)
@@ -347,11 +375,14 @@ function getLatestVersionForServer(server: Dr3shServer) {
 		: versions.value.find((v) => v.server === server.id) || null
 }
 
-const contextPrimaryAction = computed<'repair' | 'update' | 'open'>(() => {
-	if (!contextMenu.value) return 'open'
+const contextPrimaryAction = computed<'running' | 'download' | 'repair' | 'update' | 'play'>(() => {
+	if (!contextMenu.value) return 'play'
+	const srv = contextMenu.value.server
+	if (runningServerIds.value[srv.id] || launchingServerIds.value[srv.id]) return 'running'
+	if (!isServerInstalled(srv)) return 'download'
 	if (contextMenuNeedsRepair.value) return 'repair'
-	if (hasServerUpdate(contextMenu.value.server)) return 'update'
-	return 'open'
+	if (hasServerUpdate(srv)) return 'update'
+	return 'play'
 })
 
 async function openSidebarContextMenu(event: MouseEvent, server: Dr3shServer) {
@@ -361,8 +392,8 @@ async function openSidebarContextMenu(event: MouseEvent, server: Dr3shServer) {
 	contextMenuNeedsRepair.value = false
 	contextMenu.value = {
 		server,
-		x: Math.min(event.clientX, window.innerWidth - 264),
-		y: Math.min(event.clientY, window.innerHeight - 230),
+		x: Math.max(8, Math.min(event.clientX, window.innerWidth - 264)),
+		y: Math.max(8, Math.min(event.clientY, window.innerHeight - 250)),
 	}
 
 	const inst = findMatchingInstance(server)
@@ -405,7 +436,38 @@ async function handleContextPrimaryAction(server: Dr3shServer) {
 	const action = contextPrimaryAction.value
 	closeContextMenu()
 	selectServer(server.id)
-	if (action === 'open' || isDownloading.value) return
+	if (action === 'running' || isDownloading.value) return
+
+	if (action === 'download') {
+		requestInstallModpack(server)
+		return
+	}
+
+	if (action === 'play') {
+		const inst = findMatchingInstance(server)
+		if (!inst || !isServerInstalled(server)) return
+		launchingServerIds.value = { ...launchingServerIds.value, [server.id]: true }
+		try {
+			if (!activeAccount.value) {
+				await refreshAccount()
+			}
+			await invoke('dr3sh_prepare_launch', {
+				serverId: server.id,
+				isOffline: !activeAccount.value?.isMicrosoft,
+				offlineUsername: activeAccount.value?.name || 'Player',
+				bypassGate: Boolean(isDeveloper.value),
+			})
+			await run(inst.id)
+			runningServerIds.value = { ...runningServerIds.value, [server.id]: true }
+		} catch (e) {
+			console.warn('Context menu play failed:', e)
+		} finally {
+			const nextLaunching = { ...launchingServerIds.value }
+			delete nextLaunching[server.id]
+			launchingServerIds.value = nextLaunching
+		}
+		return
+	}
 
 	const ver = getLatestVersionForServer(server)
 	if (!ver) return
@@ -417,6 +479,7 @@ async function handleContextPrimaryAction(server: Dr3shServer) {
 				version: ver,
 				onSuccess: async () => {
 					await instancesQuery.refetch()
+					await refreshRailStatuses()
 				},
 			})
 		} else if (action === 'update') {
@@ -429,6 +492,7 @@ async function handleContextPrimaryAction(server: Dr3shServer) {
 				bypassGate: Boolean(isDeveloper.value),
 				onSuccess: async () => {
 					await instancesQuery.refetch()
+					await refreshRailStatuses()
 				},
 			})
 		}
@@ -470,10 +534,19 @@ watch([ownedServers, instances, isDownloading], () => {
 	void refreshRailStatuses()
 })
 
+function handleRailKeydown(e: KeyboardEvent) {
+	if (e.key === 'Escape' && contextMenu.value) {
+		e.preventDefault()
+		e.stopImmediatePropagation()
+		closeContextMenu()
+	}
+}
+
 onMounted(() => {
 	refreshAccount()
 	void refreshRailStatuses()
 	window.addEventListener('click', closeContextMenu)
+	window.addEventListener('keydown', handleRailKeydown, true)
 	window.addEventListener('focus', refreshRailStatuses)
 	railStatusTimer = setInterval(() => {
 		void refreshRailStatuses()
@@ -481,6 +554,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
 	window.removeEventListener('click', closeContextMenu)
+	window.removeEventListener('keydown', handleRailKeydown, true)
 	window.removeEventListener('focus', refreshRailStatuses)
 	window.removeEventListener('mousemove', onResizerMouseMove)
 	window.removeEventListener('mouseup', onResizerMouseUp)
@@ -616,6 +690,11 @@ onUnmounted(() => {
 				v-for="server in ownedServers"
 				:key="server.id"
 				class="has-tooltip modpack-item-wrap"
+				:style="{
+					'--server-accent': getAccentColor(server),
+					'--server-on-accent': getContrastTextColor(getAccentColor(server)),
+					'--server-glow': `color-mix(in srgb, ${getAccentColor(server)} 50%, transparent)`,
+				}"
 			>
 				<button
 					type="button"
@@ -650,12 +729,12 @@ onUnmounted(() => {
 							}"
 						/>
 
-						<!-- Unified Overlay Action Button (1:1 collapsed mode): Running / Repair / Update / Play -->
+						<!-- Unified Overlay Action Button (1:1 collapsed mode): Running / Download / Repair / Update / Play -->
 						<span
-							v-if="isServerInstalled(server)"
 							class="overlay-play-btn"
 							:class="{
 								'is-running': getRailAction(server) === 'running',
+								'is-download': getRailAction(server) === 'download',
 								'is-update': getRailAction(server) === 'update',
 								'is-repair': getRailAction(server) === 'repair',
 								'is-busy': isRailActionDisabled(server) && getRailAction(server) !== 'running',
@@ -667,6 +746,9 @@ onUnmounted(() => {
 							@click.stop="handleRailAction($event, server)"
 						>
 							<span v-if="getRailAction(server) === 'running'" class="rail-running-dot" />
+							<svg v-else-if="getRailAction(server) === 'download'" viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5">
+								<path d="M10 4v8.5m0 0-3.5-3.5M10 12.5l3.5-3.5M4.5 15.5h11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+							</svg>
 							<svg v-else-if="getRailAction(server) === 'repair'" viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5 fill-current">
 								<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2-2a5.5 5.5 0 0 1-7.4 7.4l-6.2 6.2a1.8 1.8 0 0 1-2.6-2.6l6.2-6.2a5.5 5.5 0 0 1 7.4-7.4l-2.4 1.6Z" />
 							</svg>
@@ -687,12 +769,12 @@ onUnmounted(() => {
 						</span>
 					</span>
 
-					<!-- Single Unified Action Button (expanded mode): Running / Repair / Update / Play -->
+					<!-- Single Unified Action Button (expanded mode): Running / Download / Repair / Update / Play -->
 					<span
-						v-if="isServerInstalled(server)"
 						class="rail-quick-play-btn"
 						:class="{
 							'is-running': getRailAction(server) === 'running',
+							'is-download': getRailAction(server) === 'download',
 							'is-update': getRailAction(server) === 'update',
 							'is-repair': getRailAction(server) === 'repair',
 							'is-busy': isRailActionDisabled(server) && getRailAction(server) !== 'running',
@@ -704,6 +786,9 @@ onUnmounted(() => {
 						@click.stop="handleRailAction($event, server)"
 					>
 						<span v-if="getRailAction(server) === 'running'" class="rail-running-dot" />
+						<svg v-else-if="getRailAction(server) === 'download'" viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5">
+							<path d="M10 4v8.5m0 0-3.5-3.5M10 12.5l3.5-3.5M4.5 15.5h11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+						</svg>
 						<svg v-else-if="getRailAction(server) === 'repair'" viewBox="0 0 20 20" aria-hidden="true" class="w-3.5 h-3.5 fill-current">
 							<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2-2a5.5 5.5 0 0 1-7.4 7.4l-6.2 6.2a1.8 1.8 0 0 1-2.6-2.6l6.2-6.2a5.5 5.5 0 0 1 7.4-7.4l-2.4 1.6Z" />
 						</svg>
@@ -736,6 +821,36 @@ onUnmounted(() => {
 			</div>
 		</nav>
 
+		<!-- MINI BACKGROUND DOWNLOAD PILL (visible when viewing another view/instance) -->
+		<div
+			v-if="showMiniDownloadPill && currentServerId"
+			class="has-tooltip rail-mini-dl-wrap"
+			:style="{
+				'--dl-accent': getAccentColor(downloadingServer),
+				'--dl-glow': `color-mix(in srgb, ${getAccentColor(downloadingServer)} 45%, transparent)`,
+			}"
+		>
+			<button
+				type="button"
+				class="rail-mini-dl-pill"
+				:title="`Volver a la descarga de ${downloadingServer?.title || 'modpack'} (${miniDownloadPercent}%)`"
+				@click="selectServer(currentServerId)"
+			>
+				<span class="rail-mini-dl-top">
+					<span class="rail-mini-dl-spinner" aria-hidden="true" />
+					<span class="rail-mini-dl-name">{{ downloadingServer?.title || 'Descargando...' }}</span>
+					<span class="rail-mini-dl-pct">{{ miniDownloadPercent }}%</span>
+				</span>
+				<span class="rail-mini-dl-track">
+					<span class="rail-mini-dl-fill" :style="{ width: `${miniDownloadPercent}%` }" />
+				</span>
+			</button>
+			<div class="tooltip-box">
+				<div class="tooltip-title">Descargando {{ downloadingServer?.title || 'modpack' }}</div>
+				<div class="tooltip-detail">{{ miniDownloadPercent }}% — Clic para ver progreso</div>
+			</div>
+		</div>
+
 		<!-- BOTTOM SECTION: Profile / Account -->
 		<div class="rail-bottom">
 			<div class="has-tooltip w-full flex justify-center">
@@ -766,7 +881,11 @@ onUnmounted(() => {
 				v-if="contextMenu"
 				class="instance-dropdown-menu context-floating"
 				role="menu"
-				:style="{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }"
+				:style="{
+					top: `${contextMenu.y}px`,
+					left: `${contextMenu.x}px`,
+					'--current-accent': getAccentColor(contextMenu.server),
+				}"
 				@click.stop
 			>
 				<div class="instance-menu-header">
@@ -786,10 +905,21 @@ onUnmounted(() => {
 				<button
 					type="button"
 					class="instance-menu-item primary-item"
-					:disabled="contextPrimaryAction !== 'open' && isDownloading"
+					:disabled="contextPrimaryAction === 'running' || isDownloading"
 					@click="handleContextPrimaryAction(contextMenu.server)"
 				>
-					<svg v-if="contextPrimaryAction === 'repair'" viewBox="0 0 20 20" aria-hidden="true">
+					<span v-if="contextPrimaryAction === 'running'" class="rail-running-dot" />
+					<svg v-else-if="contextPrimaryAction === 'download'" viewBox="0 0 20 20" aria-hidden="true">
+						<path
+							d="M10 4v8.5m0 0-3.5-3.5M10 12.5l3.5-3.5M4.5 15.5h11"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						/>
+					</svg>
+					<svg v-else-if="contextPrimaryAction === 'repair'" viewBox="0 0 20 20" aria-hidden="true">
 						<path
 							d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2-2a5.5 5.5 0 0 1-7.4 7.4l-6.2 6.2a1.8 1.8 0 0 1-2.6-2.6l6.2-6.2a5.5 5.5 0 0 1 7.4-7.4l-2.4 1.6Z"
 						/>
@@ -809,11 +939,15 @@ onUnmounted(() => {
 					</svg>
 					<span>
 						{{
-							contextPrimaryAction === 'repair'
-								? 'Reparar instancia'
-								: contextPrimaryAction === 'update'
-									? 'Actualizar modpack'
-									: 'Abrir instancia'
+							contextPrimaryAction === 'running'
+								? 'En ejecución'
+								: contextPrimaryAction === 'download'
+									? 'Descargar modpack'
+									: contextPrimaryAction === 'repair'
+										? 'Reparar instancia'
+										: contextPrimaryAction === 'update'
+											? 'Actualizar modpack'
+											: 'Jugar'
 						}}
 					</span>
 				</button>
@@ -821,6 +955,7 @@ onUnmounted(() => {
 				<button
 					type="button"
 					class="instance-menu-item"
+					:disabled="!isServerInstalled(contextMenu.server)"
 					@click="handleContextOpenFolder(contextMenu.server)"
 				>
 					<svg viewBox="0 0 20 20" aria-hidden="true">
@@ -834,7 +969,7 @@ onUnmounted(() => {
 				<button
 					type="button"
 					class="instance-menu-item danger"
-					:disabled="!isServerInstalled(contextMenu.server)"
+					:disabled="!isServerInstalled(contextMenu.server) || isDownloading"
 					@click="handleContextDeleteLocal(contextMenu.server)"
 				>
 					<svg viewBox="0 0 20 20" aria-hidden="true">

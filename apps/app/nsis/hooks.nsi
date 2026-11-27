@@ -60,6 +60,8 @@ Var /GLOBAL OldInstallDir
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+    Delete "$DESKTOP\Dr3sh Launcher.lnk"
+    Delete "$SMPROGRAMS\Dr3sh Launcher.lnk"
     !insertmacro IsShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$OldInstallDir\${MAINBINARYNAME}.exe"
     Pop $0
     ${If} $0 = 1
@@ -74,6 +76,8 @@ Var /GLOBAL OldInstallDir
     ${AndIf} $UpdateMode <> 1
         RMDir /r "$APPDATA\com.dr3sh.launcher"
         RMDir /r "$LOCALAPPDATA\com.dr3sh.launcher"
+        RMDir /r "$APPDATA\Dr3sh App"
+        RMDir /r "$LOCALAPPDATA\Dr3sh App"
         RMDir /r "$APPDATA\Dr3sh Launcher"
         RMDir /r "$LOCALAPPDATA\Dr3sh Launcher"
         RMDir /r "$APPDATA\Dr3shLauncher"

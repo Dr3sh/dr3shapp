@@ -9,14 +9,15 @@ const http = require('http')
 
 const DEFAULT_RULES = [
 	{ pattern: 'mods/**', policy: 'managed' },
-	{ pattern: 'resourcepacks/**', policy: 'managed' },
-	{ pattern: 'shaderpacks/**', policy: 'managed' },
+	{ pattern: 'resourcepacks/**', policy: 'update_on_change' },
+	{ pattern: 'shaderpacks/**', policy: 'update_on_change' },
 	{ pattern: 'config/**', policy: 'update_on_change' },
 	{ pattern: 'defaultconfigs/**', policy: 'update_on_change' },
 	{ pattern: 'kubejs/**', policy: 'update_on_change' },
-	{ pattern: 'options.txt', policy: 'seed' },
-	{ pattern: 'optionsof.txt', policy: 'seed' },
-	{ pattern: 'optionsshaders.txt', policy: 'seed' },
+	{ pattern: 'dr3sh_options_patch.txt', policy: 'managed' },
+	{ pattern: 'options.txt', policy: 'ignore' },
+	{ pattern: 'optionsof.txt', policy: 'ignore' },
+	{ pattern: 'optionsshaders.txt', policy: 'ignore' },
 	{ pattern: 'servers.dat', policy: 'seed' },
 	{ pattern: 'saves/**', policy: 'ignore' },
 	{ pattern: 'screenshots/**', policy: 'ignore' },
@@ -1724,6 +1725,30 @@ async function publishModpackViaPatchAction({
 		const sizeMb =
 			finalZipSize > 0 ? Math.max(0.1, Math.round((finalZipSize / (1024 * 1024)) * 10) / 10) : 0
 
+		let patchMetadata = null
+		const baseVerStr = String(baseManifest.version || '')
+			.trim()
+			.replace(/^v/i, '')
+		if (baseVerStr && fs.existsSync(patchZipPath)) {
+			try {
+				const patchStat = fs.statSync(patchZipPath)
+				if (patchStat.size > 0 && (finalZipSize <= 0 || patchStat.size < finalZipSize * 0.75)) {
+					const patchSha256 = sha256Hex(fs.readFileSync(patchZipPath))
+					const patchAssetName = `patch-from-${baseVerStr.replace(/[^a-zA-Z0-9.-]+/g, '-')}.zip`
+					emitProgress('upload_manifest', 94, `Guardando microparche directo (${patchAssetName})...`)
+					await uploadReleaseAsset(verifiedRelease.upload_url, token, patchZipPath, patchAssetName)
+					patchMetadata = {
+						from: baseVerStr,
+						url: `https://github.com/${repo}/releases/download/${tagName}/${patchAssetName}`,
+						size: patchStat.size,
+						sha256: patchSha256,
+					}
+				}
+			} catch (patchErr) {
+				console.warn(`[fast-patch] No se pudo conservar microparche en la release: ${patchErr.message}`)
+			}
+		}
+
 		const versionFragment = {
 			id: `v${cleanVersion}`,
 			name: title || `${cleanPackId} v${cleanVersion}`,
@@ -1732,6 +1757,7 @@ async function publishModpackViaPatchAction({
 			...(loaderVersion ? { loader_version: loaderVersion } : {}),
 			modpack: zipDownloadUrl,
 			manifest: manifestDownloadUrl,
+			...(patchMetadata ? { patch: patchMetadata } : {}),
 			size: finalZipSize,
 			size_mb: sizeMb,
 			sha256: finalZipSha256,

@@ -30,6 +30,9 @@ pub async fn sync_before_launch(instance_id: &str) -> crate::Result<()> {
     let metadata = crate::state::get_instance(instance_id, &state.pool)
         .await?
         .ok_or(ErrorKind::InputError("unknown instance".to_string()))?;
+    if super::super::is_dr3sh_managed_instance(&metadata, &state) {
+        return Ok(());
+    }
     if sync_is_active_for_instance(&metadata, &state).await? {
         let _ =
             apply_shared_settings_to_instance(&metadata, &state, false).await?;

@@ -52,7 +52,8 @@ use crate::dr3sh::state::{
     update_server_state, LegacyLocalStateEntry, ServerInstallState, ServerStateEntry,
 };
 use crate::dr3sh::transaction::{
-    apply_plan_transactional, cleanup_stale_part_downloads, extract_to_staging, recover_instance,
+    apply_options_patch_if_needed, apply_plan_transactional, cleanup_old_pack_part_downloads,
+    cleanup_stale_part_downloads, extract_to_staging, recover_instance,
 };
 
 const REMOTE_VERSIONS_URL: &str =
@@ -65,6 +66,17 @@ const GITHUB_LAUNCHER_RELEASES_LATEST_URL: &str =
     "https://github.com/Dr3sh/dr3shapp/releases/latest";
 const GITHUB_LAUNCHER_RELEASES_BASE_URL: &str =
     "https://github.com/Dr3sh/dr3shapp/releases";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionPatchSpec {
+    pub from: String,
+    pub url: String,
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub sha256: Option<String>,
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,6 +96,8 @@ pub struct VersionRefSpec {
     pub download_url: Option<String>,
     #[serde(default, alias = "manifest_url", alias = "manifest")]
     pub manifest_url: Option<String>,
+    #[serde(default)]
+    pub patch: Option<VersionPatchSpec>,
     #[serde(default)]
     pub sha256: Option<String>,
     #[serde(default)]
@@ -442,7 +456,7 @@ pub async fn check_launcher_update_with_endpoints(
                                                 release_name: rel
                                                     .name
                                                     .filter(|s| !s.trim().is_empty())
-                                                    .unwrap_or_else(|| format!("Dr3sh Launcher v{latest_ver}")),
+                                                    .unwrap_or_else(|| format!("Dr3sh App v{latest_ver}")),
                                                 release_notes: rel.body.unwrap_or_default(),
                                                 download_url,
                                                 release_page_url,
@@ -522,7 +536,7 @@ pub async fn check_launcher_update_with_endpoints(
                                 latest_version: latest_ver.clone(),
                                 tag_name,
                                 update_available,
-                                release_name: format!("Dr3sh Launcher v{latest_ver}"),
+                                release_name: format!("Dr3sh App v{latest_ver}"),
                                 release_notes: parsed.notes.unwrap_or_default(),
                                 download_url,
                                 release_page_url,
@@ -582,7 +596,7 @@ pub async fn check_launcher_update_with_endpoints(
                         latest_version: latest_ver.clone(),
                         tag_name,
                         update_available,
-                        release_name: format!("Dr3sh Launcher v{latest_ver}"),
+                        release_name: format!("Dr3sh App v{latest_ver}"),
                         release_notes: String::new(),
                         download_url,
                         release_page_url,
@@ -883,7 +897,7 @@ pub async fn wait_for_theseus_base(
                         "Preparando Minecraft y modloader..."
                     };
                     if let Some(app_handle) = app {
-                        emit_progress(
+                        emit_progress_detailed(
                             app_handle,
                             op_id,
                             server_id,
@@ -892,8 +906,11 @@ pub async fn wait_for_theseus_base(
                             bytes_done,
                             bytes_total,
                             smoothed_speed_bps,
-                            eta_s,
+                            None,
                             Some(pct),
+                            eta_s,
+                            None,
+                            None,
                         );
                     }
                 }
@@ -1008,6 +1025,10 @@ async fn resolve_version_spec_from_remote(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let size_mb = ver_obj.get("size_mb").and_then(|v| v.as_f64());
+    let patch = ver_obj
+        .get("patch")
+        .and_then(|v| serde_json::from_value::<VersionPatchSpec>(v.clone()).ok())
+        .filter(|p| !p.from.trim().is_empty() && !p.url.trim().is_empty());
 
     Ok(VersionRefSpec {
         id,
@@ -1021,6 +1042,7 @@ async fn resolve_version_spec_from_remote(
         loader_version,
         download_url,
         manifest_url,
+        patch,
         sha256,
         size: ver_obj.get("size").and_then(|v| v.as_u64()),
         size_mb,
@@ -1054,14 +1076,14 @@ async fn fetch_manifest_if_available(
     };
 
     let client = build_http_client()?;
-    const MAX_MANIFEST_RETRIES: u32 = 3;
+    const MAX_MANIFEST_RETRIES: u32 = 5;
     let mut last_error_status: Option<String> = None;
     let mut bytes_opt: Option<Vec<u8>> = None;
 
     for attempt in 1..=MAX_MANIFEST_RETRIES {
         let send_res = client
             .get(&m_url)
-            .timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(25))
             .send()
             .await;
 
@@ -1071,7 +1093,7 @@ async fn fetch_manifest_if_available(
                 let err_msg = format!("network: {e}");
                 last_error_status = Some(err_msg.clone());
                 if attempt < MAX_MANIFEST_RETRIES {
-                    let delay = Duration::from_millis(600 * attempt as u64);
+                    let delay = Duration::from_millis(800 * attempt as u64);
                     log_event(
                         Some(op_id),
                         "MANIFEST",
@@ -1092,7 +1114,7 @@ async fn fetch_manifest_if_available(
             last_error_status = Some(status_str.clone());
             let is_transient = status.is_server_error() || status.as_u16() == 429 || status.as_u16() == 408;
             if is_transient && attempt < MAX_MANIFEST_RETRIES {
-                let delay = Duration::from_millis(600 * attempt as u64);
+                let delay = Duration::from_millis(800 * attempt as u64);
                 log_event(
                     Some(op_id),
                     "MANIFEST",
@@ -1115,7 +1137,7 @@ async fn fetch_manifest_if_available(
                 let err_msg = format!("read: {e}");
                 last_error_status = Some(err_msg.clone());
                 if attempt < MAX_MANIFEST_RETRIES {
-                    let delay = Duration::from_millis(600 * attempt as u64);
+                    let delay = Duration::from_millis(800 * attempt as u64);
                     log_event(
                         Some(op_id),
                         "MANIFEST",
@@ -1362,15 +1384,18 @@ async fn ensure_theseus_instance_and_base(
             .instance_id
             .clone()
             .unwrap_or_else(|| sanitized_name.clone());
-        let jid = uuid::Uuid::parse_str(&snapshot.job_id).ok();
-        wait_for_theseus_base(app, op_id, server_id, &id, jid, cancel_token).await?;
-
         let rel_path = theseus::instance::get(&id)
             .await
             .ok()
             .flatten()
             .map(|inst| inst.instance.path)
             .unwrap_or(sanitized_name);
+        let pre_dir = instances_dir.join(&rel_path);
+        let _ = fs::create_dir_all(&pre_dir);
+        let _ = fs::write(pre_dir.join(".dr3sh_instance"), b"dr3sh");
+
+        let jid = uuid::Uuid::parse_str(&snapshot.job_id).ok();
+        wait_for_theseus_base(app, op_id, server_id, &id, jid, cancel_token).await?;
         (id, rel_path)
     };
 
@@ -1418,6 +1443,9 @@ pub async fn execute_pipeline(
             }
             if spec.manifest_url.is_none() {
                 spec.manifest_url = remote.manifest_url;
+            }
+            if spec.patch.is_none() {
+                spec.patch = remote.patch;
             }
             if spec.game_version.is_none() {
                 spec.game_version = remote.game_version;
@@ -1508,16 +1536,32 @@ pub async fn execute_pipeline(
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
-            .map(|raw| {
+            .and_then(|raw| {
                 let base = PathBuf::from(raw);
+                if preflight::paths_equal_case_insensitive(&base, &default_instance_dir) {
+                    return None;
+                }
+                if let (Some(base_parent), Some(def_parent)) =
+                    (base.parent(), default_instance_dir.parent())
+                    && preflight::paths_equal_case_insensitive(base_parent, def_parent)
+                {
+                    return None;
+                }
+                let normalized_raw = raw.replace('/', "\\").to_ascii_lowercase();
+                if normalized_raw.contains(r"\com.dr3sh.launcher\profiles\") {
+                    return None;
+                }
                 if base
                     .file_name()
                     .and_then(|n| n.to_str())
                     .is_some_and(|n| n.eq_ignore_ascii_case(&sanitized_folder))
+                    || base.join(".dr3sh").is_dir()
+                    || base.join(".dr3sh_instance").is_file()
+                    || base.join("mods").is_dir()
                 {
-                    base
+                    Some(base)
                 } else {
-                    base.join(&sanitized_folder)
+                    Some(base.join(&sanitized_folder))
                 }
             });
 
@@ -1723,7 +1767,115 @@ pub async fn execute_pipeline(
                         expected_zip_size
                     };
                     let mut used_delta = false;
-                    if should_use_partial_zip(remote_zip_bytes, &plan, 4 * 1024 * 1024) {
+                    if let Some(ref patch_spec) = spec.patch {
+                        let from_matches = baseline.as_ref().is_some_and(|b| {
+                            b.version
+                                .trim()
+                                .trim_start_matches('v')
+                                .eq_ignore_ascii_case(patch_spec.from.trim().trim_start_matches('v'))
+                        });
+                        if from_matches && patch_spec.url.starts_with("https://") {
+                            let patch_part_path = part_file_path(
+                                &effective_instance_dir,
+                                &format!("{}-patch", m.pack_id),
+                                &m.version,
+                                patch_spec.sha256.as_deref().unwrap_or(""),
+                            );
+                            let patch_label = format!("{} (parche)", folder_label);
+                            let patch_dl_res = download_zip_resumable(DownloadSpec {
+                                app: app.as_ref(),
+                                op_id: &op_id,
+                                server_id: &server_id,
+                                server_title: &patch_label,
+                                url: &patch_spec.url,
+                                part_path: &patch_part_path,
+                                expected_size: patch_spec.size,
+                                expected_sha256: patch_spec.sha256.as_deref(),
+                                cancel_flag: &cancel_token,
+                            })
+                            .await;
+
+                            match patch_dl_res {
+                                Ok(patch_outcome) => {
+                                    let app_clone = app.clone();
+                                    let op_clone = op_id.clone();
+                                    let srv_clone = server_id.clone();
+                                    let zip_clone = patch_outcome.part_path.clone();
+                                    let inst_clone = effective_instance_dir.clone();
+                                    let txn_clone = txn_id.clone();
+                                    let plan_clone = plan.clone();
+                                    let cancel_clone = cancel_token.clone();
+
+                                    let extract_res = tokio::task::spawn_blocking(move || {
+                                        extract_to_staging(
+                                            app_clone.as_ref(),
+                                            &op_clone,
+                                            &srv_clone,
+                                            &zip_clone,
+                                            &inst_clone,
+                                            &txn_clone,
+                                            &plan_clone,
+                                            &cancel_clone,
+                                        )
+                                    })
+                                    .await
+                                    .map_err(|e| {
+                                        Dr3shError::unknown(format!("Patch extract join error: {e}"))
+                                    })?;
+
+                                    let _ = fs::remove_file(&patch_outcome.part_path);
+                                    match extract_res {
+                                        Ok(_) => {
+                                            dl_bytes = patch_outcome.total_bytes;
+                                            dl_speed = patch_outcome.avg_speed_bps;
+                                            dl_retries = patch_outcome.retries_used;
+                                            used_delta = true;
+                                            log_event(
+                                                Some(&op_id),
+                                                "DOWNLOAD",
+                                                "INFO",
+                                                "direct micro-patch completed",
+                                                &[
+                                                    ("from", patch_spec.from.clone()),
+                                                    (
+                                                        "downloaded_bytes",
+                                                        patch_outcome.total_bytes.to_string(),
+                                                    ),
+                                                    ("full_zip_bytes", remote_zip_bytes.to_string()),
+                                                ],
+                                            );
+                                        }
+                                        Err(Dr3shError::Cancelled { stage }) => {
+                                            return Err(Dr3shError::Cancelled { stage });
+                                        }
+                                        Err(e) => {
+                                            log_event(
+                                                Some(&op_id),
+                                                "DOWNLOAD",
+                                                "WARN",
+                                                "direct micro-patch extract incomplete; falling back to HTTP Range / full download",
+                                                &[("reason", e.to_string())],
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(Dr3shError::Cancelled { stage }) => {
+                                    return Err(Dr3shError::Cancelled { stage });
+                                }
+                                Err(e) => {
+                                    let _ = fs::remove_file(&patch_part_path);
+                                    log_event(
+                                        Some(&op_id),
+                                        "DOWNLOAD",
+                                        "WARN",
+                                        "direct micro-patch download failed; falling back to HTTP Range / full download",
+                                        &[("reason", e.to_string())],
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    if !used_delta && should_use_partial_zip(remote_zip_bytes, &plan, 4 * 1024 * 1024) {
                         match download_and_extract_partial_zip(
                             app.as_ref(),
                             &op_id,
@@ -1764,12 +1916,28 @@ pub async fn execute_pipeline(
                                 );
                             }
                             PartialZipAttempt::FallbackToFull(reason) => {
+                                let files_needed = plan
+                                    .items
+                                    .iter()
+                                    .filter(|i| {
+                                        matches!(
+                                            i.action,
+                                            manifest::PlanActionKind::Write
+                                                | manifest::PlanActionKind::BackupThenWrite
+                                        )
+                                    })
+                                    .count();
                                 log_event(
                                     Some(&op_id),
                                     "DOWNLOAD",
                                     "WARN",
                                     "partial ZIP fallback to full download",
-                                    &[("reason", reason)],
+                                    &[
+                                        ("reason", reason),
+                                        ("files_needed", files_needed.to_string()),
+                                        ("write_bytes", plan.write_bytes_total.to_string()),
+                                        ("full_zip_bytes", remote_zip_bytes.to_string()),
+                                    ],
                                 );
                             }
                         }
@@ -2198,20 +2366,37 @@ pub async fn execute_pipeline(
                 &[("duration_ms", apply_start.elapsed().as_millis().to_string())],
             );
 
-            // Remove .part file after commit
-            if let Some(zip_path) = downloaded_zip_path {
+            // Remove .part file and any stale older .part files for this pack after commit
+            {
+                let zip_to_remove = downloaded_zip_path.take();
+                let op_c = op_id.clone();
+                let eff_c = effective_instance_dir.clone();
+                let pack_c = manifest.pack_id.clone();
                 let _ = tokio::task::spawn_blocking(move || {
-                    let _ = fs::remove_file(zip_path);
+                    if let Some(zip_path) = zip_to_remove {
+                        let _ = fs::remove_file(zip_path);
+                    }
+                    cleanup_old_pack_part_downloads(Some(&op_c), &eff_c, &pack_c);
                 })
                 .await;
             }
 
             {
+                let op_c = op_id.clone();
                 let eff_c = effective_instance_dir.clone();
                 let srv_c = server_id.clone();
                 let inst_c = instance_id.clone();
                 let ver_c = manifest.version.clone();
                 tokio::task::spawn_blocking(move || {
+                    if let Err(e) = apply_options_patch_if_needed(Some(&op_c), &eff_c, &ver_c) {
+                        log_event(
+                            Some(&op_c),
+                            "APPLY",
+                            "WARN",
+                            "failed to apply surgical options.txt patch",
+                            &[("error", e.to_string())],
+                        );
+                    }
                     if let Err(e) = write_instance_marker(&eff_c, &srv_c, &inst_c, &ver_c) {
                         tracing::warn!("No se pudo escribir el marcador de instancia: {e}");
                     }
@@ -2414,10 +2599,7 @@ pub fn write_instance_marker(
         path: tmp_path.to_string_lossy().to_string(),
         os_code: e.raw_os_error().unwrap_or(-1).to_string(),
     })?;
-    fs::rename(&tmp_path, &final_path).map_err(|e| Dr3shError::FsPermission {
-        path: final_path.to_string_lossy().to_string(),
-        os_code: e.raw_os_error().unwrap_or(-1).to_string(),
-    })?;
+    transaction::rename_with_lock_retries(&tmp_path, &final_path)?;
     Ok(())
 }
 
@@ -2796,6 +2978,7 @@ pub async fn dr3sh_download_modpack(
         loader_version: None,
         download_url: Some(download_url),
         manifest_url,
+        patch: None,
         sha256: expected_sha256,
         size: None,
         size_mb: expected_size_mb,
@@ -3405,7 +3588,7 @@ mod tests {
         assert!(result.is_ok(), "should not return Err when fallback ZIP is available: {result:?}");
         let opt = result.unwrap();
         assert!(opt.is_none(), "must fall back to Ok(None) to let ZIP pipeline synthesize manifest");
-        assert_eq!(req_count.load(Ordering::SeqCst), 3, "must have exhausted 3 retries");
+        assert_eq!(req_count.load(Ordering::SeqCst), 5, "must have exhausted 5 retries");
     }
 
     #[tokio::test]

@@ -113,3 +113,6 @@ references/
 __pycache__/
 *.pyc
 *.pyo
+
+# Local launcher dev run log
+dr3sh-dev-last.log

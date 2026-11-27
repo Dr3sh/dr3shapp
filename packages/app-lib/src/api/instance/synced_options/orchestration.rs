@@ -17,8 +17,9 @@ use super::command_history::{
 };
 use super::files::{
     begin_checkpoint, detach_link, instance_dir, instance_is_running,
-    instance_option_enabled, option_can_apply_while_running, read_nbt_file,
-    safe_instance_id, sync_files_are_protected,
+    instance_option_enabled, is_dr3sh_managed_instance,
+    option_can_apply_while_running, read_nbt_file, safe_instance_id,
+    sync_files_are_protected,
 };
 use super::hotbars::{
     HOTBAR_SCHEMA_VERSION, HotbarState, backup_shared_hotbars,
@@ -1020,6 +1021,9 @@ pub(crate) async fn prepare_instance_update(
     let metadata = crate::state::get_instance(instance_id, &state.pool)
         .await?
         .ok_or(ErrorKind::InputError("unknown instance".to_string()))?;
+    if is_dr3sh_managed_instance(&metadata, &state) {
+        return Ok(());
+    }
     if let Err(error) =
         synced_packs::prepare_instance_update(&metadata, &state).await
     {
@@ -1058,6 +1062,9 @@ async fn reconcile_instance_with_state(
     state: &State,
     allow_protected: bool,
 ) -> crate::Result<()> {
+    if is_dr3sh_managed_instance(metadata, state) {
+        return Ok(());
+    }
     if !allow_protected && sync_files_are_protected(metadata) {
         return Ok(());
     }
@@ -1138,7 +1145,9 @@ pub async fn reconcile_changed_file(
     let metadata = crate::state::get_instance(instance_id, &state.pool)
         .await?
         .ok_or(ErrorKind::InputError("unknown instance".to_string()))?;
-    if sync_files_are_protected(&metadata) {
+    if is_dr3sh_managed_instance(&metadata, &state)
+        || sync_files_are_protected(&metadata)
+    {
         return Ok(());
     }
     match file_name {
